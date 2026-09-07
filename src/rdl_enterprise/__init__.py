@@ -32,6 +32,7 @@ from .shadow import (
 from .promotion_gate import (
     ProposalState,
     PromotionPolicy,
+    EvidenceRequirement,
     PromotionGate,
 )
 from .runtime import (
@@ -70,6 +71,7 @@ __all__ = [
     "ShadowEvaluator",
     "ProposalState",
     "PromotionPolicy",
+    "EvidenceRequirement",
     "PromotionGate",
     "EnterpriseRuntime",
     "TicketExecutionResult",

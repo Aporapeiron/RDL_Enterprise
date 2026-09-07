@@ -1,4 +1,4 @@
-﻿"""
+"""
 RDL Enterprise: Shadow Execution & Counterfactual Comparison
 現行本番 M_B の「観測事実 (Observed Fact)」と、再編候補 M_B' の「反実仮想推定 (Counterfactual Estimate)」を
 突き合わせ、三者比較 (F_prod vs F_shadow vs EFP'_prod) を行う。
@@ -86,7 +86,11 @@ class ShadowReport:
     regression_rate: float                   # 改悪率 [0.0, 1.0]
     evaluation_status: str                   # "passed" | "failed" | "insufficient_evidence"
     passed: bool                             # 承認可能か (evaluation_status == "passed")
+    unique_queries_count: int = 0            # 重複を除いたユニーククエリ数 (多様性)
+    covered_categories: List[str] = field(default_factory=list) # カバーされた業務カテゴリ
+    diversity_score: float = 0.0             # 多様性比率 (unique_queries_count / resolved_triplets_count)
     triplet_details: List[Dict[str, Any]] = field(default_factory=list)
+
 
 
 class ShadowEvaluator:
@@ -189,6 +193,20 @@ class ShadowEvaluator:
         """集計比較レポートを生成 (証拠不十分 insufficient_evidence を厳格に判定)"""
         total = len(self.resolved_triplets)
 
+        # クエリ多様性とカテゴリ網羅の集計 (正規化: トリム & 小文字)
+        unique_queries = set(
+            t.prediction_pair.efp.query_text.strip().lower()
+            for t in self.resolved_triplets
+            if t.prediction_pair.efp and t.prediction_pair.efp.query_text
+        )
+        unique_queries_count = len(unique_queries)
+        covered_categories = sorted(list(set(
+            t.prediction_pair.efp.category
+            for t in self.resolved_triplets
+            if t.prediction_pair.efp and t.prediction_pair.efp.category
+        )))
+        diversity_score = (unique_queries_count / total) if total > 0 else 0.0
+
         # 最小解決件数に満たない場合は証拠不十分 (passed=False)
         if total < self.minimum_resolved_cases:
             return ShadowReport(
@@ -201,6 +219,9 @@ class ShadowEvaluator:
                 tier_improved_count=0,
                 avg_confidence_delta=0.0,
                 regression_rate=0.0,
+                unique_queries_count=unique_queries_count,
+                covered_categories=covered_categories,
+                diversity_score=diversity_score,
                 evaluation_status="insufficient_evidence",
                 passed=False,
             )
@@ -240,6 +261,9 @@ class ShadowEvaluator:
             tier_improved_count=tier_improved,
             avg_confidence_delta=avg_conf,
             regression_rate=reg_rate,
+            unique_queries_count=unique_queries_count,
+            covered_categories=covered_categories,
+            diversity_score=diversity_score,
             evaluation_status=eval_status,
             passed=is_passed,
             triplet_details=details,

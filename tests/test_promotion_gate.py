@@ -1,4 +1,4 @@
-﻿import unittest
+import unittest
 from rdl_enterprise.mb_graph import MBGraph, MBNode
 from rdl_enterprise.authority import AuthorityContext
 from rdl_enterprise.snapshot import BusinessInput, FeedbackResult
@@ -106,6 +106,9 @@ class TestPromotionGate(unittest.TestCase):
             regression_rate=0.0,
             evaluation_status="passed",
             passed=True,
+            unique_queries_count=1,
+            covered_categories=["workflow"],
+            diversity_score=1.0,
         )
 
         prop = ReorganizationProposal(
@@ -119,7 +122,13 @@ class TestPromotionGate(unittest.TestCase):
         )
         runtime.pending_reorganizations["prop_lifecycle_01"] = prop
 
-        mgr = AuthorityContext(actor_id="mgr_01", role="manager", scope="workflow")
+        mgr = AuthorityContext(
+            actor_id="mgr_01",
+            role="manager",
+            scope="workflow",
+            actor_type="human",
+            authenticated_by="idp_sso",
+        )
         success = runtime.promote_candidate_mb("prop_lifecycle_01", authority=mgr)
 
         self.assertTrue(success)
@@ -138,7 +147,13 @@ class TestPromotionGate(unittest.TestCase):
         ))
 
         # security ドメインは default_for_domain で risk_level="high", require_human_approval=True
-        sec_auth = AuthorityContext(actor_id="sec_bot", role="admin", scope="security")
+        sec_auth = AuthorityContext(
+            actor_id="sec_bot",
+            role="admin",
+            scope="security",
+            actor_type="agent",
+            authenticated_by="delegated_agent",
+        )
         runtime = EnterpriseRuntime(
             mb_graph=sec_graph,
             theta_0=1.0,
@@ -156,6 +171,200 @@ class TestPromotionGate(unittest.TestCase):
         self.assertEqual(len(runtime.pending_reorganizations), 1)
         prop_id = list(runtime.pending_reorganizations.keys())[0]
         self.assertNotEqual(runtime.pending_reorganizations[prop_id].status, ProposalState.PROMOTED)
+
+    def test_human_identity_proof_rejects_agent_or_api_key_even_if_is_automated_false(self):
+        """自己詐称防止: is_automated=False と偽装しても、actor_type!=human や api_key は拒絶される"""
+        from rdl_enterprise.promotion_gate import EvidenceRequirement
+        runtime = EnterpriseRuntime(mb_graph=self.graph, theta_0=1.0)
+        prop = ReorganizationProposal(
+            proposal_id="prop_spoof_01",
+            hot_node_id="node_wf",
+            candidate_mb=self.graph,
+            durability_test_result={"all_passed": True},
+            policy=PromotionPolicy(
+                require_durability=True,
+                require_shadow=False,
+                require_human_approval=True,
+            ),
+            status=ProposalState.APPROVAL_READY,
+        )
+        runtime.pending_reorganizations["prop_spoof_01"] = prop
+
+        # ケースA: admin ロールだが actor_type="agent" (プログラムボットによる偽装呼び出し)
+        agent_admin = AuthorityContext(
+            actor_id="bot_script",
+            role="admin",
+            scope="all",
+            actor_type="agent",
+            authenticated_by="api_key",
+        )
+        # is_automated=False (手動呼び出しを装う)
+        success_agent = runtime.promote_candidate_mb("prop_spoof_01", authority=agent_admin, is_automated=False)
+        self.assertFalse(success_agent)
+        self.assertEqual(prop.status, ProposalState.REJECTED)
+        self.assertIn("人間承認", prop.reasons[-1])
+
+        # 再度プロポーザルをセット
+        prop.status = ProposalState.APPROVAL_READY
+        runtime.pending_reorganizations["prop_spoof_01"] = prop
+
+        # ケースB: actor_type="human" だが authenticated_by="api_key" (対人認証基盤を経ていない)
+        unverified_human = AuthorityContext(
+            actor_id="hacker_impersonator",
+            role="admin",
+            scope="all",
+            actor_type="human",
+            authenticated_by="api_key",
+        )
+        success_unverified = runtime.promote_candidate_mb("prop_spoof_01", authority=unverified_human, is_automated=False)
+        self.assertFalse(success_unverified)
+        self.assertEqual(prop.status, ProposalState.REJECTED)
+
+        # ケースC: 正真正銘の認証済み人間 (IdP SSO / MFA) -> 昇格成功
+        prop.status = ProposalState.APPROVAL_READY
+        runtime.pending_reorganizations["prop_spoof_01"] = prop
+        real_human = AuthorityContext(
+            actor_id="tanaka_admin",
+            role="admin",
+            scope="all",
+            actor_type="human",
+            authenticated_by="idp_sso",
+        )
+        success_real = runtime.promote_candidate_mb("prop_spoof_01", authority=real_human, is_automated=False)
+        self.assertTrue(success_real)
+        self.assertEqual(prop.status, ProposalState.PROMOTED)
+
+    def test_evidence_coverage_rejects_monotonous_identical_queries(self):
+        """多様性要件: 解決件数は充足していても、すべて同一クエリ(偏り)の場合は INSUFFICIENT_EVIDENCE"""
+        from rdl_enterprise.promotion_gate import EvidenceRequirement
+        runtime = EnterpriseRuntime(mb_graph=self.graph, theta_0=1.0)
+
+        # 5件解決しているが、すべて「同一クエリ」の偏ったレポート (unique_queries_count = 1)
+        monotonous_shadow = ShadowReport(
+            proposal_id="prop_mono_01",
+            total_shadow_cases=5,
+            resolved_triplets_count=5,
+            improved_count=5,
+            regressed_count=0,
+            unchanged_count=0,
+            tier_improved_count=0,
+            avg_confidence_delta=0.1,
+            regression_rate=0.0,
+            evaluation_status="passed",
+            passed=True,
+            unique_queries_count=1,  # 1種類しかない！
+            covered_categories=["workflow"],
+            diversity_score=0.2,
+        )
+
+        # ポリシーでユニークパターン数 >= 2 を要求
+        policy = PromotionPolicy(
+            require_durability=True,
+            require_shadow=True,
+            evidence_requirement=EvidenceRequirement(
+                minimum_cases=2,
+                minimum_unique_patterns=2,
+            ),
+        )
+
+        res = PromotionGate.evaluate_readiness(
+            current_state=ProposalState.SHADOW_RUNNING,
+            durability_result={"all_passed": True},
+            shadow_report=monotonous_shadow,
+            policy=policy,
+        )
+
+        self.assertFalse(res.can_promote)
+        self.assertEqual(res.next_state, ProposalState.INSUFFICIENT_EVIDENCE)
+        self.assertIn("多様性が不足", res.reasons[0])
+
+    def test_evidence_coverage_rejects_missing_required_categories(self):
+        """境界網羅要件: 必須カテゴリがシャドウでカバーされていない場合は INSUFFICIENT_EVIDENCE"""
+        from rdl_enterprise.promotion_gate import EvidenceRequirement
+
+        # workflow だけカバーされたレポート
+        partial_shadow = ShadowReport(
+            proposal_id="prop_partial_01",
+            total_shadow_cases=3,
+            resolved_triplets_count=3,
+            improved_count=2,
+            regressed_count=0,
+            unchanged_count=1,
+            tier_improved_count=0,
+            avg_confidence_delta=0.1,
+            regression_rate=0.0,
+            evaluation_status="passed",
+            passed=True,
+            unique_queries_count=3,
+            covered_categories=["workflow"],
+            diversity_score=1.0,
+        )
+
+        # workflow と security の両ドメインの網羅を要求
+        policy = PromotionPolicy(
+            require_durability=True,
+            require_shadow=True,
+            evidence_requirement=EvidenceRequirement(
+                minimum_cases=2,
+                minimum_unique_patterns=2,
+                required_categories=["workflow", "security"],
+            ),
+        )
+
+        res = PromotionGate.evaluate_readiness(
+            current_state=ProposalState.SHADOW_RUNNING,
+            durability_result={"all_passed": True},
+            shadow_report=partial_shadow,
+            policy=policy,
+        )
+
+        self.assertFalse(res.can_promote)
+        self.assertEqual(res.next_state, ProposalState.INSUFFICIENT_EVIDENCE)
+        self.assertIn("必須カテゴリが未カバー", res.reasons[0])
+
+    def test_evidence_coverage_rejects_when_no_improved_cases_under_strict_policy(self):
+        """改善実証要件: require_improved_case=True で改善事例が0件の場合は INSUFFICIENT_EVIDENCE"""
+        from rdl_enterprise.promotion_gate import EvidenceRequirement
+
+        # 退行はない(regressed=0)が、改善も0件(unchangedばかり)
+        unchanged_shadow = ShadowReport(
+            proposal_id="prop_unchanged_01",
+            total_shadow_cases=2,
+            resolved_triplets_count=2,
+            improved_count=0,       # 改善なし
+            regressed_count=0,
+            unchanged_count=2,
+            tier_improved_count=0,
+            avg_confidence_delta=0.0,
+            regression_rate=0.0,
+            evaluation_status="passed",
+            passed=True,
+            unique_queries_count=2,
+            covered_categories=["security"],
+            diversity_score=1.0,
+        )
+
+        policy = PromotionPolicy(
+            require_durability=True,
+            require_shadow=True,
+            evidence_requirement=EvidenceRequirement(
+                minimum_cases=2,
+                minimum_unique_patterns=2,
+                require_improved_case=True,
+            ),
+        )
+
+        res = PromotionGate.evaluate_readiness(
+            current_state=ProposalState.SHADOW_RUNNING,
+            durability_result={"all_passed": True},
+            shadow_report=unchanged_shadow,
+            policy=policy,
+        )
+
+        self.assertFalse(res.can_promote)
+        self.assertEqual(res.next_state, ProposalState.INSUFFICIENT_EVIDENCE)
+        self.assertIn("改善実績", res.reasons[0])
+
 
 if __name__ == "__main__":
     unittest.main()

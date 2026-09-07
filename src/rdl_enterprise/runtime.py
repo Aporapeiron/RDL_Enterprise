@@ -384,8 +384,17 @@ class EnterpriseRuntime:
             policy=proposal.policy,
             is_automated=is_automated,
         ):
+            if not authority.is_authorized_for(target_domain):
+                fail_reason = f"ドメイン管轄権限の不適合 (actor={authority.actor_id}, scope={authority.scope}, target={target_domain})"
+            elif proposal.policy.require_human_approval and not authority.is_human_authenticated():
+                fail_reason = f"人間承認要件の不適合: 認証されたHuman主体ではありません (actor={authority.actor_id}, type={authority.actor_type}, auth_by={authority.authenticated_by})"
+            elif is_automated and proposal.policy.require_human_approval:
+                fail_reason = f"自動昇格制限に抵触: 人間承認が必須のポリシーです (actor={authority.actor_id})"
+            else:
+                fail_reason = f"権限不適合または人間承認要件に抵触: actor={authority.actor_id}, role={authority.role}"
+
             proposal.status = ProposalState.REJECTED
-            proposal.reasons.append(f"権限不適合または自動昇格制限に抵触: actor={authority.actor_id}, role={authority.role}")
+            proposal.reasons.append(fail_reason)
             self.pending_reorganizations.pop(proposal_id)
             self.reorganization_history.append(proposal)
             return False

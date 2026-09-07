@@ -1,4 +1,4 @@
-﻿import unittest
+import unittest
 from rdl_enterprise.mb_graph import MBGraph, MBNode
 from rdl_enterprise.snapshot import BusinessInput, FeedbackResult
 from rdl_enterprise.shadow import ShadowEvaluator
@@ -143,6 +143,38 @@ class TestShadowExecution(unittest.TestCase):
         runtime.promote_candidate_mb(prop_id, authority=admin)
         self.assertIsNone(runtime.active_shadow_evaluator)
         self.assertEqual(runtime.mb_graph.get("node_wf").action_template["payload"], "https://new-saas.corp")
+
+    def test_shadow_diversity_and_coverage_metrics(self):
+        """ShadowEvaluator がユニーククエリ数、カバーカテゴリ、多様性スコアを正しく集計することを検証"""
+        evaluator = ShadowEvaluator(
+            proposal_id="prop_diversity_01",
+            prod_mb=self.prod_graph,
+            candidate_mb=self.candidate_graph,
+            minimum_resolved_cases=2,
+        )
+
+        # 3件の入力（2件は同一クエリ、1件は別クエリ。カテゴリは2種類）
+        efp1 = BusinessInput("T1", "U1", "workflow", "稟議申請のURL")
+        efp2 = BusinessInput("T2", "U2", "workflow", " 稟議申請のURL ")  # 正規化で efp1 と同一とみなされる
+        efp3 = BusinessInput("T3", "U3", "finance", "経費精算の手順")
+
+        evaluator.evaluate_input(efp1)
+        evaluator.evaluate_input(efp2)
+        evaluator.evaluate_input(efp3)
+
+        evaluator.record_feedback("T1", FeedbackResult(user_resolved=True))
+        evaluator.record_feedback("T2", FeedbackResult(user_resolved=True))
+        evaluator.record_feedback("T3", FeedbackResult(user_resolved=True))
+
+        report = evaluator.generate_report()
+        self.assertEqual(report.resolved_triplets_count, 3)
+        # ユニーククエリは2種類 ("稟議申請のurl", "経費精算の手順")
+        self.assertEqual(report.unique_queries_count, 2)
+        # カバーされたカテゴリは ["finance", "workflow"]
+        self.assertEqual(report.covered_categories, ["finance", "workflow"])
+        # 多様性スコア = 2 / 3
+        self.assertAlmostEqual(report.diversity_score, 2 / 3, places=2)
+
 
 if __name__ == "__main__":
     unittest.main()
