@@ -45,6 +45,30 @@ class FeedbackResult:
 
 
 @dataclass
+class FrozenInterpretationContext:
+    """
+    更新前の同一 M_B および推論環境の完全凍結スナップショット (T0 SPEC 4, 6.1)
+    F (事前予測) と F' (事後解釈) を厳密に同一の前提のもとで形成するための暗号論的保証構造。
+    """
+    mb_version: str
+    mb_content_hash: str
+    frozen_mb: Any                              # MBGraph (Deep Freeze済み)
+    target_domain: Optional[str] = None
+    llm_bridge: Optional[Any] = None
+
+    def interpret_efp(self, efp: BusinessInput) -> InterpretationPrediction:
+        """更新前の同一 M_B 前提を用いて入力を解釈 (interp(M_B, EFP))"""
+        if hasattr(self.frozen_mb, "content_hash"):
+            current_h = self.frozen_mb.content_hash()
+            if self.mb_content_hash != "unknown" and current_h != self.mb_content_hash:
+                raise RuntimeError(f"FrozenInterpretationContext の変質を検知 (Identity Drift: {current_h} != {self.mb_content_hash})")
+
+        from .cascade import InterpCascade
+        cascade = InterpCascade(self.frozen_mb, llm_bridge=self.llm_bridge)
+        return cascade.interpret(efp)
+
+
+@dataclass
 class SubsequentInterpretation:
     """
     後続作用解釈 F' (T0 SPEC 4, 6.1)
@@ -73,6 +97,7 @@ class CaseSnapshot:
         is_authoritative: bool = False,
         is_canary: bool = False,
         frozen_node_snapshot: Optional[Any] = None,
+        frozen_context: Optional[FrozenInterpretationContext] = None,
     ):
         self.efp = efp
         self.f_pred = f_pred
@@ -80,6 +105,7 @@ class CaseSnapshot:
         self.is_authoritative = is_authoritative
         self.is_canary = is_canary
         self.frozen_node_snapshot = frozen_node_snapshot
+        self.frozen_context = frozen_context
         self.status = CaseStatus.PENDING
         self.efp_prime: Optional[FeedbackResult] = None
         self.f_prime: Optional[SubsequentInterpretation] = None  # 後続作用解釈 F'
@@ -90,31 +116,48 @@ class CaseSnapshot:
 
     def record_feedback(self, feedback: FeedbackResult) -> Tuple[float, float]:
         """
-        後続結果 EFP' を受領し、更新前の同一 M_B 前提で F' を導出。
+        後続結果 EFP' を受領し、更新前の同一 M_B 前提 (FrozenInterpretationContext) で真に再解釈して F' を導出。
         F と F' の差分 E = Δ(F, F') を確定する。
         """
         self.efp_prime = feedback
         self.resolved_at = datetime.utcnow().isoformat()
 
-        # 1. 更新前の同一構造による後続結果 EFP' の解釈 (F' の形成)
-        node_conf = getattr(self.frozen_node_snapshot, "confidence", self.f_pred.confidence)
-        node_id = self.f_pred.matched_node_id
+        # 1. 更新前の同一構造 (frozen_context) による後続結果 EFP' の真の再解釈
+        reinterpreted_pred = None
+        if self.frozen_context:
+            prime_text = (
+                feedback.new_knowledge_provided
+                or feedback.actual_response_text
+                or feedback.feedback_comment
+                or self.efp.query_text
+            )
+            efp_prime_input = BusinessInput(
+                ticket_id=f"{self.efp.ticket_id}_prime",
+                user_id=self.efp.user_id,
+                category=self.efp.category,
+                query_text=prime_text,
+                metadata=self.efp.metadata,
+            )
+            reinterpreted_pred = self.frozen_context.interpret_efp(efp_prime_input)
 
+        # 帰結状態と確信度の判定
         if feedback.human_rejected:
             actual_status = CaseStatus.REJECTED
             actual_outcome = "rejected"
             confidence_prime = 0.0
-            explanation = "権限者による差し戻し：更新前モデルの解釈境界が破断"
+            explanation = "F' 事後解釈: 権限者による差し戻し（更新前モデルの解釈境界が破断）"
         elif not feedback.user_resolved:
             actual_status = CaseStatus.FAILURE
             actual_outcome = "unresolved"
-            confidence_prime = max(0.0, node_conf - 0.4)
-            explanation = "ユーザー未解決：更新前モデルの予測回答が不適合"
+            base_conf = reinterpreted_pred.confidence if reinterpreted_pred else getattr(self.frozen_node_snapshot, "confidence", self.f_pred.confidence)
+            confidence_prime = max(0.0, base_conf - 0.4)
+            explanation = "F' 事後解釈: ユーザー未解決（更新前モデルの予測回答が不適合）"
         else:
             actual_status = CaseStatus.SUCCESS
             actual_outcome = "resolve"
-            confidence_prime = min(1.0, node_conf + 0.05)
-            explanation = "ユーザー解決完了：更新前モデルの予測と外界帰結が整合"
+            base_conf = reinterpreted_pred.confidence if reinterpreted_pred else getattr(self.frozen_node_snapshot, "confidence", self.f_pred.confidence)
+            confidence_prime = min(1.0, base_conf + 0.05)
+            explanation = "F' 事後解釈: ユーザー解決完了（更新前モデルの予測と外界帰結が整合）"
 
         self.status = actual_status
 
@@ -133,6 +176,12 @@ class CaseSnapshot:
         conf_gap = max(0.0, self.f_pred.confidence - confidence_prime)
         e_pred += 0.2 * conf_gap
 
+        # 更新前 M_B を通した事後再解釈でノード境界破断 (破断面の露呈) が検知された場合のペナルティ
+        if reinterpreted_pred and reinterpreted_pred.matched_node_id != self.f_pred.matched_node_id:
+            if actual_status in (CaseStatus.FAILURE, CaseStatus.REJECTED):
+                e_pred += 0.3
+                explanation += f" (更新前 M_B 再解釈でのノード境界変異検知: {self.f_pred.matched_node_id} -> {reinterpreted_pred.matched_node_id})"
+
         # 3. 入力素流圧 EFP と事後素流圧 EFP' の入力境界差分 Δ_input(EFP, EFP') の算出 (E_input)
         e_input = 0.0
         if len(self.efp.query_text.strip()) < 5:
@@ -142,12 +191,14 @@ class CaseSnapshot:
         if feedback.new_knowledge_provided:
             e_input += 0.4  # 事後入力で新知識が補足されたことによる入力欠落の顕在化
 
+        matched_nid = reinterpreted_pred.matched_node_id if reinterpreted_pred else self.f_pred.matched_node_id
+
         # 4. F' の確定保存 (T0 Core Requirement C3, C4)
         self.f_prime = SubsequentInterpretation(
             actual_status=actual_status,
             actual_outcome=actual_outcome,
             confidence_prime=round(confidence_prime, 4),
-            matched_node_id=node_id,
+            matched_node_id=matched_nid,
             e_prediction_delta=round(e_pred, 4),
             e_input_delta=round(e_input, 4),
             explanation=explanation,

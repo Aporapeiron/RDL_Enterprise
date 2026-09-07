@@ -471,3 +471,31 @@ class CanaryManager:
         self.deployment_history.append(dep)
         self.active_deployment = None
         return dep.prod_mb_backup
+
+
+class InMemoryCompensationClient:
+    """
+    テスト・シミュレーション用の外部補償APIクライアント (実外界接続の安全な検証器)
+    送信された訂正通知や取り消しリクエストをメモリ上に監査記録する。
+    """
+    def __init__(self, should_succeed: bool = True):
+        self.sent_reverts: List[Dict[str, Any]] = []
+        self.should_succeed = should_succeed
+
+    def send_revert(self, action_record: ActionRecord) -> Dict[str, Any]:
+        if not self.should_succeed:
+            return {"success": False, "reason": "外部補償APIモックエラー"}
+
+        entry = {
+            "action_id": action_record.action_id,
+            "ticket_id": action_record.ticket_id,
+            "compensating_action": action_record.compensating_action,
+            "timestamp": datetime.utcnow().isoformat(),
+        }
+        self.sent_reverts.append(entry)
+        return {
+            "success": True,
+            "external_receipt_id": f"rec_{len(self.sent_reverts):04d}",
+            "sent_entry": entry,
+        }
+

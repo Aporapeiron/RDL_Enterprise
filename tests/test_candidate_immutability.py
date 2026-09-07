@@ -5,7 +5,7 @@ import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
 from rdl_enterprise.mb_graph import MBGraph, MBNode
-from rdl_enterprise.snapshot import BusinessInput, FeedbackResult, SubsequentInterpretation, CaseStatus
+from rdl_enterprise.snapshot import BusinessInput, FeedbackResult, SubsequentInterpretation, CaseStatus, FrozenInterpretationContext
 from rdl_enterprise.authority import AuthorityContext
 from rdl_enterprise.promotion_gate import ProposalState, PromotionPolicy, PromotionGate
 from rdl_enterprise.runtime import EnterpriseRuntime, ReorganizationProposal
@@ -17,6 +17,7 @@ from rdl_enterprise.canary import (
     ActionRecord,
     CompensationExecutor,
     ActionCapability,
+    InMemoryCompensationClient,
 )
 
 
@@ -532,6 +533,101 @@ class TestCandidateImmutabilityAndBinding(unittest.TestCase):
         unified_h = runtime.h_state.version_total_heat(cand_ver)
         self.assertEqual(res.current_h, unified_h)
         self.assertEqual(runtime.canary_manager.active_deployment.canary_heat, unified_h)
+
+    def test_frozen_context_reinterprets_efp_prime_for_f_prime(self):
+        """T0 SPEC 4, 6.1: 更新前の同一 M_B グラフ全体を保持する FrozenInterpretationContext が EFP' を真に再解釈して F' を導出すること"""
+        runtime = EnterpriseRuntime(mb_graph=self.prod_graph, theta_0=2.0)
+        efp = BusinessInput("T_FPRIME_01", "U1", "workflow", "稟議申請のやり方")
+        dispatch_res = runtime.dispatch_ticket(efp)
+        self.assertEqual(dispatch_res.status, CaseStatus.PENDING)
+
+        # dispatch 時に FrozenInterpretationContext が CaseSnapshot に封入されていること
+        snapshot = runtime.pending_snapshots["T_FPRIME_01"]
+        self.assertIsNotNone(snapshot.frozen_context)
+        self.assertIsInstance(snapshot.frozen_context, FrozenInterpretationContext)
+        self.assertEqual(snapshot.frozen_context.mb_version, self.prod_graph.version)
+        self.assertEqual(snapshot.frozen_context.mb_content_hash, self.prod_graph.content_hash())
+
+        # 事後フィードバック受領: ユーザー側で解決せず、追加情報として新SaaS URLが提示された場合
+        feedback = FeedbackResult(
+            user_resolved=False,
+            human_rejected=True,
+            feedback_comment="稟議申請は新SaaSポータルへ移行しました",
+            new_knowledge_provided="新SaaSポータルから申請してください",
+        )
+        res = runtime.resolve_ticket_feedback("T_FPRIME_01", feedback)
+
+        # CaseSnapshot に F' (SubsequentInterpretation) が記録され、同一更新前グラフで再解釈されていること
+        resolved_snap = runtime.resolved_snapshots[-1]
+        self.assertIsNotNone(resolved_snap.f_prime)
+        self.assertEqual(resolved_snap.f_prime.actual_status, CaseStatus.REJECTED)
+        self.assertGreater(resolved_snap.f_prime.e_prediction_delta, 0.0)
+        self.assertEqual(res.e_prediction, resolved_snap.f_prime.e_prediction_delta)
+        self.assertIn("F' 事後解釈", resolved_snap.f_prime.explanation)
+
+    def test_frozen_context_identity_drift_detection(self):
+        """Identity Drift 検知: 凍結コンテキストのハッシュ変質を検知して遮断すること"""
+        runtime = EnterpriseRuntime(mb_graph=self.prod_graph, theta_0=2.0)
+        efp = BusinessInput("T_DRIFT_01", "U1", "workflow", "稟議申請")
+        runtime.dispatch_ticket(efp)
+        snapshot = runtime.pending_snapshots["T_DRIFT_01"]
+
+        # 不正にコンテキストの期待ハッシュを改変して変質状態をシミュレート
+        snapshot.frozen_context.mb_content_hash = "tampered_hash_12345"
+
+        with self.assertRaises(RuntimeError) as ctx:
+            snapshot.record_feedback(FeedbackResult(user_resolved=True))
+        self.assertIn("Identity Drift", str(ctx.exception))
+
+    def test_external_compensation_client_fail_closed_and_success(self):
+        """公理B5 (Zero Trust): 外界補償は外部クライアント未接続時に fail-closed (False)、接続時に実送信成功 (True) となること"""
+        # 1. 外部クライアント未接続 (デフォルト): fail-closed
+        runtime_closed = EnterpriseRuntime(mb_graph=self.prod_graph, theta_0=1.0)
+        prop = ReorganizationProposal(
+            proposal_id="prop_comp_closed",
+            hot_node_id="node_wf",
+            candidate_mb=self.candidate_graph,
+            durability_test_result={"all_passed": True, "candidate_content_hash": self.candidate_graph.content_hash()},
+            policy=PromotionPolicy(require_durability=True, require_shadow=False, require_human_approval=True),
+            status=ProposalState.APPROVAL_READY,
+        )
+        runtime_closed.pending_reorganizations["prop_comp_closed"] = prop
+        mgr = AuthorityContext(actor_id="mgr_01", role="manager", scope="workflow", actor_type="human", authenticated_by="idp_sso")
+        runtime_closed.promote_candidate_mb("prop_comp_closed", authority=mgr, use_canary=True, canary_ratio=1.0)
+
+        efp = BusinessInput("T_CANARY_FAIL_CLOSED", "U1", "workflow", "稟議申請")
+        runtime_closed.dispatch_ticket(efp)
+        runtime_closed.rollback_active_canary(reason="ロールバック検証")
+
+        rec = runtime_closed.canary_manager.action_ledger.records[0]
+        # 未接続のため fail-closed で補償失敗 (外界が元に戻っていないのに成功と偽装しない)
+        self.assertFalse(rec.is_compensated)
+        self.assertEqual(rec.status, "failed")
+        self.assertIn("外部補償クライアント未接続", rec.compensation_result.get("reason", ""))
+
+        # 2. 外部クライアント接続時: 正常に送信され succeeded
+        comp_client = InMemoryCompensationClient(should_succeed=True)
+        runtime_connected = EnterpriseRuntime(mb_graph=self.prod_graph, theta_0=1.0, external_compensation_client=comp_client)
+        prop2 = ReorganizationProposal(
+            proposal_id="prop_comp_conn",
+            hot_node_id="node_wf",
+            candidate_mb=self.candidate_graph,
+            durability_test_result={"all_passed": True, "candidate_content_hash": self.candidate_graph.content_hash()},
+            policy=PromotionPolicy(require_durability=True, require_shadow=False, require_human_approval=True),
+            status=ProposalState.APPROVAL_READY,
+        )
+        runtime_connected.pending_reorganizations["prop_comp_conn"] = prop2
+        runtime_connected.promote_candidate_mb("prop_comp_conn", authority=mgr, use_canary=True, canary_ratio=1.0)
+
+        efp2 = BusinessInput("T_CANARY_SUCCESS", "U1", "workflow", "稟議申請")
+        runtime_connected.dispatch_ticket(efp2)
+        runtime_connected.rollback_active_canary(reason="ロールバック検証")
+
+        rec2 = runtime_connected.canary_manager.action_ledger.records[0]
+        self.assertTrue(rec2.is_compensated)
+        self.assertEqual(rec2.status, "succeeded")
+        self.assertEqual(len(comp_client.sent_reverts), 1)
+        self.assertEqual(comp_client.sent_reverts[0]["ticket_id"], "T_CANARY_SUCCESS")
 
 
 if __name__ == "__main__":

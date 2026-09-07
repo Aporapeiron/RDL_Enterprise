@@ -11,6 +11,7 @@ from .snapshot import (
     FeedbackResult,
     CaseSnapshot,
     CaseStatus,
+    FrozenInterpretationContext,
 )
 from .cascade import InterpCascade
 from .human import HumanQuery
@@ -102,6 +103,7 @@ class EnterpriseRuntime:
         auto_promote_reorganizations: bool = False,  # 破断検査合格時の自動昇格フラグ (デフォルトは厳格にFalse)
         auto_promote_authority: Optional[AuthorityContext] = None,  # 事前委任された権限コンテキスト (限定スコープ用)
         default_promotion_policy: Optional[PromotionPolicy] = None,  # カスタム昇格ポリシー (未指定時はドメイン標準)
+        external_compensation_client: Optional[Any] = None,  # 外部補償API/メッセージングクライアント (fail-closed防止)
     ):
         self.mb_graph = mb_graph or MBGraph()
         self.h_state = HState(theta_0=theta_0, gamma=gamma)
@@ -111,6 +113,7 @@ class EnterpriseRuntime:
         self.auto_promote_reorganizations = auto_promote_reorganizations
         self.auto_promote_authority = auto_promote_authority
         self.default_promotion_policy = default_promotion_policy
+        self.external_compensation_client = external_compensation_client
 
         # 非同期案件スナップショット管理
         self.pending_snapshots: Dict[str, CaseSnapshot] = {}
@@ -126,7 +129,7 @@ class EnterpriseRuntime:
         # カナリア展開・監視マネージャー (Leap後の段階的配分と自動ロールバック)
         self.canary_manager = CanaryManager()
 
-        # 外界作用ロールバック用の社内標準訂正ハンドラを登録 (fail-closed対策)
+        # 外界作用ロールバック用の社内標準訂正ハンドラを登録 (外部接続または fail-closed)
         self.canary_manager.action_ledger.executor.register_handler(
             "send_correction_or_revert",
             self._handle_correction_or_revert,
@@ -140,13 +143,22 @@ class EnterpriseRuntime:
         self.cost_tier_counts = {0: 0, 1: 0, 2: 0, 3: 0}
 
     def _handle_correction_or_revert(self, action_record: Any) -> Dict[str, Any]:
-        """社内チャット・メール等に対する訂正通知発行の実ハンドラ"""
-        notice = action_record.compensating_action.get("revert_notice", "訂正通知") if action_record.compensating_action else "訂正"
+        """
+        社内チャット・メール等に対する訂正通知発行の実ハンドラ。
+        公理B5 (Zero Trust): 外部クライアント接続時は実送信を実行し、未接続時は fail-closed (success=False) とする。
+        """
+        if self.external_compensation_client is not None:
+            if hasattr(self.external_compensation_client, "send_revert"):
+                return self.external_compensation_client.send_revert(action_record)
+            elif callable(self.external_compensation_client):
+                return self.external_compensation_client(action_record)
+
+        # 外部補償クライアント未接続時は成功と偽装せず fail-closed で遮断
         return {
-            "success": True,
+            "success": False,
             "action_id": action_record.action_id,
             "ticket_id": action_record.ticket_id,
-            "revert_notice_sent": notice,
+            "reason": "外部補償クライアント未接続 (fail-closed: 外界取り消し未確認)",
             "timestamp": datetime.utcnow().isoformat(),
         }
 
@@ -183,9 +195,21 @@ class EnterpriseRuntime:
         if authority and authority.is_authorized_for(efp.category or "general"):
             is_authoritative = True
 
-        # 2. 対象ノード取得と CaseSnapshot 作成（PENDING: 更新前 M_B 前提を凍結保存）
+        # 2. 対象ノード取得と CaseSnapshot 作成（PENDING: 更新前 M_B 前提を完全凍結保存）
         matched_node = active_graph.get(pred.matched_node_id) if pred.matched_node_id else None
         frozen_node = copy.deepcopy(matched_node) if matched_node else None
+
+        # T0 SPEC 4, 6.1: 更新前 M_B グラフ全体を不変コピー＆凍結し、完全な解釈コンテキストを生成
+        frozen_graph = MBGraph.from_dict(active_graph.to_dict())
+        frozen_graph.freeze()
+        frozen_ctx = FrozenInterpretationContext(
+            mb_version=getattr(active_graph, "version", "v1.0"),
+            mb_content_hash=getattr(active_graph, "content_hash", lambda: "unknown")(),
+            frozen_mb=frozen_graph,
+            target_domain=efp.category,
+            llm_bridge=self.cascade.llm_bridge,
+        )
+
         snapshot = CaseSnapshot(
             efp=efp,
             f_pred=pred,
@@ -193,6 +217,7 @@ class EnterpriseRuntime:
             is_authoritative=is_authoritative,
             is_canary=is_canary,
             frozen_node_snapshot=frozen_node,
+            frozen_context=frozen_ctx,
         )
         self.pending_snapshots[efp.ticket_id] = snapshot
 

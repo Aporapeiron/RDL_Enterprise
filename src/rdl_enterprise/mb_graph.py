@@ -120,15 +120,15 @@ class MBNode:
 
     def freeze(self):
         """ノードを凍結（Deep Freeze: 属性代入および内部辞書・リストの変更を封殺）"""
-        self.trigger_pattern = _deep_freeze_value(self.trigger_pattern)
-        self.action_template = _deep_freeze_value(self.action_template)
-        self.is_frozen = True
+        super().__setattr__("trigger_pattern", _deep_freeze_value(self.trigger_pattern))
+        super().__setattr__("action_template", _deep_freeze_value(self.action_template))
+        super().__setattr__("is_frozen", True)
 
     def unfreeze(self):
         """凍結解除"""
-        self.is_frozen = False
-        self.trigger_pattern = _deep_unfreeze_value(self.trigger_pattern)
-        self.action_template = _deep_unfreeze_value(self.action_template)
+        super().__setattr__("is_frozen", False)
+        super().__setattr__("trigger_pattern", _deep_unfreeze_value(self.trigger_pattern))
+        super().__setattr__("action_template", _deep_unfreeze_value(self.action_template))
 
     def inertia(self) -> float:
         """
@@ -261,10 +261,17 @@ class MBGraph:
         graph = cls(
             m0=data.get("m0", 3.0),
             version=data.get("version", "v1.0"),
-            is_frozen=data.get("is_frozen", False),
+            is_frozen=False,  # まず解凍状態で初期化
         )
         for nid, ndict in data.get("nodes", {}).items():
-            graph.nodes[nid] = MBNode(**ndict)
+            node_dict = dict(ndict)
+            node_frozen = node_dict.pop("is_frozen", False)
+            node = MBNode(**node_dict)
+            if node_frozen:
+                node.freeze()
+            graph.nodes[nid] = node
+        if data.get("is_frozen", False):
+            graph.freeze()
         return graph
 
     def save_json(self, filepath: str):

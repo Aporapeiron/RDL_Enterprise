@@ -10,7 +10,7 @@ from rdl_enterprise.authority import AuthorityContext
 from rdl_enterprise.promotion_gate import ProposalState, PromotionPolicy
 from rdl_enterprise.runtime import EnterpriseRuntime, ReorganizationProposal
 from rdl_enterprise.h_state import HeatVector
-from rdl_enterprise.canary import CanaryStatus, CanaryManager, CanaryCompletionPolicy
+from rdl_enterprise.canary import CanaryStatus, CanaryManager, CanaryCompletionPolicy, InMemoryCompensationClient
 
 
 class TestCanaryDeploymentAndRollback(unittest.TestCase):
@@ -313,7 +313,8 @@ class TestCanaryDeploymentAndRollback(unittest.TestCase):
 
     def test_action_ledger_triggers_compensating_action_on_rollback(self):
         """外界作用の追跡と補償: カナリアロールバック時に ActionLedger が補償アクションを実行・記録すること"""
-        runtime = EnterpriseRuntime(mb_graph=self.prod_graph, theta_0=1.0)
+        comp_client = InMemoryCompensationClient()
+        runtime = EnterpriseRuntime(mb_graph=self.prod_graph, theta_0=1.0, external_compensation_client=comp_client)
         prop = ReorganizationProposal(
             proposal_id="prop_ledger_01",
             hot_node_id="node_wf",
