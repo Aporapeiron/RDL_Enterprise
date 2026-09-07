@@ -120,6 +120,8 @@ class ShadowReport:
     unique_patterns_count: int = 0           # 破断面シグネチャ数 (境界・ノード・結果モード)
     covered_categories: List[str] = field(default_factory=list) # カバーされた業務カテゴリ
     diversity_score: float = 0.0             # 多様性比率 (unique_queries_count / resolved_triplets_count)
+    candidate_version: Optional[str] = None
+    candidate_content_hash: Optional[str] = None
     triplet_details: List[Dict[str, Any]] = field(default_factory=list)
 
 
@@ -139,6 +141,8 @@ class ShadowEvaluator:
         minimum_resolved_cases: int = 1,     # 合否判定に必要な最小解決事例数
     ):
         self.proposal_id = proposal_id
+        self.prod_mb = prod_mb
+        self.candidate_mb = candidate_mb
         self.prod_cascade = InterpCascade(prod_mb)
         self.shadow_cascade = InterpCascade(candidate_mb)
         self.max_allowed_regression_rate = max_allowed_regression_rate
@@ -243,6 +247,9 @@ class ShadowEvaluator:
         )))
         diversity_score = (unique_queries_count / total) if total > 0 else 0.0
 
+        cand_ver = getattr(self.candidate_mb, "version", "unknown")
+        cand_hash = self.candidate_mb.content_hash() if hasattr(self.candidate_mb, "content_hash") else None
+
         # 最小解決件数に満たない場合は証拠不十分 (passed=False)
         if total < self.minimum_resolved_cases:
             return ShadowReport(
@@ -261,6 +268,8 @@ class ShadowEvaluator:
                 unique_patterns_count=unique_patterns_count,
                 covered_categories=covered_categories,
                 diversity_score=diversity_score,
+                candidate_version=cand_ver,
+                candidate_content_hash=cand_hash,
             )
 
         improved = sum(1 for t in self.resolved_triplets if t.is_improved)
@@ -306,5 +315,7 @@ class ShadowEvaluator:
             unique_patterns_count=unique_patterns_count,
             covered_categories=covered_categories,
             diversity_score=diversity_score,
+            candidate_version=cand_ver,
+            candidate_content_hash=cand_hash,
             triplet_details=details,
         )

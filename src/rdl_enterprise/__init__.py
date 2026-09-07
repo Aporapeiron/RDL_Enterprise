@@ -42,6 +42,7 @@ from .canary import (
     CanaryCompletionPolicy,
     ActionRecord,
     ActionLedger,
+    CompensationExecutor,
 )
 from .runtime import (
     EnterpriseRuntime,
@@ -87,6 +88,7 @@ __all__ = [
     "CanaryCompletionPolicy",
     "ActionRecord",
     "ActionLedger",
+    "CompensationExecutor",
     "EnterpriseRuntime",
     "TicketExecutionResult",
     "TicketDispatchResult",

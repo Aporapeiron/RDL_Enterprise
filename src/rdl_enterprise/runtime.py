@@ -190,7 +190,8 @@ class EnterpriseRuntime:
             action_taken = "human_assisted"
             final_output = human_override_answer
             # 正式な権限者指示の場合のみ即時沈澱
-            if is_authoritative:
+            # ※ ただし Canary 案件の場合は候補 M_B' の Freeze 原則および旧本番保護のため直接の沈澱を遮断
+            if is_authoritative and not is_canary:
                 self.cascade.crystallize_rule(efp, human_override_answer, efp.category or "general", approved=True)
         else:
             action_taken = pred.action_type
@@ -199,7 +200,11 @@ class EnterpriseRuntime:
         # 5. 外界作用台帳 (ActionLedger) への記録 (Model Rollback / World Rollback 追跡)
         mb_ver = getattr(active_graph, "version", "prod")
         compensating_action = None
-        if is_canary:
+        dep_id = None
+        prop_id = None
+        if is_canary and self.canary_manager.active_deployment:
+            dep_id = self.canary_manager.active_deployment.deployment_id
+            prop_id = self.canary_manager.active_deployment.proposal_id
             compensating_action = {
                 "type": "send_correction_or_revert",
                 "original_output": final_output,
@@ -212,6 +217,8 @@ class EnterpriseRuntime:
             is_canary=is_canary,
             action_type=action_taken,
             payload=final_output,
+            deployment_id=dep_id,
+            proposal_id=prop_id,
             is_reversible=True,
             compensating_action=compensating_action,
         )
@@ -264,7 +271,9 @@ class EnterpriseRuntime:
 
         promoted_to_mb = False
         # 学習ガバナンス：成功確認後にのみ M_B へ昇格（沈澱）
-        if snapshot.status == CaseStatus.SUCCESS and snapshot.candidate_knowledge and not snapshot.is_authoritative:
+        # ※ ただし Canary 期間中は候補 M_B' の Freeze 原則 (Identity Drift 防止) のため、
+        #    Canary 経由での候補直接学習・結晶化はスキップする
+        if not snapshot.is_canary and snapshot.status == CaseStatus.SUCCESS and snapshot.candidate_knowledge and not snapshot.is_authoritative:
             target_cascade.crystallize_rule(
                 snapshot.efp,
                 snapshot.candidate_knowledge,
@@ -320,7 +329,9 @@ class EnterpriseRuntime:
                 )
         else:
             # 通常運転：局所更新 (dM_B/dt)
-            if matched_node:
+            # ※ ただし Canary 期間中は候補 M_B' は完全 Freeze (Identity Drift 防止) のため、
+            #    旧本番・新候補ともにノード統計更新をスキップ（熱 H_canary のみで監視）
+            if matched_node and not snapshot.is_canary:
                 if feedback.user_resolved and not feedback.human_rejected:
                     matched_node.record_success(approved=feedback.human_approved)
                 else:
@@ -382,9 +393,13 @@ class EnterpriseRuntime:
         3. DurabilityHarness による破断検査（履歴・境界）を実行
         4. プロポーザルとして登録
         """
-        # 1. 候補 M_B' の起草（ディープコピー）
+        # 1. 候補 M_B' の起草（ディープコピーと一意な候補バージョンの自動採番）
         candidate_dict = self.mb_graph.to_dict()
         candidate_mb = MBGraph.from_dict(candidate_dict)
+
+        proposal_id = f"prop_{len(self.reorganization_history) + len(self.pending_reorganizations) + 1:03d}"
+        parent_ver = getattr(self.mb_graph, "version", "v1.0")
+        candidate_mb.version = f"{parent_ver}-cand-{proposal_id}"
 
         # 2. 該当ノードの再編
         node = candidate_mb.get(hot_node_id)
@@ -408,9 +423,9 @@ class EnterpriseRuntime:
             durability_result=test_result,
             shadow_report=None,
             policy=policy,
+            candidate_mb=candidate_mb,
         )
 
-        proposal_id = f"prop_{len(self.reorganization_history) + len(self.pending_reorganizations) + 1:03d}"
         proposal = ReorganizationProposal(
             proposal_id=proposal_id,
             hot_node_id=hot_node_id,
@@ -449,12 +464,13 @@ class EnterpriseRuntime:
         if self.active_shadow_evaluator and self.active_shadow_evaluator.proposal_id == proposal_id:
             proposal.shadow_report = self.active_shadow_evaluator.generate_report()
 
-        # ゲート1：昇格準備性 (Readiness) の検証 (Durability / Shadow / Evidence)
+        # ゲート1：昇格準備性 (Readiness) の検証 (Durability / Shadow / Evidence / Hash Binding)
         gate_res = PromotionGate.evaluate_readiness(
             current_state=proposal.status,
             durability_result=proposal.durability_test_result,
             shadow_report=proposal.shadow_report,
             policy=proposal.policy,
+            candidate_mb=proposal.candidate_mb,
         )
         proposal.status = gate_res.next_state
         proposal.reasons = gate_res.reasons

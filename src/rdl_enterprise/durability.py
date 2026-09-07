@@ -10,6 +10,8 @@ class DurabilityReport:
     score: float                  # 耐久スコア [0.0, 1.0]
     break_points: List[str]       # 破断が検知された箇所・チケットID等
     details: Dict[str, Any] = field(default_factory=dict)
+    candidate_version: Optional[str] = None
+    candidate_content_hash: Optional[str] = None
 
 
 class DurabilityChecker(Protocol):
@@ -215,8 +217,13 @@ class DurabilityHarness:
         all_passed = True
         total_score = 0.0
 
+        cand_ver = getattr(candidate_mb, "version", "unknown")
+        cand_hash = candidate_mb.content_hash() if hasattr(candidate_mb, "content_hash") else None
+
         for chk in self.checkers:
             rep = chk.test(candidate_mb, history)
+            rep.candidate_version = cand_ver
+            rep.candidate_content_hash = cand_hash
             reports.append(rep)
             if not rep.passed:
                 all_passed = False
@@ -227,6 +234,8 @@ class DurabilityHarness:
         return {
             "all_passed": all_passed,
             "overall_score": avg_score,
+            "candidate_version": cand_ver,
+            "candidate_content_hash": cand_hash,
             "reports": [
                 {
                     "checker": r.checker_name,
@@ -234,6 +243,8 @@ class DurabilityHarness:
                     "score": r.score,
                     "break_points": r.break_points,
                     "details": r.details,
+                    "candidate_version": r.candidate_version,
+                    "candidate_content_hash": r.candidate_content_hash,
                 }
                 for r in reports
             ],

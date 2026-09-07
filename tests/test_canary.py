@@ -212,10 +212,13 @@ class TestCanaryDeploymentAndRollback(unittest.TestCase):
         canary_node_heat = runtime.h_state.get_heat_for_version("node_wf", "v2.0")
         self.assertGreater(canary_node_heat.total(), 0.0)
 
-    def test_canary_learning_updates_candidate_node_not_prod_node(self):
-        """局所学習先の厳格分離: カナリア成功時のルール結晶化/更新が候補 M_B' のみに反映され、旧本番は不変であること"""
+    def test_canary_candidate_immutability_and_prod_isolation(self):
+        """候補の不変性(Freeze)と旧本番の隔離: カナリア中の成功や回答によって候補 M_B' も旧本番 M_B も一切変質しないこと (公理B5)"""
         self.prod_graph.version = "v1.0"
         self.candidate_graph.version = "v2.0"
+        initial_cand_hash = self.candidate_graph.content_hash()
+        initial_prod_hash = self.prod_graph.content_hash()
+
         runtime = EnterpriseRuntime(mb_graph=self.prod_graph, theta_0=5.0)
 
         prop = ReorganizationProposal(
@@ -238,19 +241,23 @@ class TestCanaryDeploymentAndRollback(unittest.TestCase):
 
         runtime.promote_candidate_mb("prop_learn_iso", authority=mgr, use_canary=True, canary_ratio=1.0)
 
+        # カナリア候補グラフが Freeze されていること
+        self.assertTrue(runtime.canary_manager.active_deployment.canary_mb.is_frozen)
+
         # 未学習パターンの入力をカナリアでディスパッチ (人間オペレーターの回答付き)
         efp = BusinessInput("T_CANARY_LEARN_01", "U1", "workflow", "稟議の例外ルート申請")
-        runtime.dispatch_ticket(efp, human_override_answer="特別ルート案内")
+        runtime.dispatch_ticket(efp, human_override_answer="特別ルート案内", authority=mgr)
 
-        # 成功解決フィードバックによりルール結晶化
+        # 成功解決フィードバック
         runtime.resolve_ticket_feedback("T_CANARY_LEARN_01", FeedbackResult(user_resolved=True))
 
-        # 1. 旧本番グラフには新ルールノードが存在しないこと
+        # 1. 旧本番グラフに新ルールが沈澱・汚染されていないこと、かつハッシュ不変
         self.assertNotIn("node_learned_002", runtime.mb_graph.nodes)
+        self.assertEqual(runtime.mb_graph.content_hash(), initial_prod_hash)
 
-        # 2. カナリア候補グラフ側には新ルールノードが追加されていること
+        # 2. カナリア候補グラフ側も完全 Freeze が維持され、勝手に変質(M_B''化)していないこと
         canary_graph = runtime.canary_manager.active_deployment.canary_mb
-        self.assertIn("node_learned_002", canary_graph.nodes)
+        self.assertEqual(canary_graph.content_hash(), initial_cand_hash)
 
     def test_canary_completion_policy_blocks_premature_commit(self):
         """エビデンスゲート: 0件処理や基準未達でのコミット試行が確実に拒否されること"""

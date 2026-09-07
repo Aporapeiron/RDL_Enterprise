@@ -128,8 +128,31 @@ class PromotionGate:
         durability_result: Optional[Dict[str, Any]],
         shadow_report: Optional[ShadowReport],
         policy: PromotionPolicy,
+        candidate_mb: Optional[Any] = None,
     ) -> GateEvaluationResult:
         reasons = []
+
+        # 0. 候補実体とのハッシュバインディング検証 (公理B5: Identity Drift の防止)
+        if candidate_mb and hasattr(candidate_mb, "content_hash"):
+            current_hash = candidate_mb.content_hash()
+            if durability_result and "candidate_content_hash" in durability_result:
+                dur_hash = durability_result.get("candidate_content_hash")
+                if dur_hash and dur_hash != current_hash:
+                    return GateEvaluationResult(
+                        can_promote=False,
+                        current_state=current_state,
+                        next_state=ProposalState.REJECTED,
+                        reasons=[f"Durability検査時の候補ハッシュと現在の候補ハッシュが一致しません (Identity Drift検知: {dur_hash} != {current_hash})"],
+                    )
+            if shadow_report and shadow_report.candidate_content_hash:
+                shad_hash = shadow_report.candidate_content_hash
+                if shad_hash != current_hash:
+                    return GateEvaluationResult(
+                        can_promote=False,
+                        current_state=current_state,
+                        next_state=ProposalState.REJECTED,
+                        reasons=[f"Shadow検査時の候補ハッシュと現在の候補ハッシュが一致しません (Identity Drift検知: {shad_hash} != {current_hash})"],
+                    )
 
         # 1. すでに終端状態の場合
         if current_state in (ProposalState.PROMOTED, ProposalState.REJECTED):

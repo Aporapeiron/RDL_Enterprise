@@ -42,21 +42,42 @@ class ActionRecord:
     is_canary: bool
     action_type: str                               # "direct_reply" | "tool_call" | "email" | "db_write" | "external_api"
     payload: Any
+    deployment_id: Optional[str] = None            # 実行時のカナリア展開セッションID (スコープ境界)
+    proposal_id: Optional[str] = None              # 紐づく再編プロポーザルID
     is_reversible: bool = True                     # 可逆（取り消し可能）か
     compensating_action: Optional[Dict[str, Any]] = None # 補償アクション (Undo定義)
     executed_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
-    status: str = "executed"                       # "executed" | "compensated" | "dry_run" | "uncompensated_irreversible"
+    status: str = "executed"                       # "executed" | "compensation_recorded" | "compensated" | "dry_run" | "uncompensated_irreversible"
     compensation_executed_at: Optional[str] = None
+    compensation_result: Optional[Dict[str, Any]] = None
 
     @property
     def is_compensated(self) -> bool:
-        return self.status == "compensated"
+        return self.status in ("compensated", "compensation_recorded")
+
+
+class CompensationExecutor:
+    """外界作用の補償 (World Rollback) 実行インターフェース"""
+    def execute_compensation(self, action_record: ActionRecord) -> Dict[str, Any]:
+        """
+        補償アクション（Undo API、訂正メッセージ送信等）を外界システムに対して実行する。
+        デフォルトは安全な記録・通知実行。
+        """
+        if not action_record.compensating_action:
+            return {"success": False, "reason": "補償アクション未定義"}
+        return {
+            "success": True,
+            "action_id": action_record.action_id,
+            "executed_type": action_record.compensating_action.get("type", "default_revert"),
+            "timestamp": datetime.utcnow().isoformat(),
+        }
 
 
 class ActionLedger:
     """外界作用監査台帳 (Model Rollback と World Rollback の架け橋)"""
-    def __init__(self):
+    def __init__(self, default_executor: Optional[CompensationExecutor] = None):
         self.records: List[ActionRecord] = []
+        self.executor = default_executor or CompensationExecutor()
 
     def record_action(
         self,
@@ -65,6 +86,8 @@ class ActionLedger:
         is_canary: bool,
         action_type: str,
         payload: Any,
+        deployment_id: Optional[str] = None,
+        proposal_id: Optional[str] = None,
         is_reversible: bool = True,
         compensating_action: Optional[Dict[str, Any]] = None,
     ) -> ActionRecord:
@@ -76,32 +99,48 @@ class ActionLedger:
             is_canary=is_canary,
             action_type=action_type,
             payload=payload,
+            deployment_id=deployment_id,
+            proposal_id=proposal_id,
             is_reversible=is_reversible,
             compensating_action=compensating_action,
         )
         self.records.append(rec)
         return rec
 
-    def compensate_canary_actions(self, proposal_id: str) -> List[Dict[str, Any]]:
-        """カナリア期間中に実行された作用に対して補償アクションを実行"""
+    def compensate_canary_actions(
+        self,
+        deployment_id: str,
+        executor: Optional[CompensationExecutor] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        ロールバック対象の deployment_id に限定して補償アクションを実行
+        (他セッションのカナリア作用や本番作用を巻き込まないスコープ境界)
+        """
+        active_executor = executor or self.executor
         compensated = []
+
         for rec in reversed(self.records):
-            if rec.is_canary and rec.status == "executed":
+            if rec.deployment_id == deployment_id and rec.is_canary and rec.status == "executed":
                 if rec.compensating_action:
-                    rec.status = "compensated"
+                    exec_res = active_executor.execute_compensation(rec)
+                    rec.status = "compensated" if exec_res.get("success") else "compensation_recorded"
                     rec.compensation_executed_at = datetime.utcnow().isoformat()
+                    rec.compensation_result = exec_res
                     compensated.append({
                         "action_id": rec.action_id,
                         "ticket_id": rec.ticket_id,
+                        "deployment_id": rec.deployment_id,
                         "action_type": rec.action_type,
                         "compensating_action": rec.compensating_action,
-                        "status": "compensated",
+                        "status": rec.status,
+                        "executor_result": exec_res,
                     })
                 else:
-                    rec.status = "uncompensated_irreversible" if not rec.is_reversible else "acknowledged"
+                    rec.status = "uncompensated_irreversible" if not rec.is_reversible else "compensation_recorded"
                     compensated.append({
                         "action_id": rec.action_id,
                         "ticket_id": rec.ticket_id,
+                        "deployment_id": rec.deployment_id,
                         "action_type": rec.action_type,
                         "status": rec.status,
                         "warning": "補償アクションが未定義です",
@@ -112,14 +151,17 @@ class ActionLedger:
 @dataclass
 class CanaryDeployment:
     """カナリア展開セッション情報"""
+    deployment_id: str
     proposal_id: str
     prod_mb_backup: MBGraph                     # ロールバック用の旧本番スナップショット
-    canary_mb: MBGraph                          # 新昇格候補グラフ
+    canary_mb: MBGraph                          # 新昇格候補グラフ (Freeze済み)
     target_domain: str                          # 対象業務ドメイン
     traffic_ratio: float = 0.1                  # カナリア配分率 [0.0, 1.0] (初期10%)
     status: CanaryStatus = CanaryStatus.ACTIVE
     theta_canary: float = 1.5                   # カナリア許容発熱閾値
     max_allowed_failures: int = 1               # 許容失敗・差し戻し件数
+    candidate_version: str = "unknown"          # 候補バージョン
+    candidate_content_hash: str = "unknown"     # 候補の決定論的コンテンツハッシュ
     canary_cases_count: int = 0                 # カナリア処理総数
     canary_success_count: int = 0               # カナリア成功数
     canary_failure_count: int = 0               # カナリア失敗数
@@ -152,12 +194,21 @@ class CanaryManager:
         theta_canary: float = 1.5,
         max_allowed_failures: int = 1,
     ) -> CanaryDeployment:
-        """新規カナリア展開を開始 (旧本番のバックアップを隔離保存)"""
+        """新規カナリア展開を開始 (旧本番のバックアップを隔離保存し、候補を完全Freeze)"""
         # 旧本番のディープコピー保存
         backup_dict = current_prod_mb.to_dict()
         prod_backup = MBGraph.from_dict(backup_dict)
 
+        # 候補グラフを完全 Freeze（Canary 期間中の局所学習・Identity Drift を防止）
+        if hasattr(candidate_mb, "freeze"):
+            candidate_mb.freeze()
+
+        cand_ver = getattr(candidate_mb, "version", "unknown")
+        cand_hash = candidate_mb.content_hash() if hasattr(candidate_mb, "content_hash") else "unknown"
+        dep_id = f"dep_{proposal_id}_{len(self.deployment_history) + 1:03d}"
+
         deployment = CanaryDeployment(
+            deployment_id=dep_id,
             proposal_id=proposal_id,
             prod_mb_backup=prod_backup,
             canary_mb=candidate_mb,
@@ -165,6 +216,8 @@ class CanaryManager:
             traffic_ratio=initial_ratio,
             theta_canary=theta_canary,
             max_allowed_failures=max_allowed_failures,
+            candidate_version=cand_ver,
+            candidate_content_hash=cand_hash,
         )
         self.active_deployment = deployment
         return deployment
@@ -277,30 +330,46 @@ class CanaryManager:
         return (len(reasons) == 0), reasons
 
     def complete_rollout(self, policy: Optional[CanaryCompletionPolicy] = None) -> Optional[MBGraph]:
-        """全面展開完了: カナリア新 M_B' を本番として確定 (ポリシー指定時は検証実行)"""
+        """
+        全面展開完了: カナリア新 M_B' を本番として確定。
+        ポリシー未指定時でもデフォルトの CanaryCompletionPolicy を強制適用し、
+        さらに検査時の candidate_content_hash との完全一致を検証する (公理B5)。
+        """
         if not self.active_deployment or self.active_deployment.status != CanaryStatus.ACTIVE:
             return None
 
-        if policy is not None:
-            can_complete, reasons = self.evaluate_completion_readiness(policy)
-            if not can_complete:
-                return None
+        effective_policy = policy or CanaryCompletionPolicy()
+        can_complete, reasons = self.evaluate_completion_readiness(effective_policy)
+        if not can_complete:
+            return None
 
         dep = self.active_deployment
+
+        # ハッシュ一致検証 (Freeze状態が維持され、1ビットも変質していないこと)
+        if hasattr(dep.canary_mb, "content_hash"):
+            current_hash = dep.canary_mb.content_hash()
+            if dep.candidate_content_hash != "unknown" and current_hash != dep.candidate_content_hash:
+                # 候補の変質（Identity Drift）を検知したためロールバック
+                self.trigger_rollback(f"コミット時ハッシュ不一致検知 (Identity Drift: {current_hash} != {dep.candidate_content_hash})")
+                return None
+
         dep.status = CanaryStatus.COMPLETED
         dep.traffic_ratio = 1.0
         dep.completed_at = datetime.utcnow().isoformat()
+        if hasattr(dep.canary_mb, "unfreeze"):
+            dep.canary_mb.unfreeze()  # 本番運用移行のため凍結解除
         self.deployment_history.append(dep)
         self.active_deployment = None
         return dep.canary_mb
 
-    def trigger_rollback(self, reason: str) -> Optional[MBGraph]:
-        """自動または手動ロールバック: 旧本番 M_B を復元し、外界補償アクションを実行"""
+    def trigger_rollback(self, reason: str, executor: Optional[CompensationExecutor] = None) -> Optional[MBGraph]:
+        """自動または手動ロールバック: 旧本番 M_B を復元し、該当 deployment_id の外界補償アクションを実行"""
         if not self.active_deployment or self.active_deployment.status != CanaryStatus.ACTIVE:
             return None
 
         dep = self.active_deployment
-        comp_logs = self.action_ledger.compensate_canary_actions(dep.proposal_id)
+        # 該当セッション(deployment_id)にスコープを限定して補償実行
+        comp_logs = self.action_ledger.compensate_canary_actions(dep.deployment_id, executor=executor)
         dep.status = CanaryStatus.ROLLED_BACK
         dep.rolled_back_at = datetime.utcnow().isoformat()
         dep.rollback_reason = reason
