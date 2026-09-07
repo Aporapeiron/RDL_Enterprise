@@ -130,8 +130,8 @@ class TestRelationConstraintLocator(unittest.TestCase):
         locator = RelationConstraintLocator()
         bundles = locator.locate(graph, ctx)
 
-        stale_bundle = next((b for b in bundles if "stale_node" in b.node_ids), None)
-        fresh_bundle = next((b for b in bundles if "fresh_node" in b.node_ids), None)
+        stale_bundle = next((b for b in bundles if b.primary_node_id() == "stale_node"), None)
+        fresh_bundle = next((b for b in bundles if b.primary_node_id() == "fresh_node"), None)
 
         self.assertIsNotNone(stale_bundle)
         self.assertIsNotNone(fresh_bundle)
@@ -698,6 +698,138 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
         # t_feedback から見て 90日経過 -> 半減期90日により time_factor = 0.5 -> C_prime = 0.5
         c_prime_stale = compute_efp_prime_constraint(fb_stale, snapshot, current_time=t_feedback)
         self.assertAlmostEqual(c_prime_stale, 0.5, places=2)
+
+    def test_c_prime_scope_relative_constraint(self):
+        """BASE v2.0: C_prime は絶対値ではなく「問い・管轄スコープとの関係」で相対的に立ち上がる"""
+        from rdl_enterprise.snapshot import FeedbackResult, RelationProvenance, BusinessInput, CaseSnapshot, InterpretationPrediction
+        from rdl_enterprise.constraint import compute_efp_prime_constraint
+
+        # HR admin の来歴
+        prov_hr_admin = RelationProvenance(
+            source_type="admin",
+            authority_level="human_only",
+            authority_scope="hr",
+        )
+        fb = FeedbackResult(user_resolved=False, human_rejected=True, provenance=prov_hr_admin)
+
+        # 1. 人事ドメインのチケット (管轄内)
+        snap_hr = CaseSnapshot(
+            efp=BusinessInput("T_HR_01", "U1", "hr", "有給休暇の申請"),
+            f_pred=InterpretationPrediction(action_type="direct_reply", content="旧規定", confidence=0.8, matched_node_id="n1", cost_tier=1, domain="hr"),
+        )
+        c_prime_in_scope = compute_efp_prime_constraint(fb, snap_hr)
+        # 管轄内なので 0.95
+        self.assertEqual(c_prime_in_scope, 0.95)
+
+        # 2. セキュリティ/インフラドメインのチケット (管轄外)
+        snap_sec = CaseSnapshot(
+            efp=BusinessInput("T_SEC_01", "U1", "security", "本番DBの決済API鍵"),
+            f_pred=InterpretationPrediction(action_type="direct_reply", content="旧規定", confidence=0.8, matched_node_id="n2", cost_tier=1, domain="security"),
+        )
+        c_prime_out_of_scope = compute_efp_prime_constraint(fb, snap_sec)
+        # 管轄外ペナルティ (scope_factor = 0.5) により半減
+        self.assertAlmostEqual(c_prime_out_of_scope, 0.95 * 0.5, places=2)
+        self.assertLess(c_prime_out_of_scope, 0.50)
+
+    def test_c_prime_claim_type_relevance(self):
+        """言明タイプ (claim_type) と情報源の適合性: 監査ログは事実記録に強く、主観意見には控えめ"""
+        from rdl_enterprise.snapshot import FeedbackResult, RelationProvenance
+        from rdl_enterprise.constraint import compute_efp_prime_constraint
+
+        # 1. audit log による確定事実記録 (fact)
+        prov_fact = RelationProvenance(
+            source_type="audit",
+            channel="audit_log",
+            claim_type="fact",
+        )
+        fb_fact = FeedbackResult(user_resolved=False, human_rejected=True, provenance=prov_fact)
+        c_fact = compute_efp_prime_constraint(fb_fact)
+        # 0.90 + 0.10(audit_log) = 1.0 * 1.05 = 1.05 -> min(1.0) = 1.0
+        self.assertEqual(c_fact, 1.0)
+
+        # 2. audit による裁量・主観的意見 (judgment)
+        prov_judgment = RelationProvenance(
+            source_type="audit",
+            channel="standard",
+            claim_type="judgment",
+        )
+        fb_judgment = FeedbackResult(user_resolved=False, human_rejected=True, provenance=prov_judgment)
+        c_judgment = compute_efp_prime_constraint(fb_judgment)
+        # 0.90 * 0.80 = 0.72
+        self.assertAlmostEqual(c_judgment, 0.72, places=2)
+        self.assertLess(c_judgment, c_fact)
+
+    def test_relation_dependent_freshness_decay(self):
+        """関係相対的な時間減衰: 確定事実は古くても弱まらず、手続き規則やセッション状態は減衰する"""
+        from datetime import datetime, timezone, timedelta
+        from rdl_enterprise.snapshot import FeedbackResult, RelationProvenance
+        from rdl_enterprise.constraint import compute_efp_prime_constraint
+
+        now = datetime(2026, 9, 1, 12, 0, 0, tzinfo=timezone.utc)
+        one_year_ago = now - timedelta(days=365)
+
+        # 1. 1年前の確定事実 (fact: ログや発生記録) -> 半減期 ∞、減衰なし
+        prov_fact = RelationProvenance(
+            source_type="audit",
+            observed_at=one_year_ago,
+            relation_type="fact",
+        )
+        fb_fact = FeedbackResult(user_resolved=False, human_rejected=True, provenance=prov_fact)
+        c_fact = compute_efp_prime_constraint(fb_fact, current_time=now)
+        # 減衰しない
+        self.assertAlmostEqual(c_fact, 0.90, places=2)
+
+        # 2. 1年前の通常の手続き規則 (rule: マニュアル等) -> 半減期 90日、約 4半減期経過
+        prov_rule = RelationProvenance(
+            source_type="audit",
+            observed_at=one_year_ago,
+            relation_type="rule",
+        )
+        fb_rule = FeedbackResult(user_resolved=False, human_rejected=True, provenance=prov_rule)
+        c_rule = compute_efp_prime_constraint(fb_rule, current_time=now)
+        # 0.90 * (0.5 ** (365/90)) = 0.90 * 0.0598 = 0.0538 -> max(0.1) = 0.10
+        self.assertEqual(c_rule, 0.10)
+
+        # 3. 10日前のセッション・リアルタイム状態 (ephemeral) -> 半減期 3日、3半減期以上経過
+        ten_days_ago = now - timedelta(days=10)
+        prov_ephemeral = RelationProvenance(
+            source_type="senior",
+            authority_level="require_approval",
+            observed_at=ten_days_ago,
+            relation_type="ephemeral",
+        )
+        fb_ephemeral = FeedbackResult(user_resolved=False, human_rejected=True, provenance=prov_ephemeral)
+        c_ephemeral = compute_efp_prime_constraint(fb_ephemeral, current_time=now)
+        # 0.85 * (0.5 ** (10/3)) = 0.85 * 0.099 = 0.084 -> max(0.1) = 0.10
+        self.assertEqual(c_ephemeral, 0.10)
+
+    def test_multi_node_constraint_bundle(self):
+        """関係の束 (ConstraintBundle): 同一ドメインの共起・支援ノードが束ねられること"""
+        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.constraint import RelationConstraintLocator, ConstraintContext
+
+        graph = MBGraph()
+        n1 = MBNode(id="node_pay_1", domain="finance", trigger_pattern={"exact_keys": ["請求書支払"]}, action_template={"type": "direct_reply", "payload": "A"})
+        n2 = MBNode(id="node_pay_2", domain="finance", trigger_pattern={"exact_keys": ["請求書支払", "振込"]}, action_template={"type": "direct_reply", "payload": "B"})
+        n3 = MBNode(id="node_pay_3", domain="finance", trigger_pattern={"exact_keys": ["経費精算"]}, action_template={"type": "direct_reply", "payload": "C"})
+        n4 = MBNode(id="node_hr_1", domain="hr", trigger_pattern={"exact_keys": ["有給休暇"]}, action_template={"type": "direct_reply", "payload": "D"})
+
+        graph.add_or_update(n1)
+        graph.add_or_update(n2)
+        graph.add_or_update(n3)
+        graph.add_or_update(n4)
+
+        locator = RelationConstraintLocator()
+        efp = _make_efp("請求書支払の手順")
+        ctx = ConstraintContext(efp=efp, active_domain="finance")
+
+        bundle = locator.locate_bundle_for_node(graph, n1, ctx)
+        self.assertEqual(bundle.primary_node_id(), "node_pay_1")
+        # 同一ドメインでキーまたはアクションを共有するノード群が束ねられている
+        self.assertGreater(len(bundle.node_ids), 1)
+        self.assertIn("node_pay_2", bundle.supporting_node_ids)
+        # 他ドメイン(hr)のノードは束に含まれない
+        self.assertNotIn("node_hr_1", bundle.node_ids)
 
 
 if __name__ == "__main__":

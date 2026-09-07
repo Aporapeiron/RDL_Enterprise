@@ -102,6 +102,11 @@ class ConstraintBundle:
         """代表ノード ID（最初の要素）"""
         return self.node_ids[0] if self.node_ids else None
 
+    @property
+    def supporting_node_ids(self) -> List[str]:
+        """束に含まれる支援・共起ノード群（代表ノード以外）"""
+        return self.node_ids[1:] if len(self.node_ids) > 1 else []
+
 
 # ---------------------------------------------------------------------------
 # RuptureResult: 破断検査の結果
@@ -270,7 +275,46 @@ def compute_efp_prime_constraint(
     if getattr(feedback, "new_knowledge_provided", None):
         substance += 0.10
 
-    # 3. 時点拘束 (observed_at の新鮮さ)
+    # 3. 問い・ドメインに対する管轄スコープ適合度 (Scope / Domain Relevance: BASE v2.0 §4.2)
+    # 権限や拘束は絶対値ではなく「その問い・ドメインに対して強いか」で立ち上がる
+    # 例: HR部門adminは人事(hr)には強いが、インフラ(security/infra)には管轄外
+    scope_factor = 1.0
+    authority_scope = getattr(prov, "authority_scope", None) if prov else None
+    target_domain = None
+    if snapshot and getattr(snapshot, "efp", None):
+        target_domain = getattr(snapshot.efp, "category", None)
+    elif snapshot and getattr(snapshot, "f_pred", None):
+        target_domain = getattr(snapshot.f_pred, "domain", None)
+
+    if authority_scope is not None and target_domain:
+        norm_scope = authority_scope.lower().strip()
+        norm_target = target_domain.lower().strip()
+        if norm_scope in ("*", "__any__", "any", "global", "all"):
+            scope_factor = 1.0
+        elif norm_scope == norm_target:
+            scope_factor = 1.0
+        else:
+            # 明示された管轄外への言及（他ドメインへの口出し）に対する拘束力減衰
+            scope_factor = 0.5
+
+    # 4. 言明タイプ (claim_type) と情報源の適合性
+    # - fact (確定事実・操作記録): 監査ログ (audit) や公式決定で最大拘束 (1.0)
+    # - judgment (裁量意見): 管理者/監査であっても主観的意見は事実言明より控えめに評価
+    claim_type = getattr(prov, "claim_type", "general") if prov else "general"
+    claim_factor = 1.0
+    if claim_type == "fact":
+        if getattr(prov, "source_type", "") == "audit" or getattr(prov, "channel", "") in ("audit_log", "official_doc"):
+            claim_factor = 1.05
+    elif claim_type == "judgment":
+        if getattr(prov, "source_type", "") in ("admin", "audit"):
+            claim_factor = 0.80
+
+    # 5. 時点拘束 (observed_at) の関係相対的な時間減衰 (Relation-dependent Freshness Decay)
+    # 「古いから弱い」のではなく、「この関係の性質において時間経過がどの程度拘束を切るか」を評価
+    # - fact (確定事実・ログ): 過去に起きた事実の拘束力は古くなっても減衰しない (半減期 ∞)
+    # - policy / institutional (制度・法的決定・基本規程): 半減期 730日 (2年)
+    # - rule / procedural (マニュアル・通常規則): 半減期 90日 (標準)
+    # - ephemeral / operational (セッション・リアルタイム状態): 半減期 3日
     time_factor = 1.0
     obs_at = getattr(prov, "observed_at", None) if prov else None
     if obs_at is not None:
@@ -282,11 +326,31 @@ def compute_efp_prime_constraint(
             if now.tzinfo is None:
                 now = now.replace(tzinfo=timezone.utc)
             elapsed_days = max(0.0, (now - obs_at).total_seconds() / 86400.0)
-            time_factor = math.exp(-math.log(2) * elapsed_days / 90.0)
+
+            relation_type = getattr(prov, "relation_type", None) or claim_type
+            if relation_type == "fact":
+                half_life = float("inf")
+            elif relation_type in ("policy", "institutional", "legal"):
+                half_life = 730.0  # 2年
+            elif relation_type in ("ephemeral", "operational", "status"):
+                half_life = 3.0    # 3日
+            else:
+                half_life = 90.0   # 標準 (rule / procedural)
+
+            if math.isinf(half_life):
+                time_factor = 1.0
+            else:
+                time_factor = math.exp(-math.log(2) * elapsed_days / half_life)
         except Exception:
             time_factor = 1.0
 
-    c_prime = min(1.0, (auth_weight + substance) * time_factor)
+    # 制度的公式決定 (is_authoritative=True) かつ管轄内の場合は 1.0 を保証
+    if prov and getattr(prov, "is_authoritative", False) and scope_factor >= 1.0 and time_factor >= 0.99:
+        c_prime = 1.0
+    else:
+        effective_score = (auth_weight + substance) * scope_factor * claim_factor
+        c_prime = min(1.0, effective_score * time_factor)
+
     return max(0.1, float(c_prime))
 
 
@@ -362,8 +426,26 @@ class RelationConstraintLocator:
         elif src > 0.7:
             locus_type = "source"
 
+        # 関連ノード（同一ドメイン内でトリガーキーやアクションを共有・支援する共起ルール群）を束ねる
+        # BASE v2.0: 単一ノード属性ではなく「関係の束 (ConstraintBundle)」として拘束位置を表現
+        bundle_node_ids = [node.id]
+        if hasattr(mb_graph, "list_nodes"):
+            try:
+                my_keys = set(k.lower() for k in keys)
+                my_act = node.action_template.get("type") if hasattr(node, "action_template") else None
+                for other in mb_graph.list_nodes():
+                    if other.id != node.id and other.domain == node.domain:
+                        other_keys = set(k.lower() for k in other.trigger_pattern.get("exact_keys", []))
+                        other_act = other.action_template.get("type") if hasattr(other, "action_template") else None
+                        if (other_keys & my_keys) or (my_act and other_act == my_act):
+                            bundle_node_ids.append(other.id)
+                            if len(bundle_node_ids) >= 5:
+                                break
+            except Exception:
+                pass
+
         return ConstraintBundle(
-            node_ids=[node.id],
+            node_ids=bundle_node_ids,
             locus_type=locus_type,
             constraint_score=score,
             relevance=rel,
@@ -463,8 +545,20 @@ class RelationConstraintLocator:
                 locus_type = "source"
 
             if score > 0.0:
+                bundle_node_ids = [node.id]
+                my_keys = set(k.lower() for k in node.trigger_pattern.get("exact_keys", []))
+                my_act = node.action_template.get("type") if hasattr(node, "action_template") else None
+                for other in eligible_nodes:
+                    if other.id != node.id:
+                        other_keys = set(k.lower() for k in other.trigger_pattern.get("exact_keys", []))
+                        other_act = other.action_template.get("type") if hasattr(other, "action_template") else None
+                        if (other_keys & my_keys) or (my_act and other_act == my_act):
+                            bundle_node_ids.append(other.id)
+                            if len(bundle_node_ids) >= 5:
+                                break
+
                 bundles.append(ConstraintBundle(
-                    node_ids=[node.id],
+                    node_ids=bundle_node_ids,
                     locus_type=locus_type,
                     constraint_score=score,
                     relevance=d.get("relevance", 0.0),

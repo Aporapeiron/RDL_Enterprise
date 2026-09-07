@@ -40,12 +40,15 @@ class RelationProvenance:
     後続作用 EFP' や関係入力の来歴・制度的位置付け (BASE v2.0 §4.2)
     「誰が・どの関係位置から・何を・いつ・どの媒体/制度経路を通して報告したか」を構造化。
     """
-    source_type: str = "user"           # "user" | "senior" | "admin" | "oracle" | "audit" | "system"
-    authority_level: str = "auto"       # "auto" | "require_approval" | "human_only"
+    source_type: str = "user"           # "user" | "senior" | "admin" | "oracle" | "audit" | "system" | "human_feedback"
+    authority_level: str = "auto"       # "auto" | "require_approval" | "human_only" | "unknown"
     observed_at: Optional[datetime] = None
     source_id: Optional[str] = None     # 報告者・システムID
-    channel: str = "standard"           # "standard" | "official_doc" | "audit_log" | "admin_override"
+    channel: str = "standard"           # "standard" | "official_doc" | "audit_log" | "admin_override" | "feedback"
     is_authoritative: bool = False      # 制度的公式記録・オラクル決定か
+    authority_scope: Optional[str] = None # 管轄ドメイン・スコープ（例: "workflow", "hr", "security", "*"）
+    claim_type: str = "general"         # 言明タイプ（"fact" | "rule" | "judgment" | "policy" | "general"）
+    relation_type: Optional[str] = None # 関係性質（時間減衰半減期を決定: "fact" | "policy" | "rule" | "ephemeral"）
 
 
 @dataclass
