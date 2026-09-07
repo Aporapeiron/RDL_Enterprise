@@ -2,20 +2,53 @@ from typing import Optional, Dict, Any, List
 from dataclasses import dataclass, field
 from .mb_graph import MBGraph, MBNode
 from .h_state import HState
-from .snapshot import BusinessInput, InterpretationPrediction, FeedbackResult, CaseSnapshot
+from .snapshot import (
+    BusinessInput,
+    InterpretationPrediction,
+    FeedbackResult,
+    CaseSnapshot,
+    CaseStatus,
+)
 from .cascade import InterpCascade
 from .human import HumanQuery
 
 @dataclass
-class TicketExecutionResult:
+class TicketDispatchResult:
+    """チケット受付・回答結果（事後結果受領前）"""
     ticket_id: str
     prediction: InterpretationPrediction
     hitl_required: bool
     hitl_reason: str
     action_taken: str
     final_output: str
+    cost_tier: int
+    status: CaseStatus = CaseStatus.PENDING
+
+
+@dataclass
+class TicketResolutionResult:
+    """事後結果受領・代謝反映結果"""
+    ticket_id: str
+    status: CaseStatus
     e_prediction: float
     e_input: float
+    current_h: float
+    current_theta_eff: float
+    transition_to_m_delta: bool
+
+
+@dataclass
+class TicketExecutionResult:
+    """同期実行用の総合結果"""
+    ticket_id: str
+    prediction: InterpretationPrediction
+    hitl_required: bool
+    hitl_reason: str
+    action_taken: str
+    final_output: str
+    status: CaseStatus
+    e_prediction: Optional[float]
+    e_input: Optional[float]
     current_h: float
     current_theta_eff: float
     transition_to_m_delta: bool
@@ -25,7 +58,7 @@ class TicketExecutionResult:
 class EnterpriseRuntime:
     """
     RDL業務AI ランタイムコア
-    通常運転（巡航代謝）と再編相 M_Δ のライフサイクルを司る
+    非同期ライフサイクル（受付・ディスパッチ -> 結果受領・代謝反映）を司る
     """
     def __init__(
         self,
@@ -39,22 +72,25 @@ class EnterpriseRuntime:
         self.cascade = InterpCascade(self.mb_graph, llm_bridge=llm_bridge)
         self.human = HumanQuery()
 
+        # 非同期案件スナップショット管理
+        self.pending_snapshots: Dict[str, CaseSnapshot] = {}
+        self.resolved_snapshots: List[CaseSnapshot] = []
+
         # 運用メトリクス
         self.processed_tickets_count = 0
         self.auto_resolved_count = 0
         self.hitl_count = 0
         self.m_delta_count = 0
         self.cost_tier_counts = {0: 0, 1: 0, 2: 0, 3: 0}
-        self.history_snapshots: List[CaseSnapshot] = []
 
-    def handle_ticket(
+    def dispatch_ticket(
         self,
         efp: BusinessInput,
-        feedback: Optional[FeedbackResult] = None,
         human_override_answer: Optional[str] = None,
-    ) -> TicketExecutionResult:
+    ) -> TicketDispatchResult:
         """
-        1件の業務チケットを処理し、代謝サイクルを1巡させる
+        フェーズ1：チケット受付・推論・アクション実行
+        後続フィードバックが届くまで CaseSnapshot を PENDING として保持する。
         """
         self.processed_tickets_count += 1
 
@@ -62,10 +98,11 @@ class EnterpriseRuntime:
         pred = self.cascade.interpret(efp)
         self.cost_tier_counts[pred.cost_tier] = self.cost_tier_counts.get(pred.cost_tier, 0) + 1
 
-        # スナップショット作成
+        # 2. CaseSnapshot 作成（PENDING）
         snapshot = CaseSnapshot(efp, pred)
+        self.pending_snapshots[efp.ticket_id] = snapshot
 
-        # 2. 人間問い合わせ (HITL) ゲート判定
+        # 3. 人間問い合わせ (HITL) ゲート判定
         matched_node = self.mb_graph.get(pred.matched_node_id) if pred.matched_node_id else None
         hitl_eval = self.human.evaluate(efp, pred, matched_node)
         hitl_required = hitl_eval["must_ask"]
@@ -74,29 +111,47 @@ class EnterpriseRuntime:
         if hitl_required:
             self.hitl_count += 1
 
-        # 3. 行動実行（または人間介入による回答補正）
+        # 4. アクション実行・回答
         if hitl_required and human_override_answer:
             action_taken = "human_assisted"
             final_output = human_override_answer
-            # 人間が正解を授けた場合、これを沈澱（学習）させる
+            # 人間が正解を授けた場合、即座にルール沈澱
             self.cascade.crystallize_rule(efp, human_override_answer, efp.category or "general", approved=True)
         else:
             action_taken = pred.action_type
             final_output = pred.content
 
-        # 4. 事後結果 EFP' の評価と差分 E の算出
-        if not feedback:
-            # デフォルトフィードバック（人間介入があれば成功、なければ自動処理成功と仮定）
-            feedback = FeedbackResult(
-                user_resolved=True,
-                human_approved=bool(human_override_answer),
-                human_rejected=False,
-            )
+        return TicketDispatchResult(
+            ticket_id=efp.ticket_id,
+            prediction=pred,
+            hitl_required=hitl_required,
+            hitl_reason=hitl_reason,
+            action_taken=action_taken,
+            final_output=final_output,
+            cost_tier=pred.cost_tier,
+            status=CaseStatus.PENDING,
+        )
 
+    def resolve_ticket_feedback(
+        self,
+        ticket_id: str,
+        feedback: FeedbackResult,
+    ) -> TicketResolutionResult:
+        """
+        フェーズ2：後続結果 EFP' の回収と代謝反映
+        PENDING 案件を取り出し、同一更新前 M_B のもとで F/F' 差分 E を計算して熱 H に反映。
+        """
+        if ticket_id not in self.pending_snapshots:
+            raise KeyError(f"Ticket ID '{ticket_id}' は保留中(PENDING)に存在しません。")
+
+        snapshot = self.pending_snapshots.pop(ticket_id)
         e_pred, e_input = snapshot.record_feedback(feedback)
-        self.history_snapshots.append(snapshot)
+        self.resolved_snapshots.append(snapshot)
 
-        # 5. 熱 H の蓄積と散逸
+        pred = snapshot.f_pred
+        matched_node = self.mb_graph.get(pred.matched_node_id) if pred.matched_node_id else None
+
+        # 熱 H の蓄積
         target_nid = pred.matched_node_id or "__unmatched__"
         self.h_state.add_heat(target_nid, pred_err=e_pred, input_err=e_input)
         self.h_state.record_observation(
@@ -110,17 +165,16 @@ class EnterpriseRuntime:
         inertias = {nid: n.inertia() for nid, n in self.mb_graph.nodes.items()}
         self.h_state.dissipate(inertias)
 
-        # 6. 閾値判定 (H >= θ_eff)
+        # 閾値判定 (H >= θ_eff)
         should_leap, hot_node, current_h = self.h_state.should_leap(pred.matched_node_id)
         current_theta = self.h_state.theta_eff()
 
         transition_m_delta = False
 
         if should_leap:
-            # 再編相 M_Δ へ移行！
             self.m_delta_count += 1
             transition_m_delta = True
-            self._execute_m_delta_reorganization(hot_node, efp, feedback)
+            self._execute_m_delta_reorganization(hot_node, snapshot.efp, feedback)
         else:
             # 通常運転：局所更新 (dM_B/dt)
             if matched_node:
@@ -129,48 +183,90 @@ class EnterpriseRuntime:
                 else:
                     matched_node.record_failure(rejected=feedback.human_rejected)
 
-            if not hitl_required and feedback.user_resolved:
+            if snapshot.status == CaseStatus.SUCCESS and not snapshot.efp_prime.human_approved:
+                # 人間の直接代行なしで解決できた場合
                 self.auto_resolved_count += 1
 
-        return TicketExecutionResult(
-            ticket_id=efp.ticket_id,
-            prediction=pred,
-            hitl_required=hitl_required,
-            hitl_reason=hitl_reason,
-            action_taken=action_taken,
-            final_output=final_output,
+        return TicketResolutionResult(
+            ticket_id=ticket_id,
+            status=snapshot.status,
             e_prediction=e_pred,
             e_input=e_input,
             current_h=current_h,
             current_theta_eff=current_theta,
             transition_to_m_delta=transition_m_delta,
-            cost_tier=pred.cost_tier,
         )
 
+    def handle_ticket(
+        self,
+        efp: BusinessInput,
+        feedback: Optional[FeedbackResult] = None,
+        human_override_answer: Optional[str] = None,
+    ) -> TicketExecutionResult:
+        """
+        同期／即時実行用ヘルパーメソッド
+        feedback が与えられた場合は即座に回収まで実行する。
+        feedback が None の場合は PENDING 状態で待機する。
+        """
+        dispatch_res = self.dispatch_ticket(efp, human_override_answer=human_override_answer)
+
+        if feedback is not None:
+            # 即時フィードバック受領
+            resol_res = self.resolve_ticket_feedback(efp.ticket_id, feedback)
+            return TicketExecutionResult(
+                ticket_id=efp.ticket_id,
+                prediction=dispatch_res.prediction,
+                hitl_required=dispatch_res.hitl_required,
+                hitl_reason=dispatch_res.hitl_reason,
+                action_taken=dispatch_res.action_taken,
+                final_output=dispatch_res.final_output,
+                status=resol_res.status,
+                e_prediction=resol_res.e_prediction,
+                e_input=resol_res.e_input,
+                current_h=resol_res.current_h,
+                current_theta_eff=resol_res.current_theta_eff,
+                transition_to_m_delta=resol_res.transition_to_m_delta,
+                cost_tier=dispatch_res.cost_tier,
+            )
+        else:
+            # フィードバック未到着（PENDING）
+            current_h = self.h_state.global_heat.total()
+            current_theta = self.h_state.theta_eff()
+            return TicketExecutionResult(
+                ticket_id=efp.ticket_id,
+                prediction=dispatch_res.prediction,
+                hitl_required=dispatch_res.hitl_required,
+                hitl_reason=dispatch_res.hitl_reason,
+                action_taken=dispatch_res.action_taken,
+                final_output=dispatch_res.final_output,
+                status=CaseStatus.PENDING,
+                e_prediction=None,
+                e_input=None,
+                current_h=current_h,
+                current_theta_eff=current_theta,
+                transition_to_m_delta=False,
+                cost_tier=dispatch_res.cost_tier,
+            )
+
     def _execute_m_delta_reorganization(self, hot_node_id: str, efp: BusinessInput, feedback: FeedbackResult):
-        """
-        高負荷再編相 M_Δ
-        熱が溜まったノードを対象化・解体・再編し、新ルール M_B' を適応。
-        再編後は H_remaining を引き継ぐ。
-        """
         node = self.mb_graph.get(hot_node_id)
         if node:
-            # 差し戻しや苦情が多発した既存ノードを改訂
             if feedback.new_knowledge_provided:
                 node.action_template["payload"] = feedback.new_knowledge_provided
-            node.confidence = 0.6  # 再編されたため初期化
+            node.confidence = 0.6
             node.failure_count = 0
             node.rejection_count = 0
             node.success_count = 1
 
-        # 再編後の残存熱処理 (H_remaining: 20% の残存熱を残して引き継ぐ)
         self.h_state.apply_remaining_heat_after_leap(hot_node_id, remaining_ratio=0.2)
 
     def get_metrics(self) -> Dict[str, Any]:
-        """運用メトリクスのサマリー"""
         total = max(1, self.processed_tickets_count)
+        resolved_count = len(self.resolved_snapshots)
         return {
-            "total_tickets": self.processed_tickets_count,
+            "total_tickets_received": self.processed_tickets_count,
+            "pending_tickets_count": len(self.pending_snapshots),
+            "resolved_tickets_count": resolved_count,
             "auto_resolution_rate": self.auto_resolved_count / total,
             "hitl_rate": self.hitl_count / total,
             "m_delta_transitions": self.m_delta_count,

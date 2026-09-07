@@ -93,6 +93,36 @@ class TestRDLCore(unittest.TestCase):
         self.assertTrue(res["must_ask"])
         self.assertEqual(res["query_type"], "permission_request")
 
+    def test_async_feedback_lifecycle(self):
+        from rdl_enterprise.snapshot import CaseStatus
+        graph = MBGraph()
+        # テスト用ノード
+        node = MBNode(
+            id="node_vpn",
+            domain="network",
+            trigger_pattern={"exact_keys": ["VPN接続"]},
+            action_template={"type": "direct_reply", "payload": "VPN再起動してください"},
+            confidence=0.6,
+        )
+        graph.add_or_update(node)
+        runtime = EnterpriseRuntime(mb_graph=graph)
+
+        efp = BusinessInput("T010", "U010", "network", "VPN接続ができません")
+
+        # 1. チケットディスパッチ（フィードバック未受領 -> PENDING）
+        dispatch_res = runtime.dispatch_ticket(efp)
+        self.assertEqual(dispatch_res.status, CaseStatus.PENDING)
+        self.assertIn("T010", runtime.pending_snapshots)
+
+        # 2. 翌日、ユーザーから「解決しました」とフィードバックが届く
+        feedback = FeedbackResult(user_resolved=True)
+        resol_res = runtime.resolve_ticket_feedback("T010", feedback)
+
+        self.assertEqual(resol_res.status, CaseStatus.SUCCESS)
+        self.assertNotIn("T010", runtime.pending_snapshots)
+        self.assertEqual(len(runtime.resolved_snapshots), 1)
+        self.assertEqual(node.success_count, 1)
+
 
 if __name__ == "__main__":
     unittest.main()
