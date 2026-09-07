@@ -17,6 +17,14 @@ from .mb_graph import MBGraph
 from .snapshot import BusinessInput
 
 
+class ActionCapability(str, Enum):
+    """外界作用の可逆性・補償可能性の分類"""
+    REVERSIBLE = "reversible"         # 完全可逆 (未送信キュー削除、内部DBロールバック等)
+    COMPENSATABLE = "compensatable"   # 補償可能 (訂正送信、返金API、取消チケット発行等)
+    IRREVERSIBLE = "irreversible"     # 不可逆 (外部破棄API、即時実体変更等)
+    DRY_RUN_ONLY = "dry_run_only"     # 副作用なし (読み取り専用、シミュレーション)
+
+
 class CanaryStatus(str, Enum):
     """カナリア展開の状態"""
     ACTIVE = "active"             # 段階的配分・監視実行中
@@ -44,7 +52,8 @@ class ActionRecord:
     payload: Any
     deployment_id: Optional[str] = None            # 実行時のカナリア展開セッションID (スコープ境界)
     proposal_id: Optional[str] = None              # 紐づく再編プロポーザルID
-    is_reversible: bool = True                     # 可逆（取り消し可能）か
+    capability: ActionCapability = ActionCapability.COMPENSATABLE
+    is_reversible: bool = True                     # 可逆（取り消し可能）か (後方互換プロパティ兼用)
     compensating_action: Optional[Dict[str, Any]] = None # 補償アクション (Undo定義)
     executed_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
     status: str = "executed"                       # "executed" | "planned" | "attempted" | "succeeded" | "failed" | "uncompensated_irreversible"
@@ -59,13 +68,34 @@ class ActionRecord:
 
 class CompensationExecutor:
     """外界作用の補償 (World Rollback) 実行インターフェース"""
+    def __init__(self):
+        self.handlers: Dict[str, Any] = {}
+
+    def register_handler(self, action_key: str, handler: Any):
+        """特定の action_type または compensation_type に対する補償ハンドラ関数を登録: fn(action_record) -> Dict[str, Any]"""
+        self.handlers[action_key] = handler
+
     def execute_compensation(self, action_record: ActionRecord) -> Dict[str, Any]:
         """
         補償アクション（Undo API、訂正メッセージ送信等）を外界システムに対して実行する。
-        デフォルトは安全な記録・通知実行。
+        登録ハンドラがあればそれを優先実行し、なければデフォルト実行。
         """
         if not action_record.compensating_action:
             return {"success": False, "reason": "補償アクション未定義"}
+
+        comp_type = action_record.compensating_action.get("type")
+        if comp_type and comp_type in self.handlers:
+            try:
+                return self.handlers[comp_type](action_record)
+            except Exception as ex:
+                return {"success": False, "error": str(ex)}
+
+        if action_record.action_type in self.handlers:
+            try:
+                return self.handlers[action_record.action_type](action_record)
+            except Exception as ex:
+                return {"success": False, "error": str(ex)}
+
         return {
             "success": True,
             "action_id": action_record.action_id,
@@ -89,10 +119,33 @@ class ActionLedger:
         payload: Any,
         deployment_id: Optional[str] = None,
         proposal_id: Optional[str] = None,
-        is_reversible: bool = True,
+        is_reversible: Optional[bool] = None,
+        capability: Optional[ActionCapability] = None,
         compensating_action: Optional[Dict[str, Any]] = None,
     ) -> ActionRecord:
         action_id = f"act_{len(self.records) + 1:04d}"
+
+        # capability 自動推定と is_reversible 整合
+        if capability is None:
+            if is_reversible is False:
+                cap = ActionCapability.IRREVERSIBLE
+            elif action_type in ("dry_run", "read_only"):
+                cap = ActionCapability.DRY_RUN_ONLY
+            elif action_type in ("payment", "delete_permanent", "external_irreversible"):
+                cap = ActionCapability.IRREVERSIBLE
+            elif compensating_action is not None or action_type in ("direct_reply", "email", "ticket_update"):
+                cap = ActionCapability.COMPENSATABLE
+            elif is_reversible is True or is_reversible is None:
+                cap = ActionCapability.REVERSIBLE
+            else:
+                cap = ActionCapability.COMPENSATABLE
+        else:
+            cap = capability
+
+        rev = (cap in (ActionCapability.REVERSIBLE, ActionCapability.COMPENSATABLE, ActionCapability.DRY_RUN_ONLY))
+        if is_reversible is not None:
+            rev = is_reversible
+
         rec = ActionRecord(
             action_id=action_id,
             ticket_id=ticket_id,
@@ -102,7 +155,8 @@ class ActionLedger:
             payload=payload,
             deployment_id=deployment_id,
             proposal_id=proposal_id,
-            is_reversible=is_reversible,
+            capability=cap,
+            is_reversible=rev,
             compensating_action=compensating_action,
         )
         self.records.append(rec)
@@ -122,7 +176,30 @@ class ActionLedger:
 
         for rec in reversed(self.records):
             if rec.deployment_id == deployment_id and rec.is_canary and rec.status in ("executed", "planned"):
-                if rec.compensating_action:
+                if rec.capability == ActionCapability.DRY_RUN_ONLY:
+                    rec.status = "succeeded"
+                    rec.compensation_executed_at = datetime.utcnow().isoformat()
+                    compensated.append({
+                        "action_id": rec.action_id,
+                        "ticket_id": rec.ticket_id,
+                        "deployment_id": rec.deployment_id,
+                        "action_type": rec.action_type,
+                        "capability": rec.capability.value,
+                        "status": rec.status,
+                        "note": "dry_run_only のため補償不要で成功",
+                    })
+                elif rec.capability == ActionCapability.IRREVERSIBLE or not rec.is_reversible:
+                    rec.status = "uncompensated_irreversible"
+                    compensated.append({
+                        "action_id": rec.action_id,
+                        "ticket_id": rec.ticket_id,
+                        "deployment_id": rec.deployment_id,
+                        "action_type": rec.action_type,
+                        "capability": rec.capability.value,
+                        "status": rec.status,
+                        "warning": "不可逆な作用のため補償できませんでした",
+                    })
+                elif rec.compensating_action:
                     rec.status = "attempted"
                     exec_res = active_executor.execute_compensation(rec)
                     rec.status = "succeeded" if exec_res.get("success") else "failed"
@@ -133,17 +210,19 @@ class ActionLedger:
                         "ticket_id": rec.ticket_id,
                         "deployment_id": rec.deployment_id,
                         "action_type": rec.action_type,
+                        "capability": rec.capability.value,
                         "compensating_action": rec.compensating_action,
                         "status": rec.status,
                         "executor_result": exec_res,
                     })
                 else:
-                    rec.status = "uncompensated_irreversible" if not rec.is_reversible else "failed"
+                    rec.status = "failed"
                     compensated.append({
                         "action_id": rec.action_id,
                         "ticket_id": rec.ticket_id,
                         "deployment_id": rec.deployment_id,
                         "action_type": rec.action_type,
+                        "capability": rec.capability.value,
                         "status": rec.status,
                         "warning": "補償アクションが未定義です",
                     })

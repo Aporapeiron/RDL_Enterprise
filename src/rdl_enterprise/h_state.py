@@ -217,3 +217,35 @@ class HState:
 
         self.global_heat.prediction *= remaining_ratio
         self.global_heat.input_err *= remaining_ratio
+
+    def inherit_canary_state_to_prod(
+        self,
+        canary_version: str,
+        heat_ratio: float = 0.5,
+    ):
+        """
+        カナリア展開完了 (Full Commit) に伴う残存熱・観測統計の継承 (公理B4: 代謝の連続性)
+        カナリアで新候補自身が経験した微小な不整合 (H_canary) および観測統計 (ξ_canary) を、
+        新本番のベース運用状態へ合流・引き継ぐ。
+        """
+        # 1. カナリア期間中に蓄積されたノード別熱を本番ノード熱にマージ
+        keys_to_merge = [k for k in self.versioned_heats.keys() if k[0] == canary_version]
+        for (ver, nid) in keys_to_merge:
+            c_heat = self.versioned_heats[(ver, nid)]
+            if nid not in self.node_heats:
+                self.node_heats[nid] = HeatVector()
+            self.node_heats[nid].prediction += c_heat.prediction * heat_ratio
+            self.node_heats[nid].input_err += c_heat.input_err * heat_ratio
+
+        # 2. カナリア期間中の観測統計 (未分類、欠落、未知、差し戻し) を本番グローバル統計に合流
+        if canary_version in self.versioned_observations:
+            c_obs = self.versioned_observations[canary_version]
+            self.total_tickets += c_obs["total_tickets"]
+            self.unclassified_count += c_obs["unclassified_count"]
+            self.missing_info_count += c_obs["missing_info_count"]
+            self.unknown_input_count += c_obs["unknown_input_count"]
+            self.rejection_events_count += c_obs["rejection_events_count"]
+
+        # 3. 隔離バケットのクリーンアップ
+        self.clear_version_heat(canary_version)
+

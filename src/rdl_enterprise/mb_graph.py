@@ -5,6 +5,79 @@ from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from typing import Optional, Dict, List, Any
 
+class ReadOnlyDict(dict):
+    """凍結ノード内部の辞書不変性を担保する読み取り専用辞書"""
+    def __setitem__(self, key, value):
+        raise TypeError(f"ReadOnlyDict は凍結されており変更できません (キー: {key})")
+
+    def __delitem__(self, key):
+        raise TypeError(f"ReadOnlyDict は凍結されており変更できません (キー: {key})")
+
+    def pop(self, *args, **kwargs):
+        raise TypeError("ReadOnlyDict は凍結されており変更できません")
+
+    def popitem(self, *args, **kwargs):
+        raise TypeError("ReadOnlyDict は凍結されており変更できません")
+
+    def clear(self):
+        raise TypeError("ReadOnlyDict は凍結されており変更できません")
+
+    def update(self, *args, **kwargs):
+        raise TypeError("ReadOnlyDict は凍結されており変更できません")
+
+    def setdefault(self, *args, **kwargs):
+        raise TypeError("ReadOnlyDict は凍結されており変更できません")
+
+
+class ReadOnlyList(list):
+    """凍結ノード内部のリスト不変性を担保する読み取り専用リスト"""
+    def __setitem__(self, index, value):
+        raise TypeError(f"ReadOnlyList は凍結されており変更できません (インデックス: {index})")
+
+    def __delitem__(self, index):
+        raise TypeError(f"ReadOnlyList は凍結されており変更できません (インデックス: {index})")
+
+    def append(self, object):
+        raise TypeError("ReadOnlyList は凍結されており変更できません")
+
+    def extend(self, iterable):
+        raise TypeError("ReadOnlyList は凍結されており変更できません")
+
+    def insert(self, index, object):
+        raise TypeError("ReadOnlyList は凍結されており変更できません")
+
+    def pop(self, *args, **kwargs):
+        raise TypeError("ReadOnlyList は凍結されており変更できません")
+
+    def remove(self, value):
+        raise TypeError("ReadOnlyList は凍結されており変更できません")
+
+    def clear(self):
+        raise TypeError("ReadOnlyList は凍結されており変更できません")
+
+    def sort(self, *args, **kwargs):
+        raise TypeError("ReadOnlyList は凍結されており変更できません")
+
+    def reverse(self):
+        raise TypeError("ReadOnlyList は変更できません")
+
+
+def _deep_freeze_value(val: Any) -> Any:
+    if isinstance(val, dict):
+        return ReadOnlyDict({k: _deep_freeze_value(v) for k, v in val.items()})
+    elif isinstance(val, list):
+        return ReadOnlyList([_deep_freeze_value(x) for x in val])
+    return val
+
+
+def _deep_unfreeze_value(val: Any) -> Any:
+    if isinstance(val, (dict, ReadOnlyDict)):
+        return {k: _deep_unfreeze_value(v) for k, v in val.items()}
+    elif isinstance(val, (list, ReadOnlyList)):
+        return [_deep_unfreeze_value(x) for x in val]
+    return val
+
+
 @dataclass
 class MBNode:
     id: str
@@ -21,13 +94,27 @@ class MBNode:
     created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
     last_updated: str = field(default_factory=lambda: datetime.utcnow().isoformat())
 
+    def __setattr__(self, name: str, value: Any):
+        if getattr(self, "is_frozen", False) and name != "is_frozen":
+            raise RuntimeError(f"MBNode(id={getattr(self, 'id', '')}) は凍結(frozen)されています。属性 '{name}' の変更は禁止されています。")
+        super().__setattr__(name, value)
+
+    def __delattr__(self, name: str):
+        if getattr(self, "is_frozen", False):
+            raise RuntimeError(f"MBNode(id={getattr(self, 'id', '')}) は凍結(frozen)されています。属性 '{name}' の削除は禁止されています。")
+        super().__delattr__(name)
+
     def freeze(self):
-        """ノードを凍結（Deep Freeze）"""
+        """ノードを凍結（Deep Freeze: 属性代入および内部辞書・リストの変更を封殺）"""
+        self.trigger_pattern = _deep_freeze_value(self.trigger_pattern)
+        self.action_template = _deep_freeze_value(self.action_template)
         self.is_frozen = True
 
     def unfreeze(self):
         """凍結解除"""
         self.is_frozen = False
+        self.trigger_pattern = _deep_unfreeze_value(self.trigger_pattern)
+        self.action_template = _deep_unfreeze_value(self.action_template)
 
     def inertia(self) -> float:
         """

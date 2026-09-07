@@ -16,6 +16,7 @@ from rdl_enterprise.canary import (
     ActionLedger,
     ActionRecord,
     CompensationExecutor,
+    ActionCapability,
 )
 
 
@@ -278,6 +279,156 @@ class TestCandidateImmutabilityAndBinding(unittest.TestCase):
         failing_ledger.compensate_canary_actions("dep_fail")
         self.assertEqual(rec2.status, "failed")
         self.assertFalse(rec2.is_compensated)  # 失敗時は is_compensated が False になる！
+
+    def test_true_deep_freeze_blocks_attribute_and_dict_mutations(self):
+        """真のDeep Freeze: 凍結ノードの属性直接代入、および内部辞書・リストの変更試行が例外で阻止されること"""
+        self.candidate_graph.freeze()
+        node = self.candidate_graph.get("node_wf")
+
+        # 1. 属性直接代入のブロック (RuntimeError)
+        with self.assertRaises(RuntimeError):
+            node.confidence = 0.99
+
+        # 2. 内部辞書(action_template)のキー変更ブロック (TypeError)
+        with self.assertRaises(TypeError):
+            node.action_template["payload"] = "https://hacked.corp"
+
+        # 3. 内部リスト(trigger_pattern.exact_keys)の変更ブロック (TypeError)
+        with self.assertRaises(TypeError):
+            node.trigger_pattern["exact_keys"].append("悪意のあるキー")
+
+        # 4. 凍結解除後は正常に変更可能であること
+        self.candidate_graph.unfreeze()
+        node.confidence = 0.95
+        self.assertEqual(node.confidence, 0.95)
+        node.action_template["payload"] = "https://normal.corp"
+        self.assertEqual(node.action_template["payload"], "https://normal.corp")
+
+    def test_canary_feedback_does_not_trigger_prod_m_delta_when_prod_near_threshold(self):
+        """Canary M_Δ 完全分離: 本番熱が閾値近傍(H_prod >= θ)でも、Canary案件の処理で本番M_Δが発火しないこと"""
+        runtime = EnterpriseRuntime(mb_graph=self.prod_graph, theta_0=1.0)
+        # 本番ノードに限界近傍の熱を注入
+        runtime.h_state.add_heat("node_wf", pred_err=1.5, input_err=0.5, mb_version="prod", is_canary=False)
+        self.assertGreaterEqual(runtime.h_state.node_heats["node_wf"].total(), runtime.h_state.theta_eff("prod"))
+
+        # カナリア展開開始
+        prop = ReorganizationProposal(
+            proposal_id="prop_iso_01",
+            hot_node_id="node_wf",
+            candidate_mb=self.candidate_graph,
+            durability_test_result={"all_passed": True, "candidate_content_hash": self.candidate_graph.content_hash()},
+            policy=PromotionPolicy(require_durability=True, require_shadow=False, require_human_approval=True),
+            status=ProposalState.APPROVAL_READY,
+        )
+        runtime.pending_reorganizations["prop_iso_01"] = prop
+        mgr = AuthorityContext(actor_id="mgr_01", role="manager", scope="workflow", actor_type="human", authenticated_by="idp_sso")
+        runtime.promote_candidate_mb("prop_iso_01", authority=mgr, use_canary=True, canary_ratio=1.0)
+
+        # カナリア案件をディスパッチ＆フィードバック処理
+        efp = BusinessInput("T_CAN_ISO", "U1", "workflow", "稟議申請の承認手続き")
+        runtime.dispatch_ticket(efp)
+        res = runtime.resolve_ticket_feedback("T_CAN_ISO", FeedbackResult(user_resolved=True))
+
+        # 本番側の M_Δ は発火せず、プロポーザルも生成されないこと
+        self.assertFalse(res.transition_to_m_delta)
+        self.assertEqual(runtime.m_delta_count, 0)
+        self.assertNotIn("prop_iso_01", runtime.reorganization_history)
+
+    def test_canary_heat_and_observations_inherited_to_prod_on_full_commit(self):
+        """代謝の連続性 (公理B4): カナリア展開完了(Full Commit)時に、カナリア中の残存熱・観測統計が新本番へ継承されること"""
+        runtime = EnterpriseRuntime(mb_graph=self.prod_graph, theta_0=2.0)
+        prop = ReorganizationProposal(
+            proposal_id="prop_inherit_01",
+            hot_node_id="node_wf",
+            candidate_mb=self.candidate_graph,
+            durability_test_result={"all_passed": True, "candidate_content_hash": self.candidate_graph.content_hash()},
+            policy=PromotionPolicy(require_durability=True, require_shadow=False, require_human_approval=True),
+            status=ProposalState.APPROVAL_READY,
+        )
+        runtime.pending_reorganizations["prop_inherit_01"] = prop
+        mgr = AuthorityContext(actor_id="mgr_01", role="manager", scope="workflow", actor_type="human", authenticated_by="idp_sso")
+        runtime.promote_candidate_mb("prop_inherit_01", authority=mgr, use_canary=True, canary_ratio=1.0)
+
+        # カナリア期間中に軽微な不整合(E=0.2)と未知入力を伴う案件を処理
+        efp = BusinessInput("T_CAN_INH", "U1", "workflow", "稟議申請の承認手続き")
+        runtime.dispatch_ticket(efp)
+        runtime.resolve_ticket_feedback("T_CAN_INH", FeedbackResult(user_resolved=True, human_approved=False))
+
+        # コミット前の本番統計は空
+        self.assertEqual(runtime.h_state.total_tickets, 0)
+
+        # 全面展開完了 (Full Commit)
+        success = runtime.complete_canary_rollout()
+        self.assertTrue(success)
+
+        # 新本番にカナリアでのチケット数、観測統計、および残存熱が継承されていること
+        self.assertEqual(runtime.h_state.total_tickets, 1)
+        self.assertIn("node_wf", runtime.h_state.node_heats)
+        # カナリア版バケットはクリーンアップされていること
+        cand_ver = self.candidate_graph.version
+        self.assertNotIn(cand_ver, runtime.h_state.versioned_observations)
+
+    def test_action_capability_and_compensation_executor_handlers(self):
+        """ActionCapability & CompensationExecutor: 可逆性分類と登録ハンドラによる補償実行"""
+        executor = CompensationExecutor()
+        executed_custom_undos = []
+
+        def custom_undo_handler(action_record: ActionRecord):
+            executed_custom_undos.append(action_record.action_id)
+            return {"success": True, "undone": True, "target": action_record.ticket_id}
+
+        executor.register_handler("custom_undo", custom_undo_handler)
+        ledger = ActionLedger(default_executor=executor)
+
+        # 1. COMPENSATABLE (カスタムハンドラ登録済み)
+        rec_comp = ledger.record_action(
+            ticket_id="T_CAP_01",
+            mb_version="v2.0",
+            is_canary=True,
+            action_type="tool_call",
+            payload={"cmd": "send_msg"},
+            deployment_id="dep_cap",
+            capability=ActionCapability.COMPENSATABLE,
+            compensating_action={"type": "custom_undo"},
+        )
+
+        # 2. IRREVERSIBLE (不可逆アクション)
+        rec_irrev = ledger.record_action(
+            ticket_id="T_CAP_02",
+            mb_version="v2.0",
+            is_canary=True,
+            action_type="payment",
+            payload={"amount": 1000},
+            deployment_id="dep_cap",
+            capability=ActionCapability.IRREVERSIBLE,
+        )
+
+        # 3. DRY_RUN_ONLY (副作用なし)
+        rec_dry = ledger.record_action(
+            ticket_id="T_CAP_03",
+            mb_version="v2.0",
+            is_canary=True,
+            action_type="read_only",
+            payload={"query": "status"},
+            deployment_id="dep_cap",
+            capability=ActionCapability.DRY_RUN_ONLY,
+        )
+
+        # ロールバック補償実行
+        results = ledger.compensate_canary_actions("dep_cap")
+
+        # COMPENSATABLE: カスタムハンドラが呼ばれて succeeded
+        self.assertEqual(rec_comp.status, "succeeded")
+        self.assertTrue(rec_comp.is_compensated)
+        self.assertIn(rec_comp.action_id, executed_custom_undos)
+
+        # IRREVERSIBLE: uncompensated_irreversible になり is_compensated は False
+        self.assertEqual(rec_irrev.status, "uncompensated_irreversible")
+        self.assertFalse(rec_irrev.is_compensated)
+
+        # DRY_RUN_ONLY: 補償不要で succeeded
+        self.assertEqual(rec_dry.status, "succeeded")
+        self.assertTrue(rec_dry.is_compensated)
 
 
 if __name__ == "__main__":

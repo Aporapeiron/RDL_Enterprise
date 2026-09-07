@@ -17,7 +17,7 @@ from .human import HumanQuery
 from .authority import AuthorityContext
 from .durability import DurabilityHarness
 from .shadow import ShadowEvaluator, ShadowReport
-from .canary import CanaryManager, CanaryDeployment, CanaryStatus, CanaryCompletionPolicy
+from .canary import CanaryManager, CanaryDeployment, CanaryStatus, CanaryCompletionPolicy, ActionCapability
 from .promotion_gate import ProposalState, PromotionPolicy, PromotionGate
 
 @dataclass
@@ -202,6 +202,7 @@ class EnterpriseRuntime:
         compensating_action = None
         dep_id = None
         prop_id = None
+        cap = ActionCapability.COMPENSATABLE
         if is_canary and self.canary_manager.active_deployment:
             dep_id = self.canary_manager.active_deployment.deployment_id
             prop_id = self.canary_manager.active_deployment.proposal_id
@@ -219,7 +220,7 @@ class EnterpriseRuntime:
             payload=final_output,
             deployment_id=dep_id,
             proposal_id=prop_id,
-            is_reversible=True,
+            capability=cap,
             compensating_action=compensating_action,
         )
 
@@ -301,46 +302,55 @@ class EnterpriseRuntime:
             is_canary=snapshot.is_canary,
         )
 
-        # 自然散逸
-        inertias = {nid: n.inertia() for nid, n in self.mb_graph.nodes.items()}
-        self.h_state.dissipate(inertias)
-
-        # 閾値判定 (H >= θ_eff)
-        should_leap, hot_node, current_h = self.h_state.should_leap(pred.matched_node_id)
-        current_theta = self.h_state.theta_eff()
-
-        transition_m_delta = False
-        proposal_id = None
-
-        if should_leap:
-            self.m_delta_count += 1
-            transition_m_delta = True
-            # 再編相 M_Δ パイプライン発動！
-            proposal = self._trigger_m_delta_proposal(hot_node, snapshot.efp, feedback)
-            proposal_id = proposal.proposal_id
-
-            # 自動昇格設定かつ委任権限が存在する場合（PromotionGate で検証）
-            if (
-                self.auto_promote_reorganizations
-                and self.auto_promote_authority is not None
-            ):
-                self.promote_candidate_mb(
-                    proposal_id,
-                    authority=self.auto_promote_authority,
-                    is_automated=True,
-                )
+        # 閾値判定および局所更新の分岐：
+        # Canary 案件は候補の実環境検査相であるため、本番の散逸や本番 M_Δ 判定を完全遮断する。
+        # 評価は CanaryManager (H_canary / θ_canary) のみで行い、発熱破断時の自動ロールバックまたは継続に専念する。
+        if snapshot.is_canary:
+            should_leap = False
+            hot_node = ""
+            current_h = self.canary_manager.active_deployment.canary_heat if self.canary_manager.active_deployment else 0.0
+            current_theta = self.canary_manager.active_deployment.theta_canary if self.canary_manager.active_deployment else 1.5
+            transition_m_delta = False
+            proposal_id = None
         else:
-            # 通常運転：局所更新 (dM_B/dt)
-            # ※ ただし Canary 期間中は候補 M_B' は完全 Freeze (Identity Drift 防止) のため、
-            #    旧本番・新候補ともにノード統計更新をスキップ（熱 H_canary のみで監視）
-            if matched_node and not snapshot.is_canary:
-                if feedback.user_resolved and not feedback.human_rejected:
-                    matched_node.record_success(approved=feedback.human_approved)
-                else:
-                    matched_node.record_failure(rejected=feedback.human_rejected)
+            # 自然散逸 (本番グラフ)
+            inertias = {nid: n.inertia() for nid, n in self.mb_graph.nodes.items()}
+            self.h_state.dissipate(inertias)
 
-            if snapshot.status == CaseStatus.SUCCESS and not snapshot.efp_prime.human_approved:
-                self.auto_resolved_count += 1
+            # 閾値判定 (H_prod >= θ_eff)
+            should_leap, hot_node, current_h = self.h_state.should_leap(pred.matched_node_id)
+            current_theta = self.h_state.theta_eff()
+
+            transition_m_delta = False
+            proposal_id = None
+
+            if should_leap:
+                self.m_delta_count += 1
+                transition_m_delta = True
+                # 再編相 M_Δ パイプライン発動！
+                proposal = self._trigger_m_delta_proposal(hot_node, snapshot.efp, feedback)
+                proposal_id = proposal.proposal_id
+
+                # 自動昇格設定かつ委任権限が存在する場合（PromotionGate で検証）
+                if (
+                    self.auto_promote_reorganizations
+                    and self.auto_promote_authority is not None
+                ):
+                    self.promote_candidate_mb(
+                        proposal_id,
+                        authority=self.auto_promote_authority,
+                        is_automated=True,
+                    )
+            else:
+                # 通常運転：局所更新 (dM_B/dt)
+                if matched_node:
+                    if feedback.user_resolved and not feedback.human_rejected:
+                        matched_node.record_success(approved=feedback.human_approved)
+                    else:
+                        matched_node.record_failure(rejected=feedback.human_rejected)
+
+                if snapshot.status == CaseStatus.SUCCESS and not snapshot.efp_prime.human_approved:
+                    self.auto_resolved_count += 1
 
         # カナリア監視と自動ロールバック判定
         canary_rolled_back = False
@@ -565,6 +575,9 @@ class EnterpriseRuntime:
             proposal.promoted_at = datetime.utcnow().isoformat()
             self.reorganization_history.append(proposal)
             self.h_state.apply_remaining_heat_after_leap(proposal.hot_node_id, remaining_ratio=0.2)
+            # カナリア期間中の残存熱・観測統計を新本番へ合成・引き継ぎ (公理B4: 代謝の連続性)
+            cand_ver = getattr(new_mb, "version", "unknown")
+            self.h_state.inherit_canary_state_to_prod(canary_version=cand_ver, heat_ratio=0.5)
 
         return True
 
