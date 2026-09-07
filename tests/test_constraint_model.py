@@ -613,6 +613,92 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
         self.assertIsNotNone(res)
         self.assertEqual(res.status.value, "success")
 
+    def test_feedback_result_default_provenance_no_authority_forging(self):
+        """公理 B5: FeedbackResult のデフォルト provenance は権限を捏造しないこと"""
+        from rdl_enterprise.snapshot import FeedbackResult
+        from rdl_enterprise.constraint import compute_efp_prime_constraint
+
+        # 1. 人間差し戻し（未指定時）
+        fb_rej = FeedbackResult(user_resolved=False, human_rejected=True)
+        self.assertEqual(fb_rej.provenance.source_type, "human_feedback")
+        self.assertEqual(fb_rej.provenance.authority_level, "unknown")
+        self.assertFalse(fb_rej.provenance.is_authoritative)
+
+        c_rej = compute_efp_prime_constraint(fb_rej)
+        # human_feedback: 0.70
+        self.assertEqual(c_rej, 0.70)
+
+        # 2. 一般ユーザー（未指定時）
+        fb_user = FeedbackResult(user_resolved=True)
+        self.assertEqual(fb_user.provenance.source_type, "user")
+        self.assertEqual(fb_user.provenance.authority_level, "auto")
+        self.assertFalse(fb_user.provenance.is_authoritative)
+        c_user = compute_efp_prime_constraint(fb_user)
+        self.assertEqual(c_user, 0.40)
+
+    def test_time_concept_separation_frozen_mb_vs_efp_prime_observation(self):
+        """時刻概念の分離: M_B側の解釈拘束時刻 (t) と EFP'側の観測時刻 (t+Δ) の直交分離"""
+        from datetime import datetime, timezone, timedelta
+        from rdl_enterprise.snapshot import FeedbackResult, RelationProvenance
+        from rdl_enterprise.runtime import EnterpriseRuntime
+        from rdl_enterprise.constraint import compute_efp_prime_constraint
+
+        runtime = EnterpriseRuntime(theta_0=2.0)
+        # 10日前に作成されたノード
+        t_dispatch = datetime(2026, 9, 1, 12, 0, 0, tzinfo=timezone.utc)
+        node = MBNode(
+            id="node_time_test",
+            domain="general",
+            trigger_pattern={"exact_keys": ["時刻検証"]},
+            action_template={"type": "direct_reply", "payload": "OK"},
+            last_updated=t_dispatch - timedelta(days=10),
+            confidence=0.8,
+            approval_count=5,
+        )
+        runtime.mb_graph.add_or_update(node)
+
+        # 1. チケットディスパッチ (時刻 t_dispatch で凍結)
+        efp = _make_efp("時刻検証")
+        runtime.dispatch_ticket(efp)
+        snapshot = runtime.pending_snapshots[efp.ticket_id]
+
+        # 凍結時刻を t_dispatch に設定
+        object.__setattr__(snapshot.frozen_context, "constraint_evaluation_time", t_dispatch)
+
+        # 2. 2時間後にフィードバック受領 (t_feedback = t_dispatch + 2時間)
+        t_feedback = t_dispatch + timedelta(hours=2)
+        snapshot.resolved_at = t_feedback.isoformat()
+
+        # ケースA: フィードバック受領時点 (t_feedback) で観測された最新の反証
+        fb_latest = FeedbackResult(
+            user_resolved=False,
+            human_rejected=True,
+            provenance=RelationProvenance(
+                source_type="admin",
+                authority_level="human_only",
+                observed_at=t_feedback,
+                is_authoritative=True,
+            ),
+        )
+        c_prime_latest = compute_efp_prime_constraint(fb_latest, snapshot, current_time=t_feedback)
+        self.assertEqual(c_prime_latest, 1.0)
+
+        # ケースB: フィードバック時点で「90日前の古い決定」を引用した反証
+        t_old_observed = t_feedback - timedelta(days=90)
+        fb_stale = FeedbackResult(
+            user_resolved=False,
+            human_rejected=True,
+            provenance=RelationProvenance(
+                source_type="admin",
+                authority_level="human_only",
+                observed_at=t_old_observed,
+                is_authoritative=True,
+            ),
+        )
+        # t_feedback から見て 90日経過 -> 半減期90日により time_factor = 0.5 -> C_prime = 0.5
+        c_prime_stale = compute_efp_prime_constraint(fb_stale, snapshot, current_time=t_feedback)
+        self.assertAlmostEqual(c_prime_stale, 0.5, places=2)
+
 
 if __name__ == "__main__":
     unittest.main()

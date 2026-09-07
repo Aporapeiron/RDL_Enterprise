@@ -215,11 +215,19 @@ def compute_efp_prime_constraint(
     【真正な Provenance 評価】:
       「誰が・どの関係位置から・何を・いつ・どの媒体/制度経路を通して報告したか」を評価する。
       - 制度的記録・公式決定 (is_authoritative=True): C_prime = 1.0
-      - 管理者・監査権限 (source_type="admin" / "audit", authority_level="human_only"): 0.90 ~ 0.95
+      - 管理者・監査権限 (source_type="admin" / "oracle", authority_level="human_only"): 0.95
+      - 監査ログ・監査権限 (source_type="audit"): 0.90
       - 先輩・上級権限 (source_type="senior", authority_level="require_approval"): 0.85
+      - 未特定・一般人間フィードバック (source_type="human_feedback"): 0.70
+      - 一般ユーザー (source_type="user"): 0.40
       - 伝達経路 (official_doc, audit_log, admin_override): チャネル加算
       - 反証の実質性 (correction_content, new_knowledge_provided): 具現性加算
       - 時点拘束 (observed_at): 報告時刻の新鮮さによる時間的減衰
+
+    【認識論的境界の明示】:
+      - 内容（クエリ・是正指示・反作用状態）: M_B が解釈して不整合 E = Δ(F, F') を形成する。
+      - 来歴（誰が・どの権限・経路・時点で報告したか）: 解釈内容ではなく、その反証が持つ関係拘束強度 C_prime を形成し、
+        不整合 E を系内にどれだけ激しく保持するか（熱 H = E × opposing_strength）を決定する。
     """
     prov = getattr(feedback, "provenance", None)
 
@@ -233,6 +241,8 @@ def compute_efp_prime_constraint(
             auth_weight = 0.90
         elif getattr(prov, "source_type", "") == "senior" or getattr(prov, "authority_level", "") == "require_approval":
             auth_weight = 0.85
+        elif getattr(prov, "source_type", "") == "human_feedback":
+            auth_weight = 0.70
         else:
             auth_weight = 0.40
 
@@ -247,9 +257,9 @@ def compute_efp_prime_constraint(
     else:
         # provenance 未定義時の後方互換フォールバック
         if getattr(feedback, "human_rejected", False):
-            auth_weight = 0.85
-        elif getattr(feedback, "human_approved", False):
             auth_weight = 0.70
+        elif getattr(feedback, "human_approved", False):
+            auth_weight = 0.60
         else:
             auth_weight = 0.40
 

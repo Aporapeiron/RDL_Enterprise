@@ -357,7 +357,16 @@ class EnterpriseRuntime:
         target_nid = pred.matched_node_id or "__unmatched__"
         mb_ver = getattr(eval_graph, "version", getattr(target_graph, "version", "prod"))
 
+        # -------------------------------------------------------------
         # RuptureProbe & 対向拘束強度 (C_old × C_prime) の算出 (BASE v2.0 §4.2)
+        # 【時刻概念の厳密な分離】:
+        #   1. M_B 側の解釈条件時刻 mb_eval_time (t):
+        #      dispatch 時に凍結された constraint_evaluation_time。
+        #      更新前 M_B のノード群の freshness や破断判定を、F と F' で同一条件に保つ。
+        #   2. EFP' 側の事後入力評価時刻 feedback_eval_time (t+Δ):
+        #      フィードバック受領時点の時刻。後続入力 EFP' (provenance.observed_at) の
+        #      新鮮さ・時点拘束 C_prime を、事後観測時点から評価する。
+        # -------------------------------------------------------------
         c_old = 0.5
         rupture_opposing = 1.0
         frozen_constraint_cfg = (
@@ -366,20 +375,31 @@ class EnterpriseRuntime:
         frozen_eval_time = (
             getattr(frozen_ctx, "constraint_evaluation_time", None) if frozen_ctx else None
         )
-        eval_time = frozen_eval_time or datetime.now(timezone.utc)
+        mb_eval_time = frozen_eval_time or datetime.now(timezone.utc)
         constraint_cfg = frozen_constraint_cfg or ConstraintConfig()
+
+        # EFP' 側の事後観測時刻 t+Δ
+        feedback_eval_time = datetime.now(timezone.utc)
+        if snapshot.resolved_at:
+            try:
+                parsed_time = datetime.fromisoformat(snapshot.resolved_at)
+                if parsed_time.tzinfo is None:
+                    parsed_time = parsed_time.replace(tzinfo=timezone.utc)
+                feedback_eval_time = parsed_time
+            except Exception:
+                pass
 
         if eval_matched_node is not None:
             try:
                 ctx = ConstraintContext(
                     efp=snapshot.efp,
-                    current_time=eval_time,
+                    current_time=mb_eval_time,
                     mb_version=mb_ver,
                     active_domain=snapshot.efp.category,
                     config=constraint_cfg,  # 凍結された設定を使用
                 )
                 locator = RelationConstraintLocator(constraint_cfg)
-                # 局所評価で旧ノードの拘束束 C_old を取得
+                # 局所評価で旧ノードの拘束束 C_old を取得 (凍結時刻 t で評価)
                 bundle = locator.locate_bundle_for_node(eval_graph, eval_matched_node, ctx)
                 if bundle is not None:
                     c_old = bundle.constraint_score
@@ -391,8 +411,8 @@ class EnterpriseRuntime:
             except Exception:
                 pass
 
-        # 後続 EFP' 側の拘束 C_prime を抽出（時点拘束 eval_time を反映）
-        c_prime = compute_efp_prime_constraint(feedback, snapshot, current_time=eval_time)
+        # 後続 EFP' 側の拘束 C_prime を抽出（事後入力評価時刻 feedback_eval_time を反映）
+        c_prime = compute_efp_prime_constraint(feedback, snapshot, current_time=feedback_eval_time)
         has_conflict = bool(e_pred > 0 or e_input > 0 or feedback.human_rejected or rupture_opposing > 1.0)
         # C_old (既存拘束) と C_prime (後続拘束) の衝突から実効対向拘束強度を算出
         opposing_strength = max(rupture_opposing, compute_opposing_conflict_strength(c_old, c_prime, has_conflict))

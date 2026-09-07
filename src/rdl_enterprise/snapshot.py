@@ -61,19 +61,14 @@ class FeedbackResult:
     provenance: Optional[RelationProvenance] = None  # 後続関係の来歴・権限
 
     def __post_init__(self):
-        # provenance 未指定時の後方互換補正（権限の捏造を禁止し、通常の人間フィードバックとする）
+        # provenance 未指定時の安全なフォールバック (公理 B5: 権限の捏造禁止)
+        # 人間による差し戻し/承認であっても、未指定時に勝手に senior や require_approval を名乗らせず、
+        # 未特定の人間フィードバック (source_type="human_feedback", authority_level="unknown") として扱う。
         if self.provenance is None:
-            if self.human_rejected:
+            if self.human_rejected or self.human_approved:
                 self.provenance = RelationProvenance(
-                    source_type="senior",
-                    authority_level="require_approval",
-                    channel="feedback",
-                    is_authoritative=False,
-                )
-            elif self.human_approved:
-                self.provenance = RelationProvenance(
-                    source_type="senior",
-                    authority_level="require_approval",
+                    source_type="human_feedback",
+                    authority_level="unknown",
                     channel="feedback",
                     is_authoritative=False,
                 )
