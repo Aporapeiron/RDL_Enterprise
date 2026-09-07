@@ -3,6 +3,9 @@ import re
 from typing import Optional, List, Dict, Any, Tuple
 from .mb_graph import MBGraph, MBNode
 from .snapshot import BusinessInput, InterpretationPrediction
+from .constraint import (
+    ConstraintConfig, ConstraintContext, RelationConstraintLocator, RuptureProbe,
+)
 
 @dataclass
 class CascadeConfig:
@@ -11,6 +14,9 @@ class CascadeConfig:
     cost_tier0_confidence_boost: float = 0.1
     llm_default_confidence: float = 0.5
     level2_max_confidence: float = 0.85
+    # 関係拘束スコアから confidence への寄与上限
+    # (ConstraintConfig.constraint_boost_cap と同期して使用)
+    constraint_boost_cap: float = 0.15
 
 class InterpCascade:
     """
@@ -23,12 +29,15 @@ class InterpCascade:
         llm_bridge: Optional[Any] = None,
         config: Optional[CascadeConfig] = None,
         initial_cache: Optional[Dict[Tuple[str, str], str]] = None,
+        constraint_config: Optional[ConstraintConfig] = None,
     ):
         self.mb_graph = mb_graph
         self.llm_bridge = llm_bridge
         self.config = config or CascadeConfig()
         # Level 0 キャッシュ: (domain, norm_query) -> node_id
         self.level0_cache: Dict[Tuple[str, str], str] = dict(initial_cache) if initial_cache else {}
+        # 関係拘束評価器
+        self.constraint_locator = RelationConstraintLocator(constraint_config or ConstraintConfig())
 
     def export_cache(self) -> Dict[Tuple[str, str], str]:
         """現在保持している Level 0 キャッシュの不変スナップショットを複製出力"""
@@ -40,6 +49,30 @@ class InterpCascade:
 
     def _normalize(self, text: str) -> str:
         return re.sub(r"\s+", "", text.lower())
+
+    def _constraint_boost(self, node: MBNode, efp: BusinessInput) -> float:
+        """
+        現在の問い EFP に対するノードの関係拘束スコアを算出し、
+        confidence への寄与分（boost）を返す。
+        survive した拘束のみ boost、break / unresolved は 0。
+        """
+        from datetime import datetime, timezone
+        ctx = ConstraintContext(
+            efp=efp,
+            current_time=datetime.now(timezone.utc),
+            mb_version=getattr(self.mb_graph, "version", "prod"),
+            active_domain=efp.category,
+        )
+        bundles = self.constraint_locator.locate(self.mb_graph, ctx)
+        bundle = next((b for b in bundles if node.id in b.node_ids), None)
+        if bundle is None:
+            return 0.0
+        probe = RuptureProbe()
+        result = probe.probe(bundle, self.mb_graph, ctx)
+        if result.verdict == "survive":
+            return min(self.config.constraint_boost_cap, bundle.constraint_score * self.config.constraint_boost_cap)
+        return 0.0
+
 
     def interpret(self, efp: BusinessInput) -> InterpretationPrediction:
         norm_query = self._normalize(efp.query_text)
@@ -67,10 +100,11 @@ class InterpCascade:
             nid = self.level0_cache[cache_key]
             node = self.mb_graph.get(nid)
             if node and is_domain_eligible(node.domain, efp.category):
+                boost = self._constraint_boost(node, efp)
                 return InterpretationPrediction(
                     action_type=node.action_template.get("type", "direct_reply"),
                     content=node.action_template.get("payload", ""),
-                    confidence=min(1.0, node.confidence + self.config.cost_tier0_confidence_boost),
+                    confidence=min(1.0, node.confidence + self.config.cost_tier0_confidence_boost + boost),
                     matched_node_id=node.id,
                     cost_tier=0,
                     domain=node.domain,
@@ -88,10 +122,11 @@ class InterpCascade:
                 if self._normalize(key) == norm_query or key.lower() in efp.query_text.lower():
                     # ヒットしたらLevel 0キャッシュに昇格 (ドメイン境界付き)
                     self.level0_cache[cache_key] = node.id
+                    boost = self._constraint_boost(node, efp)
                     return InterpretationPrediction(
                         action_type=node.action_template.get("type", "direct_reply"),
                         content=node.action_template.get("payload", ""),
-                        confidence=node.confidence,
+                        confidence=min(1.0, node.confidence + boost),
                         matched_node_id=node.id,
                         cost_tier=1,
                         domain=node.domain,
@@ -101,10 +136,11 @@ class InterpCascade:
             # 正規表現ルールのチェック
             rule_expr = pattern.get("rule_expr")
             if rule_expr and re.search(rule_expr, efp.query_text, re.IGNORECASE):
+                boost = self._constraint_boost(node, efp)
                 return InterpretationPrediction(
                     action_type=node.action_template.get("type", "direct_reply"),
                     content=node.action_template.get("payload", ""),
-                    confidence=node.confidence,
+                    confidence=min(1.0, node.confidence + boost),
                     matched_node_id=node.id,
                     cost_tier=1,
                     domain=node.domain,
@@ -135,10 +171,12 @@ class InterpCascade:
                         best_node = node
 
         if best_node and best_score >= self.config.level2_threshold:
+            boost = self._constraint_boost(best_node, efp)
             return InterpretationPrediction(
                 action_type=best_node.action_template.get("type", "direct_reply"),
                 content=best_node.action_template.get("payload", ""),
-                confidence=min(self.config.level2_max_confidence, best_node.confidence * (0.6 + best_score)),
+                confidence=min(self.config.level2_max_confidence,
+                               best_node.confidence * (0.6 + best_score) + boost),
                 matched_node_id=best_node.id,
                 cost_tier=2,
                 domain=best_node.domain,

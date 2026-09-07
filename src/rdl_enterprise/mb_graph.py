@@ -132,8 +132,20 @@ class MBNode:
 
     def inertia(self) -> float:
         """
-        整合慣性質量 ||M_B||(node)
-        ||M_B|| = max(0.0, confidence * (1 + 0.3*success + 0.5*approval - 0.5*failure - 0.8*rejection))
+        関係拘束強度の「時間・更新抵抗断面」 I(M_B) （BASE v2.0 §4.2 / SPEC v2.0 §6.2）
+
+        【重要な区別】
+          - I(M_B) は「この構造が更新にどれだけ抵抗するか」の断面であり、
+            関係拘束強度 C_rel そのものではない。
+          - 大きい I は「変わりにくい」を意味し、「現在の問いへの正しさ」や
+            「信頼性」を直接表すものではない。
+          - confidence boost には使わない（constraint.py の constraint_score を使う）。
+
+        使用箇所:
+          - h_state.dissipate(): H の散逸率（I が高いほど冷えにくい）
+          - content_hash(): 力学状態のハッシュ化（慣性を含む同一性保証）
+
+        I(M_B) = max(0, confidence * (1 + 0.3*success + 0.5*approval - 0.5*failure - 0.8*rejection))
         """
         val = self.confidence * (
             1.0

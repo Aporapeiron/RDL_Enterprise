@@ -1,6 +1,6 @@
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 import copy
 
 from .mb_graph import MBGraph, MBNode
@@ -22,6 +22,9 @@ from .durability import DurabilityHarness
 from .shadow import ShadowEvaluator, ShadowReport
 from .canary import CanaryManager, CanaryDeployment, CanaryStatus, CanaryCompletionPolicy, ActionCapability
 from .promotion_gate import ProposalState, PromotionPolicy, PromotionGate
+from .constraint import (
+    ConstraintConfig, ConstraintContext, RelationConstraintLocator, RuptureProbe,
+)
 
 @dataclass
 class TicketDispatchResult:
@@ -350,12 +353,37 @@ class EnterpriseRuntime:
         # 熱 H の蓄積 (Version-aware: カナリアの熱は本番熱状態を汚染させない)
         target_nid = pred.matched_node_id or "__unmatched__"
         mb_ver = getattr(target_graph, "version", "prod")
+
+        # RuptureProbe: マッチしたノードの拘束が現在の EFP に対して破断しているか判定し、
+        # opposing_strength を算出して add_heat の重みとして使用する。
+        # (BASE v2.0 §4.2: 強い拘束と衝突した E は大きく保持する)
+        opposing_strength = 1.0
+        if matched_node is not None:
+            try:
+                ctx = ConstraintContext(
+                    efp=snapshot.efp,
+                    current_time=datetime.now(timezone.utc),
+                    mb_version=mb_ver,
+                    active_domain=snapshot.efp.category,
+                )
+                locator = RelationConstraintLocator()
+                bundles = locator.locate(target_graph, ctx)
+                bundle = next((b for b in bundles if matched_node.id in b.node_ids), None)
+                if bundle is not None:
+                    probe = RuptureProbe()
+                    rupture = probe.probe(bundle, target_graph, ctx)
+                    if rupture.verdict == "break":
+                        opposing_strength = rupture.opposing_strength
+            except Exception:
+                pass  # RuptureProbe の失敗は熱蓄積をブロックしない
+
         self.h_state.add_heat(
             target_nid,
             pred_err=e_pred,
             input_err=e_input,
             mb_version=mb_ver,
             is_canary=snapshot.is_canary,
+            opposing_constraint_strength=opposing_strength,
         )
         self.h_state.record_observation(
             unclassified=(pred.matched_node_id is None),

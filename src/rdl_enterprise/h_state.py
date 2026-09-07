@@ -46,29 +46,39 @@ class HState:
         input_err: float = 0.0,
         mb_version: str = "prod",
         is_canary: bool = False,
+        opposing_constraint_strength: float = 1.0,
     ):
         """
         誤差 E を熱として蓄積。
         is_canary=True の場合は本番の node_heats / global_heat を汚染せず、
         versioned_heats[(mb_version, node_id)] にのみ隔離蓄積する。
+
+        opposing_constraint_strength: 衝突した関係拘束の強さ（RuptureProbe から供給）
+          BASE v2.0 §4.2 整合: 強い拘束と衝突した E は大きく保持する。
+          H += mismatch * opposing_constraint_strength
+          デフォルト 1.0 (後方互換: 従来通りの発熱量)
         """
+        # 衝突した拘束の強さで E を重みづけ
+        weighted_pred_err = pred_err * max(0.0, opposing_constraint_strength)
+        weighted_input_err = input_err * max(0.0, opposing_constraint_strength)
+
         target_nid = node_id or "__unmatched__"
         v_key = (mb_version, target_nid)
         if v_key not in self.versioned_heats:
             self.versioned_heats[v_key] = HeatVector()
-        self.versioned_heats[v_key].prediction += pred_err
-        self.versioned_heats[v_key].input_err += input_err
+        self.versioned_heats[v_key].prediction += weighted_pred_err
+        self.versioned_heats[v_key].input_err += weighted_input_err
 
         # カナリア案件は本番熱状態を汚染させない
         if not is_canary:
             if node_id:
                 if node_id not in self.node_heats:
                     self.node_heats[node_id] = HeatVector()
-                self.node_heats[node_id].prediction += pred_err
-                self.node_heats[node_id].input_err += input_err
+                self.node_heats[node_id].prediction += weighted_pred_err
+                self.node_heats[node_id].input_err += weighted_input_err
 
-            self.global_heat.prediction += pred_err
-            self.global_heat.input_err += input_err
+            self.global_heat.prediction += weighted_pred_err
+            self.global_heat.input_err += weighted_input_err
 
     def get_heat_for_version(self, node_id: str, mb_version: str = "prod") -> HeatVector:
         """特定バージョンのノード熱を取得"""
@@ -162,11 +172,18 @@ class HState:
     def dissipate(self, node_inertias: Dict[str, float]):
         """
         熱の受動的自然散逸（冷却）
-        dH/dt = - A * H,  A = diag(γ * ||M_B||)
+        dH/dt = -γ / (1 + I(M_B)) * H
+
+        【旧設計からの変更】BASE v2.0 §4.2 整合：
+        慣性 I(M_B) が高い（強く結晶化した）構造に衝突した不整合 E は、
+        むしろ散逸しにくい（H を保持しやすい）。
+        旧: cooling_rate = γ*(1 + I)  → 慣性高い = 早く冷える（危険: 古参構造が反証を忘れやすくなる）
+        新: cooling_rate = γ/(1 + I)  → 慣性高い = 冷えにくい → H が下がらず → 再検査へ
         """
         for nid, heat in list(self.node_heats.items()):
             inertia = node_inertias.get(nid, 0.5)
-            cooling_rate = min(0.5, self.gamma * (1.0 + inertia))
+            # 慣性が高いほど cooling_rate が小さい（熱が残りやすい）
+            cooling_rate = min(0.3, self.gamma / (1.0 + inertia))
             heat.prediction *= (1.0 - cooling_rate)
             heat.input_err *= (1.0 - cooling_rate)
 
