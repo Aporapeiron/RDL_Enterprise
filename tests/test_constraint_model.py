@@ -832,6 +832,197 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
         self.assertNotIn("node_hr_1", bundle.node_ids)
 
 
+    def test_multi_node_bundle_no_irrelevant_action_type_inclusion(self):
+        """同一 action_type を持つだけの無関係ノードが束に混入しないこと (bundling純化)"""
+        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.constraint import RelationConstraintLocator, ConstraintContext
+
+        graph = MBGraph()
+        n_main = MBNode(id="n_tax", domain="finance", trigger_pattern={"exact_keys": ["法人税"]}, action_template={"type": "direct_reply", "payload": "税率回答"})
+        n_unrelated = MBNode(id="n_lunch", domain="finance", trigger_pattern={"exact_keys": ["社食代補助"]}, action_template={"type": "direct_reply", "payload": "補助回答"})
+        graph.add_or_update(n_main)
+        graph.add_or_update(n_unrelated)
+
+        locator = RelationConstraintLocator()
+        efp = _make_efp("法人税の申告")
+        ctx = ConstraintContext(efp=efp, active_domain="finance")
+
+        bundle = locator.locate_bundle_for_node(graph, n_main, ctx)
+        self.assertEqual(bundle.primary_node_id(), "n_tax")
+        # direct_reply が同じでも、キーを共有しない無関係ノードは束に含まれないこと
+        self.assertNotIn("n_lunch", bundle.node_ids)
+
+    def test_bundle_constraint_score_synergy(self):
+        """支援ノード群による相乗効果（synergy boost）が束の総合拘束スコアを高めること"""
+        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.constraint import RelationConstraintLocator, ConstraintContext
+
+        # 孤立した単独ノードグラフ
+        graph_solo = MBGraph()
+        n_solo = MBNode(id="n_solo", domain="finance", trigger_pattern={"exact_keys": ["海外送金"]}, action_template={"type": "direct_reply", "payload": "A"}, confidence=0.7, approval_count=5)
+        graph_solo.add_or_update(n_solo)
+
+        # 相互補強する支援ノードが存在するグラフ
+        graph_bundle = MBGraph()
+        n_base = MBNode(id="n_base", domain="finance", trigger_pattern={"exact_keys": ["海外送金"]}, action_template={"type": "direct_reply", "payload": "A"}, confidence=0.7, approval_count=5)
+        n_supp = MBNode(id="n_supp", domain="finance", trigger_pattern={"exact_keys": ["海外送金", "SWIFTコード"]}, action_template={"type": "direct_reply", "payload": "A"}, confidence=0.7, approval_count=10)
+        graph_bundle.add_or_update(n_base)
+        graph_bundle.add_or_update(n_supp)
+
+        locator = RelationConstraintLocator()
+        efp = _make_efp("海外送金の手数料")
+        ctx = ConstraintContext(efp=efp, active_domain="finance")
+
+        bundle_solo = locator.locate_bundle_for_node(graph_solo, n_solo, ctx)
+        bundle_multi = locator.locate_bundle_for_node(graph_bundle, n_base, ctx)
+
+        # 支援ノードの裏付けがある束の総合拘束スコアは単独ノードより高いこと
+        self.assertGreater(bundle_multi.constraint_score, bundle_solo.constraint_score)
+
+    def test_mb_graph_key_index_hot_path_fast_lookup(self):
+        """MBGraph の _key_index による高速共起検索が正しく機能すること"""
+        from rdl_enterprise.mb_graph import MBGraph, MBNode
+
+        graph = MBGraph()
+        n1 = MBNode(id="n1", domain="tech", trigger_pattern={"exact_keys": ["git pull", "git merge"]}, action_template={"type": "direct_reply", "payload": "A"})
+        n2 = MBNode(id="n2", domain="tech", trigger_pattern={"exact_keys": ["git push", "git pull"]}, action_template={"type": "direct_reply", "payload": "B"})
+        n3 = MBNode(id="n3", domain="tech", trigger_pattern={"exact_keys": ["docker run"]}, action_template={"type": "direct_reply", "payload": "C"})
+        graph.add_or_update(n1)
+        graph.add_or_update(n2)
+        graph.add_or_update(n3)
+
+        related = graph.find_co_occurring_nodes(n1)
+        related_ids = [r.id for r in related]
+        self.assertIn("n2", related_ids)
+        self.assertNotIn("n3", related_ids)
+        self.assertNotIn("n1", related_ids)
+
+    def test_bridge_node_detection_with_multi_node_bundles(self):
+        """multi-node bundle が存在しても bridge ノードが重複生成されないこと"""
+        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.constraint import RelationConstraintLocator, ConstraintContext
+
+        graph = MBGraph()
+        # bridge ノードと共起ノード
+        n_bridge = MBNode(id="n_bridge", domain="special", trigger_pattern={"exact_keys": ["極秘事項A", "極秘事項B"]}, action_template={"type": "direct_reply", "payload": "A"})
+        n_supp = MBNode(id="n_supp", domain="special", trigger_pattern={"exact_keys": ["極秘事項A"]}, action_template={"type": "direct_reply", "payload": "A"})
+        graph.add_or_update(n_bridge)
+        graph.add_or_update(n_supp)
+
+        locator = RelationConstraintLocator()
+        efp = _make_efp("極秘事項Aの閲覧")
+        ctx = ConstraintContext(efp=efp, active_domain="special")
+
+        bundles = locator.locate(graph, ctx)
+        bridge_bundles_for_n = [b for b in bundles if b.primary_node_id() == "n_bridge"]
+        # n_bridge を代表とするバンドルは重複せず1つだけであること
+        self.assertEqual(len(bridge_bundles_for_n), 1)
+
+    def test_historical_fact_vs_current_state_decay(self):
+        """確定過去事実 (historical_fact) は半減期∞で減衰せず、動的現在状態 (current_state) は急速に減衰すること"""
+        from datetime import datetime, timezone, timedelta
+        from rdl_enterprise.snapshot import FeedbackResult, RelationProvenance
+        from rdl_enterprise.constraint import compute_efp_prime_constraint
+
+        now = datetime(2026, 9, 1, 12, 0, 0, tzinfo=timezone.utc)
+        ten_days_ago = now - timedelta(days=10)
+
+        # 1. 10日前の確定過去記録 (historical_fact: トランザクション完了ログ)
+        prov_hist = RelationProvenance(
+            source_type="audit",
+            observed_at=ten_days_ago,
+            relation_type="historical_fact",
+        )
+        fb_hist = FeedbackResult(user_resolved=False, human_rejected=True, provenance=prov_hist)
+        c_hist = compute_efp_prime_constraint(fb_hist, current_time=now)
+        # 減衰しない (0.90)
+        self.assertAlmostEqual(c_hist, 0.90, places=2)
+
+        # 2. 10日前の動的現在状態 (current_state: センサー温度・口座残高など)
+        prov_current = RelationProvenance(
+            source_type="audit",
+            observed_at=ten_days_ago,
+            relation_type="current_state",
+        )
+        fb_current = FeedbackResult(user_resolved=False, human_rejected=True, provenance=prov_current)
+        c_current = compute_efp_prime_constraint(fb_current, current_time=now)
+        # 半減期 1.0日、10日経過でほぼ消失 (0.90 * 0.5^10 ≈ 0.00088 -> max(0.1) = 0.10)
+        self.assertEqual(c_current, 0.10)
+
+    def test_authoritative_judgment_is_relativized(self):
+        """is_authoritative=True でも claim_type="judgment" の場合は 1.0 に固定されず相対化されること"""
+        from rdl_enterprise.snapshot import FeedbackResult, RelationProvenance
+        from rdl_enterprise.constraint import compute_efp_prime_constraint
+
+        # 公式機関による主観的意見・裁量判断 (judgment)
+        prov_auth_judgment = RelationProvenance(
+            source_type="oracle",
+            is_authoritative=True,
+            claim_type="judgment",
+        )
+        fb = FeedbackResult(user_resolved=False, human_rejected=True, provenance=prov_auth_judgment)
+        c = compute_efp_prime_constraint(fb)
+        # 1.0 固定ではなく claim_factor (0.80) が適用される
+        self.assertAlmostEqual(c, 0.80, places=2)
+        self.assertLess(c, 1.0)
+
+    def test_rupture_probe_bundle_level_resilience(self):
+        """未承認の代表ノードでも、高承認の支援ノードが存在すれば束として survive すること"""
+        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.constraint import RelationConstraintLocator, RuptureProbe, ConstraintContext
+
+        graph = MBGraph()
+        # 代表ノードは未承認 (approval_count = 0)
+        n_primary = MBNode(id="n_new_flow", domain="sales", trigger_pattern={"exact_keys": ["新規見積作成"]}, action_template={"type": "direct_reply", "payload": "見積書フォーマット"}, confidence=0.6, approval_count=0)
+        # 支援ノードは高承認 (approval_count = 10)
+        n_supp = MBNode(id="n_old_flow", domain="sales", trigger_pattern={"exact_keys": ["新規見積作成", "割引率"]}, action_template={"type": "direct_reply", "payload": "見積書フォーマット"}, confidence=0.8, approval_count=10)
+        graph.add_or_update(n_primary)
+        graph.add_or_update(n_supp)
+
+        locator = RelationConstraintLocator()
+        efp = _make_efp("新規見積作成の手順", category="sales")
+        ctx = ConstraintContext(efp=efp, active_domain="sales")
+
+        bundle = locator.locate_bundle_for_node(graph, n_primary, ctx)
+        probe = RuptureProbe()
+        result = probe.probe(bundle, graph, ctx)
+
+        # 支援ノードの承認実績による相互補強・冗長性で survive すること
+        self.assertEqual(result.verdict, "survive")
+
+    def test_rupture_probe_bundle_internal_fissure_unresolved(self):
+        """束の構成ノード間でアクションが対立している場合、内部亀裂として unresolved (ξ) になること"""
+        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.constraint import ConstraintBundle, RuptureProbe, ConstraintContext
+
+        graph = MBGraph()
+        n1 = MBNode(id="n1", domain="sales", trigger_pattern={"exact_keys": ["割引"]}, action_template={"type": "direct_reply", "payload": "即時承認"}, confidence=0.8, approval_count=5)
+        n2 = MBNode(id="n2", domain="sales", trigger_pattern={"exact_keys": ["割引"]}, action_template={"type": "direct_reply", "payload": "部長決裁必須"}, confidence=0.8, approval_count=5)
+        graph.add_or_update(n1)
+        graph.add_or_update(n2)
+
+        # n1 と n2 が相容れないアクションを持つにもかかわらず同束に存在する場合
+        bundle = ConstraintBundle(
+            node_ids=["n1", "n2"],
+            locus_type="strong",
+            constraint_score=0.8,
+            relevance=0.8,
+            freshness=0.9,
+            authority_weight=0.4,
+            source_strength=0.8,
+        )
+
+        efp = _make_efp("割引の承認ルール", category="sales")
+        ctx = ConstraintContext(efp=efp, active_domain="sales")
+
+        probe = RuptureProbe()
+        result = probe.probe(bundle, graph, ctx)
+
+        # 束内部の対立により unresolved になること
+        self.assertEqual(result.verdict, "unresolved")
+        self.assertIn("束内部", result.rupture_reason)
+
+
 if __name__ == "__main__":
     unittest.main()
 

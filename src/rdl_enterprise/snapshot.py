@@ -48,7 +48,7 @@ class RelationProvenance:
     is_authoritative: bool = False      # 制度的公式記録・オラクル決定か
     authority_scope: Optional[str] = None # 管轄ドメイン・スコープ（例: "workflow", "hr", "security", "*"）
     claim_type: str = "general"         # 言明タイプ（"fact" | "rule" | "judgment" | "policy" | "general"）
-    relation_type: Optional[str] = None # 関係性質（時間減衰半減期を決定: "fact" | "policy" | "rule" | "ephemeral"）
+    relation_type: Optional[str] = None # 関係性質（時間減衰半減期を決定: "historical_fact" | "current_state" | "policy" | "rule" | "ephemeral" など）
 
 
 @dataclass

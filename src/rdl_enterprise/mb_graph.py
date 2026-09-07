@@ -184,9 +184,38 @@ class MBNode:
 class MBGraph:
     def __init__(self, m0: float = 3.0, version: str = "v1.0", is_frozen: bool = False):
         self.nodes: Dict[str, MBNode] = {}
+        self._key_index: Dict[str, set] = {}
+        self._domain_index: Dict[str, set] = {}
         self.m0 = m0
         self.version = version
         self.is_frozen = is_frozen
+
+    def _index_node(self, node: MBNode):
+        d = node.domain or "general"
+        if d not in self._domain_index:
+            self._domain_index[d] = set()
+        self._domain_index[d].add(node.id)
+
+        for k in node.trigger_pattern.get("exact_keys", []):
+            nk = k.strip().lower()
+            if nk:
+                if nk not in self._key_index:
+                    self._key_index[nk] = set()
+                self._key_index[nk].add(node.id)
+
+    def _unindex_node(self, node: MBNode):
+        d = node.domain or "general"
+        if d in self._domain_index and node.id in self._domain_index[d]:
+            self._domain_index[d].discard(node.id)
+            if not self._domain_index[d]:
+                del self._domain_index[d]
+
+        for k in node.trigger_pattern.get("exact_keys", []):
+            nk = k.strip().lower()
+            if nk in self._key_index and node.id in self._key_index[nk]:
+                self._key_index[nk].discard(node.id)
+                if not self._key_index[nk]:
+                    del self._key_index[nk]
 
     def freeze(self):
         """候補グラフおよび所属全ノードを完全固定（Deep Freeze: Canary中のIdentity Drift防止）"""
@@ -233,7 +262,10 @@ class MBGraph:
     def add_or_update(self, node: MBNode):
         if self.is_frozen:
             raise RuntimeError(f"MBGraph (version={self.version}) は凍結(frozen)されています。ノード {node.id} の変更・追加は禁止されています。")
+        if node.id in self.nodes:
+            self._unindex_node(self.nodes[node.id])
         self.nodes[node.id] = node
+        self._index_node(node)
 
     def get(self, node_id: str) -> Optional[MBNode]:
         return self.nodes.get(node_id)
@@ -242,14 +274,49 @@ class MBGraph:
         if self.is_frozen:
             raise RuntimeError(f"MBGraph (version={self.version}) は凍結(frozen)されています。ノード {node_id} の削除は禁止されています。")
         if node_id in self.nodes:
+            self._unindex_node(self.nodes[node_id])
             del self.nodes[node_id]
             return True
         return False
 
     def list_nodes(self, domain: Optional[str] = None) -> List[MBNode]:
         if domain:
+            if hasattr(self, "_domain_index") and domain in self._domain_index:
+                return [self.nodes[nid] for nid in self._domain_index[domain] if nid in self.nodes]
             return [n for n in self.nodes.values() if n.domain == domain]
         return list(self.nodes.values())
+
+    def find_co_occurring_nodes(self, node: MBNode, limit: int = 5) -> List[MBNode]:
+        """
+        指定ノードとトリガーキーを共有する同一ドメインのノード群を高速逆引き (O(keys))。
+        推論ホットパスでの全ノード走査 O(N) を排除する。
+        """
+        candidate_ids = set()
+        if hasattr(self, "_key_index"):
+            for k in node.trigger_pattern.get("exact_keys", []):
+                nk = k.strip().lower()
+                if nk in self._key_index:
+                    candidate_ids.update(self._key_index[nk])
+        else:
+            # インデックスがない場合のフォールバック
+            my_keys = set(k.strip().lower() for k in node.trigger_pattern.get("exact_keys", []))
+            for other in self.nodes.values():
+                if other.id != node.id and other.domain == node.domain:
+                    other_keys = set(k.strip().lower() for k in other.trigger_pattern.get("exact_keys", []))
+                    if other_keys & my_keys:
+                        candidate_ids.add(other.id)
+
+        candidate_ids.discard(node.id)
+
+        d = node.domain or "general"
+        related = []
+        for cid in candidate_ids:
+            cand = self.nodes.get(cid)
+            if cand and cand.domain == d:
+                related.append(cand)
+                if len(related) >= limit:
+                    break
+        return related
 
     def total_inertia(self) -> float:
         return sum(n.inertia() for n in self.nodes.values())
@@ -281,7 +348,7 @@ class MBGraph:
             node = MBNode(**node_dict)
             if node_frozen:
                 node.freeze()
-            graph.nodes[nid] = node
+            graph.add_or_update(node)
         if data.get("is_frozen", False):
             graph.freeze()
         return graph
