@@ -102,6 +102,30 @@ class InterpCascade:
             if is_domain_eligible(node.domain, efp.category)
         ]
 
+        is_prime = bool(efp.metadata.get("is_efp_prime", False))
+        user_resolved = efp.metadata.get("user_resolved", True)
+        human_rejected = efp.metadata.get("human_rejected", False)
+
+        def _build_prediction(node: MBNode, base_conf: float, cost_tier: int) -> InterpretationPrediction:
+            outcome = "resolve"
+            conf = base_conf
+            if is_prime:
+                if human_rejected:
+                    outcome = "escalate"
+                    conf = max(0.1, base_conf * 0.4)
+                elif not user_resolved:
+                    outcome = "need_input"
+                    conf = max(0.1, base_conf * 0.6)
+            return InterpretationPrediction(
+                action_type=node.action_template.get("type", "direct_reply"),
+                content=node.action_template.get("payload", ""),
+                confidence=min(1.0, conf),
+                matched_node_id=node.id,
+                cost_tier=cost_tier,
+                domain=node.domain,
+                expected_outcome=outcome,
+            )
+
         # -------------------------------------------------------------
         # Level 0: 完全一致キャッシュ (Cost Tier 0: ローカル最小コスト)
         # ドメイン境界 B とクエリのタプルで管理
@@ -112,15 +136,8 @@ class InterpCascade:
             node = self.mb_graph.get(nid)
             if node and is_domain_eligible(node.domain, efp.category):
                 boost = self._constraint_boost(node, efp)
-                return InterpretationPrediction(
-                    action_type=node.action_template.get("type", "direct_reply"),
-                    content=node.action_template.get("payload", ""),
-                    confidence=min(1.0, node.confidence + self.config.cost_tier0_confidence_boost + boost),
-                    matched_node_id=node.id,
-                    cost_tier=0,
-                    domain=node.domain,
-                    expected_outcome="resolve",
-                )
+                base_c = node.confidence + self.config.cost_tier0_confidence_boost + boost
+                return _build_prediction(node, base_c, cost_tier=0)
 
         # -------------------------------------------------------------
         # Level 1: 構造化確定ルール・正規表現 (Cost Tier 1)
@@ -134,29 +151,15 @@ class InterpCascade:
                     # ヒットしたらLevel 0キャッシュに昇格 (ドメイン境界付き)
                     self.level0_cache[cache_key] = node.id
                     boost = self._constraint_boost(node, efp)
-                    return InterpretationPrediction(
-                        action_type=node.action_template.get("type", "direct_reply"),
-                        content=node.action_template.get("payload", ""),
-                        confidence=min(1.0, node.confidence + boost),
-                        matched_node_id=node.id,
-                        cost_tier=1,
-                        domain=node.domain,
-                        expected_outcome="resolve",
-                    )
+                    base_c = node.confidence + boost
+                    return _build_prediction(node, base_c, cost_tier=1)
 
             # 正規表現ルールのチェック
             rule_expr = pattern.get("rule_expr")
             if rule_expr and re.search(rule_expr, efp.query_text, re.IGNORECASE):
                 boost = self._constraint_boost(node, efp)
-                return InterpretationPrediction(
-                    action_type=node.action_template.get("type", "direct_reply"),
-                    content=node.action_template.get("payload", ""),
-                    confidence=min(1.0, node.confidence + boost),
-                    matched_node_id=node.id,
-                    cost_tier=1,
-                    domain=node.domain,
-                    expected_outcome="resolve",
-                )
+                base_c = node.confidence + boost
+                return _build_prediction(node, base_c, cost_tier=1)
 
         # -------------------------------------------------------------
         # Level 2: 局所類似度マッチング (Cost Tier 2)
@@ -183,16 +186,9 @@ class InterpCascade:
 
         if best_node and best_score >= self.config.level2_threshold:
             boost = self._constraint_boost(best_node, efp)
-            return InterpretationPrediction(
-                action_type=best_node.action_template.get("type", "direct_reply"),
-                content=best_node.action_template.get("payload", ""),
-                confidence=min(self.config.level2_max_confidence,
-                               best_node.confidence * (0.6 + best_score) + boost),
-                matched_node_id=best_node.id,
-                cost_tier=2,
-                domain=best_node.domain,
-                expected_outcome="resolve",
-            )
+            base_c = min(self.config.level2_max_confidence,
+                         best_node.confidence * (0.6 + best_score) + boost)
+            return _build_prediction(best_node, base_c, cost_tier=2)
 
         # -------------------------------------------------------------
         # Level 3: 外部LLM推論器 (Cost Tier 3: 外部高コスト推論)
@@ -200,25 +196,44 @@ class InterpCascade:
         if self.llm_bridge:
             # 外部LLMまたはモックLLMを呼び出し
             llm_res = self.llm_bridge.resolve(efp)
+            base_conf = self.config.llm_default_confidence
+            outcome = "need_input"
+            if is_prime:
+                if human_rejected:
+                    outcome = "escalate"
+                    base_conf = max(0.05, base_conf * 0.4)
+                elif not user_resolved:
+                    outcome = "need_input"
+                    base_conf = max(0.05, base_conf * 0.6)
             return InterpretationPrediction(
                 action_type=llm_res.get("type", "direct_reply"),
                 content=llm_res.get("payload", "LLMによる汎用回答"),
-                confidence=self.config.llm_default_confidence,  # 未知初見のため標準確信度
+                confidence=base_conf,  # 未知初見のため標準確信度
                 matched_node_id=None,
                 cost_tier=3,
                 domain=efp.category or "unknown",
-                expected_outcome="need_input",
+                expected_outcome=outcome,
             )
 
         # LLM未設定のデフォルトフォールバック（人間に聞く）
+        fallback_conf = 0.1
+        fallback_outcome = "escalate"
+        if is_prime:
+            if human_rejected:
+                fallback_conf = 0.04
+                fallback_outcome = "escalate"
+            elif not user_resolved:
+                fallback_conf = 0.06
+                fallback_outcome = "need_input"
+
         return InterpretationPrediction(
             action_type="ask_human",
             content="過去事例・ルールが見つかりません。先輩社員へ確認が必要です。",
-            confidence=0.1,
+            confidence=fallback_conf,
             matched_node_id=None,
             cost_tier=3,
             domain=efp.category or "unknown",
-            expected_outcome="escalate",
+            expected_outcome=fallback_outcome,
         )
 
     def crystallize_rule(self, efp: BusinessInput, resolution_text: str, category: str, approved: bool = True):

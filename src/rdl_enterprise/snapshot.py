@@ -61,20 +61,20 @@ class FeedbackResult:
     provenance: Optional[RelationProvenance] = None  # 後続関係の来歴・権限
 
     def __post_init__(self):
-        # provenance 未指定時の後方互換補正
+        # provenance 未指定時の後方互換補正（権限の捏造を禁止し、通常の人間フィードバックとする）
         if self.provenance is None:
             if self.human_rejected:
                 self.provenance = RelationProvenance(
-                    source_type="admin",
-                    authority_level="human_only",
-                    channel="admin_override",
-                    is_authoritative=True,
+                    source_type="senior",
+                    authority_level="require_approval",
+                    channel="feedback",
+                    is_authoritative=False,
                 )
             elif self.human_approved:
                 self.provenance = RelationProvenance(
                     source_type="senior",
                     authority_level="require_approval",
-                    channel="standard",
+                    channel="feedback",
                     is_authoritative=False,
                 )
             else:
@@ -251,9 +251,16 @@ class EFPPrimeAdapter:
     """
     @staticmethod
     def adapt(efp: BusinessInput, feedback: FeedbackResult) -> BusinessInput:
+        from dataclasses import asdict
         prime_ticket_id = f"{efp.ticket_id}_prime"
-        # 元クエリの文脈と、事後提供された新情報・訂正・コメントを可逆的に統合
+        # 元クエリの文脈と、事後提供された新情報・是正指示・訂正・コメントを可逆的に統合
         text_components = [efp.query_text]
+        if feedback.human_rejected:
+            text_components.append("【事後帰結】差し戻し（人間判定により不適合）")
+        elif not feedback.user_resolved:
+            text_components.append("【事後帰結】未解決（ユーザー判定により不適合）")
+        if feedback.correction_content:
+            text_components.append(f"【是正・訂正指示】{feedback.correction_content}")
         if feedback.new_knowledge_provided:
             text_components.append(f"【新知識・追加指示】{feedback.new_knowledge_provided}")
         if feedback.actual_response_text and feedback.actual_response_text != efp.query_text:
@@ -264,6 +271,11 @@ class EFPPrimeAdapter:
         combined_text = "\n".join(text_components)
 
         metadata = dict(efp.metadata)
+        prov_dict = (
+            asdict(feedback.provenance)
+            if (feedback.provenance and hasattr(feedback.provenance, "__dataclass_fields__"))
+            else feedback.provenance
+        )
         metadata.update({
             "is_efp_prime": True,
             "original_query": efp.query_text,
@@ -273,6 +285,8 @@ class EFPPrimeAdapter:
             "actual_response_text": feedback.actual_response_text,
             "feedback_comment": feedback.feedback_comment,
             "new_knowledge_provided": feedback.new_knowledge_provided,
+            "correction_content": feedback.correction_content,
+            "relation_provenance": prov_dict,
         })
 
         return BusinessInput(
@@ -415,38 +429,56 @@ class CaseSnapshot:
             base_node = self.frozen_node_snapshot
             f_prime_action = getattr(base_node, "action_template", {}).get("type", self.f_pred.action_type) if base_node else self.f_pred.action_type
             f_prime_content = getattr(base_node, "action_template", {}).get("payload", self.f_pred.content) if base_node else self.f_pred.content
-            confidence_prime = getattr(base_node, "confidence", self.f_pred.confidence) if base_node else self.f_pred.confidence
+            base_conf = getattr(base_node, "confidence", self.f_pred.confidence) if base_node else self.f_pred.confidence
+
+            if obs_status == CaseStatus.REJECTED:
+                confidence_prime = max(0.1, base_conf * 0.4)
+                expected_outcome_prime = "escalate"
+            elif obs_status == CaseStatus.FAILURE:
+                confidence_prime = max(0.1, base_conf * 0.6)
+                expected_outcome_prime = "need_input"
+            else:
+                confidence_prime = base_conf
+                expected_outcome_prime = "resolve"
+
             matched_nid = self.f_pred.matched_node_id
             cost_tier_prime = self.f_pred.cost_tier
             domain_prime = self.f_pred.domain
-            expected_outcome_prime = self.f_pred.expected_outcome
 
-        # 3. 総合誤差 E = Δ(F, F') の算出
-        # (a) 外界帰結シグナルに基づく予測破断ペナルティ Δ_reaction
-        delta_reaction = 0.0
-        if obs_status == CaseStatus.REJECTED:
-            delta_reaction += 1.5
-            explanation = "F' 事後解釈: 権限者による差し戻し（更新前モデルの解釈境界が破断）"
-        elif obs_status == CaseStatus.FAILURE:
-            delta_reaction += 1.0
-            explanation = "F' 事後解釈: ユーザー未解決（更新前モデルの予測回答が不適合）"
-        else:
-            explanation = "F' 事後解釈: ユーザー解決完了（更新前モデルの予測と外界帰結が整合）"
-
-        if self.f_pred.expected_outcome in ("resolve", "resolved") and obs_outcome not in ("resolve", "resolved"):
-            delta_reaction += 0.5
-
-        # (b) 解釈器内部の予測差分 Δ_pred(F, F') (確信度乖離・ノード境界変異)
+        # 3. 総合不整合 E = Δ(F, F') の純粋算出 (T0 SPEC 4, 6.1 / C4)
+        # 外界帰結ステータスによる直接加算 (delta_reaction) を完全撤廃し、
+        # 事前予測 F と同一更新前 M_B から導出された後続作用解釈 F' の純粋な差異として計算する。
         delta_pred = 0.0
-        conf_gap = max(0.0, self.f_pred.confidence - confidence_prime)
-        delta_pred += 0.2 * conf_gap
+        diff_reasons = []
 
-        if reinterpreted_pred and reinterpreted_pred.matched_node_id != self.f_pred.matched_node_id:
-            if obs_status in (CaseStatus.FAILURE, CaseStatus.REJECTED):
-                delta_pred += 0.3
-                explanation += f" (更新前 M_B 再解釈でのノード境界変異検知: {self.f_pred.matched_node_id} -> {reinterpreted_pred.matched_node_id})"
+        # (a) ノード境界変異（後続作用によってマッチしたルールが変わったか）
+        if matched_nid != self.f_pred.matched_node_id:
+            delta_pred += 0.5
+            diff_reasons.append(f"ノード境界変異({self.f_pred.matched_node_id} -> {matched_nid})")
 
-        e_pred = delta_reaction + delta_pred
+        # (b) アクションタイプ変異
+        if f_prime_action != self.f_pred.action_type:
+            delta_pred += 0.4
+            diff_reasons.append(f"アクション変異({self.f_pred.action_type} -> {f_prime_action})")
+
+        # (c) 期待帰結変異
+        if expected_outcome_prime != self.f_pred.expected_outcome:
+            delta_pred += 0.4
+            diff_reasons.append(f"期待帰結変異({self.f_pred.expected_outcome} -> {expected_outcome_prime})")
+
+        # (d) 確信度乖離
+        conf_gap = abs(self.f_pred.confidence - confidence_prime)
+        if conf_gap > 1e-4:
+            delta_pred += 0.4 * conf_gap
+            diff_reasons.append(f"確信度乖離(Δ={conf_gap:.3f})")
+
+        # (e) 回答内容の乖離
+        if f_prime_content != self.f_pred.content:
+            delta_pred += 0.2
+            diff_reasons.append("回答内容差異")
+
+        e_pred = delta_pred
+        explanation = f"F' 事後解釈: Δ(F,F')={e_pred:.3f}" + (f" [{', '.join(diff_reasons)}]" if diff_reasons else " [解釈完全一致]")
 
         # (c) 入力素流圧境界差分 Δ_input(EFP, EFP') (E_input)
         e_input = 0.0

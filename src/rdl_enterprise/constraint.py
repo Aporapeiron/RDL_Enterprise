@@ -206,6 +206,7 @@ def _compute_constraint_score(
 def compute_efp_prime_constraint(
     feedback: object,                  # FeedbackResult
     snapshot: Optional[object] = None, # CaseSnapshot
+    current_time: Optional[datetime] = None,
 ) -> float:
     """
     後続作用 EFP' およびフィードバックから抽出される対向関係拘束強度 C_prime ∈ [0.1, 1.0]
@@ -218,6 +219,7 @@ def compute_efp_prime_constraint(
       - 先輩・上級権限 (source_type="senior", authority_level="require_approval"): 0.85
       - 伝達経路 (official_doc, audit_log, admin_override): チャネル加算
       - 反証の実質性 (correction_content, new_knowledge_provided): 具現性加算
+      - 時点拘束 (observed_at): 報告時刻の新鮮さによる時間的減衰
     """
     prov = getattr(feedback, "provenance", None)
 
@@ -258,7 +260,23 @@ def compute_efp_prime_constraint(
     if getattr(feedback, "new_knowledge_provided", None):
         substance += 0.10
 
-    c_prime = min(1.0, auth_weight + substance)
+    # 3. 時点拘束 (observed_at の新鮮さ)
+    time_factor = 1.0
+    obs_at = getattr(prov, "observed_at", None) if prov else None
+    if obs_at is not None:
+        try:
+            import math
+            now = current_time or datetime.now(timezone.utc)
+            if obs_at.tzinfo is None:
+                obs_at = obs_at.replace(tzinfo=timezone.utc)
+            if now.tzinfo is None:
+                now = now.replace(tzinfo=timezone.utc)
+            elapsed_days = max(0.0, (now - obs_at).total_seconds() / 86400.0)
+            time_factor = math.exp(-math.log(2) * elapsed_days / 90.0)
+        except Exception:
+            time_factor = 1.0
+
+    c_prime = min(1.0, (auth_weight + substance) * time_factor)
     return max(0.1, float(c_prime))
 
 

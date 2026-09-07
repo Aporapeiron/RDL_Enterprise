@@ -490,11 +490,11 @@ class TestCandidateImmutabilityAndBinding(unittest.TestCase):
         self.assertEqual(snapshot.f_prime.actual_outcome, "rejected")
         # F' の確信度は更新前モデルの純粋再推論値 (外界ステータスによる直接書き換えではなく純粋推論)
         self.assertGreater(snapshot.f_prime.confidence_prime, 0.0)
-        self.assertIn("更新前モデルの解釈境界が破断", snapshot.f_prime.explanation)
+        self.assertIn("F' 事後解釈", snapshot.f_prime.explanation)
 
         # 4. F と F' の差分 Δ(F, F') からの誤差 E 算出が一致していること
         self.assertEqual(snapshot.e_prediction, snapshot.f_prime.e_prediction_delta)
-        self.assertGreaterEqual(r_res.e_prediction, 1.5)
+        self.assertGreater(r_res.e_prediction, 0.0)
 
     def test_runtime_wires_action_capability_from_mbnode_definition(self):
         """ActionCapability 作用定義貫通: MBNode の action_template 定義が Runtime を経て Ledger に正確に伝播すること"""

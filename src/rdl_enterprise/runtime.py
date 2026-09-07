@@ -360,17 +360,17 @@ class EnterpriseRuntime:
         # RuptureProbe & 対向拘束強度 (C_old × C_prime) の算出 (BASE v2.0 §4.2)
         c_old = 0.5
         rupture_opposing = 1.0
+        frozen_constraint_cfg = (
+            getattr(frozen_ctx, "constraint_config", None) if frozen_ctx else None
+        )
+        frozen_eval_time = (
+            getattr(frozen_ctx, "constraint_evaluation_time", None) if frozen_ctx else None
+        )
+        eval_time = frozen_eval_time or datetime.now(timezone.utc)
+        constraint_cfg = frozen_constraint_cfg or ConstraintConfig()
+
         if eval_matched_node is not None:
             try:
-                frozen_constraint_cfg = (
-                    getattr(frozen_ctx, "constraint_config", None) if frozen_ctx else None
-                )
-                frozen_eval_time = (
-                    getattr(frozen_ctx, "constraint_evaluation_time", None) if frozen_ctx else None
-                )
-                eval_time = frozen_eval_time or datetime.now(timezone.utc)
-                constraint_cfg = frozen_constraint_cfg or ConstraintConfig()
-
                 ctx = ConstraintContext(
                     efp=snapshot.efp,
                     current_time=eval_time,
@@ -391,8 +391,8 @@ class EnterpriseRuntime:
             except Exception:
                 pass
 
-        # 後続 EFP' 側の拘束 C_prime を抽出
-        c_prime = compute_efp_prime_constraint(feedback, snapshot)
+        # 後続 EFP' 側の拘束 C_prime を抽出（時点拘束 eval_time を反映）
+        c_prime = compute_efp_prime_constraint(feedback, snapshot, current_time=eval_time)
         has_conflict = bool(e_pred > 0 or e_input > 0 or feedback.human_rejected or rupture_opposing > 1.0)
         # C_old (既存拘束) と C_prime (後続拘束) の衝突から実効対向拘束強度を算出
         opposing_strength = max(rupture_opposing, compute_opposing_conflict_strength(c_old, c_prime, has_conflict))

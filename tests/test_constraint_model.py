@@ -543,14 +543,19 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
             compute_efp_prime_constraint,
             compute_opposing_conflict_strength,
         )
-        from rdl_enterprise.snapshot import FeedbackResult
+        from rdl_enterprise.snapshot import FeedbackResult, RelationProvenance
 
-        # 人間管理者による拒絶フィードバック
+        # 人間管理者による拒絶フィードバック (明示的な制度的・管理者権限 Provenance)
         feedback_human = FeedbackResult(
             user_resolved=False,
             human_approved=False,
             human_rejected=True,
             feedback_comment="新方針によりこのルールは即時無効",
+            provenance=RelationProvenance(
+                source_type="admin",
+                authority_level="human_only",
+                is_authoritative=True,
+            ),
         )
         c_prime = compute_efp_prime_constraint(feedback_human)
         self.assertEqual(c_prime, 1.0, "人間管理者の拒絶は C_prime=1.0")
