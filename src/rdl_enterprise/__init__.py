@@ -9,11 +9,20 @@ from .snapshot import (
 )
 from .cascade import InterpCascade
 from .human import HumanQuery
+from .authority import AuthorityContext
+from .durability import (
+    DurabilityChecker,
+    DurabilityReport,
+    DurabilityHarness,
+    RegressionHistoryChecker,
+    AuthorityBoundaryChecker,
+)
 from .runtime import (
     EnterpriseRuntime,
     TicketExecutionResult,
     TicketDispatchResult,
     TicketResolutionResult,
+    ReorganizationProposal,
 )
 
 __all__ = [
@@ -28,8 +37,15 @@ __all__ = [
     "CaseStatus",
     "InterpCascade",
     "HumanQuery",
+    "AuthorityContext",
+    "DurabilityChecker",
+    "DurabilityReport",
+    "DurabilityHarness",
+    "RegressionHistoryChecker",
+    "AuthorityBoundaryChecker",
     "EnterpriseRuntime",
     "TicketExecutionResult",
     "TicketDispatchResult",
     "TicketResolutionResult",
+    "ReorganizationProposal",
 ]

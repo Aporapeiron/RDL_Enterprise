@@ -170,6 +170,86 @@ class TestRDLCore(unittest.TestCase):
         metrics = runtime.get_metrics()
         self.assertEqual(metrics["unknown_tickets_count"], 1)
 
+    def test_authority_context(self):
+        """権限コンテキストのスコープとロールの検証"""
+        from rdl_enterprise.authority import AuthorityContext
+        admin = AuthorityContext(actor_id="admin_01", role="admin", scope="all")
+        self.assertTrue(admin.is_authorized_for("network"))
+        self.assertTrue(admin.is_authorized_for("workflow"))
+
+        network_mgr = AuthorityContext(actor_id="mgr_01", role="manager", scope="network")
+        self.assertTrue(network_mgr.is_authorized_for("network"))
+        self.assertFalse(network_mgr.is_authorized_for("security"))
+
+        senior = AuthorityContext(actor_id="sen_01", role="senior", scope="all")
+        self.assertFalse(senior.is_authorized_for("network"))  # seniorは公式権限者ではない
+
+    def test_durability_harness(self):
+        """破断検査ハーネス（履歴・境界）の動作検証"""
+        from rdl_enterprise.durability import DurabilityHarness
+        graph = MBGraph()
+        # 特権ノードが誤ってautoになっている脆弱な候補M_B
+        bad_node = MBNode(
+            id="bad_admin",
+            domain="security",
+            trigger_pattern={"exact_keys": ["管理者権限申請"]},
+            action_template={"type": "direct_reply", "payload": "OK"},
+            authority_level="auto",  # 脆弱！
+        )
+        graph.add_or_update(bad_node)
+
+        harness = DurabilityHarness()
+        res = harness.run_all(graph, history=[])
+        self.assertFalse(res["all_passed"])  # AuthorityBoundaryCheckerで不合格になるはず！
+        self.assertEqual(len(res["reports"][1]["break_points"]), 1)
+
+    def test_m_delta_pipeline_and_promotion(self):
+        """再編相 M_Δ の候補起草 -> 検査 -> 権限者承認 -> M_B置換のパイプライン検証"""
+        from rdl_enterprise.authority import AuthorityContext
+        graph = MBGraph()
+        node = MBNode(
+            id="node_wf",
+            domain="workflow",
+            trigger_pattern={"exact_keys": ["稟議申請"]},
+            action_template={"type": "direct_reply", "payload": "http://old-url.corp"},
+            confidence=0.8,
+        )
+        graph.add_or_update(node)
+
+        # 自動昇格はOFFにして手動承認を検証
+        runtime = EnterpriseRuntime(mb_graph=graph, theta_0=1.0, auto_promote_reorganizations=False)
+
+        efp = BusinessInput("T_WF_01", "U005", "workflow", "稟議申請のURLは？")
+
+        # 差し戻しを発生させて熱を高める (H >= theta_eff)
+        runtime.handle_ticket(
+            efp,
+            feedback=FeedbackResult(
+                user_resolved=False,
+                human_rejected=True,
+                new_knowledge_provided="http://new-saas.corp",
+            ),
+        )
+
+        # M_Δ が発動し、プロポーザルが作成されたはず！
+        self.assertEqual(len(runtime.pending_reorganizations), 1)
+        prop_id = list(runtime.pending_reorganizations.keys())[0]
+        prop = runtime.pending_reorganizations[prop_id]
+        self.assertEqual(prop.status, "awaiting_approval")
+        self.assertTrue(prop.durability_test_result["all_passed"])
+
+        # 本番M_Bはまだ置換されていない
+        self.assertEqual(runtime.mb_graph.get("node_wf").action_template["payload"], "http://old-url.corp")
+
+        # 権限者（Manager）による正式承認！
+        mgr = AuthorityContext(actor_id="mgr_wf", role="manager", scope="workflow")
+        success = runtime.promote_candidate_mb(prop_id, authority=mgr)
+        self.assertTrue(success)
+
+        # 本番M_Bが新URLへ無事昇格・置換された！
+        self.assertEqual(runtime.mb_graph.get("node_wf").action_template["payload"], "http://new-saas.corp")
+        self.assertEqual(len(runtime.pending_reorganizations), 0)
+
 
 if __name__ == "__main__":
     unittest.main()
