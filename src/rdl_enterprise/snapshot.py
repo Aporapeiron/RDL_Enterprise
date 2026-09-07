@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 from typing import Dict, Any, Optional, Tuple
 from enum import Enum
 from datetime import datetime
+import copy
 
 class CaseStatus(str, Enum):
     PENDING = "pending"     # 回答・アクション実行済み、結果（EFP'）待ち
@@ -76,7 +77,7 @@ class LLMBridgeIdentity:
 class FrozenInterpretationContext:
     """
     更新前の同一 M_B および推論環境（キャッシュ・設定・モデルIdentity）の完全凍結スナップショット (T0 SPEC 4, 6.1)
-    F (事前予測) と F' (事後解釈) を厳密に同一の前提・同一の解釈条件のもとで形成するための暗号論的保証構造。
+    F (事前予測) と F' (事後解釈) を厳密に同一の初期前提・同一の解釈条件のもとで独立形成するための暗号論的保証構造。
     """
     mb_version: str
     mb_content_hash: str
@@ -86,30 +87,76 @@ class FrozenInterpretationContext:
     initial_level0_cache: Dict[Tuple[str, str], str] = field(default_factory=dict)
     cascade_config: Optional[Any] = None                  # CascadeConfig
     llm_identity: Optional[LLMBridgeIdentity] = None
-    _context_cascade: Optional[Any] = field(default=None, repr=False, compare=False)
+    context_hash: str = ""
+    is_frozen: bool = False
+
+    def __post_init__(self):
+        # 外部変更を防ぐため辞書や設定をディープコピー
+        import copy
+        if not self.is_frozen:
+            super().__setattr__("initial_level0_cache", dict(self.initial_level0_cache))
+            if self.cascade_config is not None:
+                super().__setattr__("cascade_config", copy.deepcopy(self.cascade_config))
+            if not self.context_hash:
+                super().__setattr__("context_hash", self.compute_context_hash())
+            super().__setattr__("is_frozen", True)
+
+    def __setattr__(self, name: str, value: Any):
+        if getattr(self, "is_frozen", False):
+            raise RuntimeError(f"FrozenInterpretationContext は完全凍結(frozen)されています。属性 '{name}' の変更は禁止されています。")
+        super().__setattr__(name, value)
+
+    def compute_context_hash(self) -> str:
+        """コンテキスト全体の構成要素（M_B、キャッシュ、設定、LLM、ドメイン）から完全な暗号論的ハッシュを生成"""
+        from dataclasses import asdict
+        cfg_dict = asdict(self.cascade_config) if (self.cascade_config and hasattr(self.cascade_config, "__dataclass_fields__")) else {}
+        llm_dict = asdict(self.llm_identity) if (self.llm_identity and hasattr(self.llm_identity, "__dataclass_fields__")) else {}
+        # キャッシュのソート済みシリアライズ
+        sorted_cache = sorted([f"{k[0]}:{k[1]}->{v}" for k, v in self.initial_level0_cache.items()])
+        payload = {
+            "mb_version": self.mb_version,
+            "mb_content_hash": self.mb_content_hash,
+            "target_domain": self.target_domain or "",
+            "cascade_config": cfg_dict,
+            "llm_identity": llm_dict,
+            "cache": sorted_cache,
+        }
+        serialized = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+        return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+    def create_isolated_cascade(self) -> Any:
+        """
+        F および F' が互いの計算によるキャッシュ変化に干渉されないよう、
+        初期キャッシュスナップショット C0 から独立した InterpCascade インスタンスを生成。
+        (T0 SPEC: F = interpret(EFP, C0), F' = interpret(EFP', C0))
+        """
+        from .cascade import InterpCascade, CascadeConfig
+        cfg = copy.deepcopy(self.cascade_config) if self.cascade_config is not None else CascadeConfig()
+        return InterpCascade(
+            mb_graph=self.frozen_mb,
+            llm_bridge=self.llm_bridge,
+            config=cfg,
+            initial_cache=dict(self.initial_level0_cache),  # 常に初期 C0 のコピーを渡す
+        )
 
     def get_or_create_cascade(self) -> Any:
-        """同一コンテキスト内で共有される InterpCascade インスタンスを取得"""
-        if self._context_cascade is None:
-            from .cascade import InterpCascade, CascadeConfig
-            cfg = self.cascade_config if self.cascade_config is not None else CascadeConfig()
-            self._context_cascade = InterpCascade(
-                mb_graph=self.frozen_mb,
-                llm_bridge=self.llm_bridge,
-                config=cfg,
-                initial_cache=self.initial_level0_cache,
-            )
-        return self._context_cascade
+        """後方互換用エイリアス（独立した InterpCascade インスタンスを生成）"""
+        return self.create_isolated_cascade()
 
     def interpret_efp(self, efp: BusinessInput) -> InterpretationPrediction:
-        """更新前の同一 M_B 前提・同一解釈条件を用いて入力を解釈 (interp(M_B, EFP))"""
-        # 1. グラフ変質（Identity Drift）の検証
+        """更新前の同一 M_B 前提・同一解釈条件（初期状態 C0）を用いて入力を独立解釈"""
+        # 1. コンテキスト全体の変質（Context Drift）を総合検証
+        cur_ctx_hash = self.compute_context_hash()
+        if self.context_hash and cur_ctx_hash != self.context_hash:
+            raise RuntimeError(f"FrozenInterpretationContext の変質を検知 (Context Drift: {cur_ctx_hash} != {self.context_hash})")
+
+        # 2. グラフ変質の検証 (後方互換明示チェック)
         if hasattr(self.frozen_mb, "content_hash"):
             current_h = self.frozen_mb.content_hash()
             if self.mb_content_hash != "unknown" and current_h != self.mb_content_hash:
                 raise RuntimeError(f"FrozenInterpretationContext の変質を検知 (Identity Drift: {current_h} != {self.mb_content_hash})")
 
-        # 2. 推論器 (LLM Bridge) の同一性検証
+        # 3. 推論器 (LLM Bridge) の同一性検証
         if self.llm_identity is not None and self.llm_bridge is not None:
             current_id = LLMBridgeIdentity.from_bridge(self.llm_bridge)
             if current_id.config_hash != self.llm_identity.config_hash:
@@ -117,7 +164,7 @@ class FrozenInterpretationContext:
                     f"LLM Identity Drift を検知 (推論器構成の変質: {current_id} != {self.llm_identity})"
                 )
 
-        cascade = self.get_or_create_cascade()
+        cascade = self.create_isolated_cascade()
         return cascade.interpret(efp)
 
 
@@ -161,10 +208,10 @@ class EFPPrimeAdapter:
 
 
 @dataclass
-class ObservedOutcome:
+class OutcomeObservation:
     """
-    外界で実際に観測された事実 O' (T0: 外界帰結)
-    F' (更新前M_Bによる解釈) と厳密に分離される外界の観測結果
+    後続して取得された帰結観測情報 (T0: EFP'の外界反作用シグナル)
+    ※「世界そのもの」ではなく、有限な観測境界 B を通して取得された観測記録・報告。
     """
     status: CaseStatus                         # SUCCESS | FAILURE | REJECTED | UNKNOWN
     outcome: str                               # "resolve" | "unresolved" | "rejected"
@@ -176,23 +223,28 @@ class ObservedOutcome:
     observed_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
 
 
+# 後方互換エイリアス
+ObservedOutcome = OutcomeObservation
+
+
 @dataclass
 class SubsequentInterpretation:
     """
     純粋な後続作用解釈 F' (T0 SPEC 4, 6.1)
-    後続する EFP' を、更新前の同一 M_B が解釈して形成した作用予測情報 interp(M_B, EFP')
+    後続する EFP' を、更新前の同一 M_B が初期状態 C0 から解釈して形成した純粋な作用予測情報 interp(M_B, EFP')
+    外界観測ステータスによる直接書き換えを受けず、解釈器本来の推論結果を保持する。
     """
     action_type: str                           # 解釈されたアクション ("direct_reply" | "tool_call" | "ask_human" | "delegate")
     content: str                               # 作用内容
-    confidence_prime: float                    # 事後入力受領後の更新前構造における確信度
+    confidence_prime: float                    # 事後入力受領後の更新前構造における純粋な確信度評価
     matched_node_id: Optional[str]             # 更新前前提での該当ノードID
     cost_tier: int                             # 0: ローカル最小, 1: ルール, 2: 局所推論, 3: 外部LLM
     domain: Optional[str]                      # 解釈ドメイン境界
     expected_outcome: str                      # "resolve" | "need_input" | "escalate"
-    e_prediction_delta: float                  # F と F' および O' の間の総合予測不整合
-    e_input_delta: float                       # 入力境界の不整合 Δ_input(EFP, EFP')
-    actual_status: Optional[CaseStatus] = None # 後方互換性プロパティ (ObservedOutcome.status と連動)
-    actual_outcome: Optional[str] = None       # 後方互換性プロパティ (ObservedOutcome.outcome と連動)
+    actual_status: Optional[CaseStatus] = None # 後方互換性プロパティ (OutcomeObservation.status と連動)
+    actual_outcome: Optional[str] = None       # 後方互換性プロパティ (OutcomeObservation.outcome と連動)
+    e_prediction_delta: float = 0.0            # 後方互換性プロパティ (CaseSnapshot.e_prediction と連動)
+    e_input_delta: float = 0.0                 # 後方互換性プロパティ (CaseSnapshot.e_input と連動)
     explanation: str = ""                      # 解釈根拠の記録
     interpreted_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
 
@@ -221,12 +273,21 @@ class CaseSnapshot:
         self.frozen_context = frozen_context
         self.status = CaseStatus.PENDING
         self.efp_prime: Optional[FeedbackResult] = None
-        self.f_prime: Optional[SubsequentInterpretation] = None  # 後続作用解釈 F'
-        self.observed_outcome: Optional[ObservedOutcome] = None # 外界観測事実 O'
+        self.f_prime: Optional[SubsequentInterpretation] = None  # 純粋な後続作用解釈 F'
+        self.outcome_observation: Optional[OutcomeObservation] = None # 外界帰結観測情報
         self.e_prediction: Optional[float] = None
         self.e_input: Optional[float] = None
         self.dispatched_at = datetime.utcnow().isoformat()
         self.resolved_at: Optional[str] = None
+
+    @property
+    def observed_outcome(self) -> Optional[OutcomeObservation]:
+        """後方互換プロパティ"""
+        return self.outcome_observation
+
+    @observed_outcome.setter
+    def observed_outcome(self, val: Optional[OutcomeObservation]):
+        self.outcome_observation = val
 
     def record_feedback(self, feedback: FeedbackResult) -> Tuple[float, float]:
         """
@@ -236,8 +297,7 @@ class CaseSnapshot:
         self.efp_prime = feedback
         self.resolved_at = datetime.utcnow().isoformat()
 
-        # 1. 更新前の同一構造 (frozen_context) による後続結果 EFP' の真の再解釈
-        # 1. 外界観測事実 O' (ObservedOutcome) の確定
+        # 1. 外界帰結観測情報 (OutcomeObservation) の確定 (EFP'の反作用成分)
         if feedback.human_rejected:
             obs_status = CaseStatus.REJECTED
             obs_outcome = "rejected"
@@ -249,7 +309,7 @@ class CaseSnapshot:
             obs_outcome = "resolve"
 
         self.status = obs_status
-        self.observed_outcome = ObservedOutcome(
+        self.outcome_observation = OutcomeObservation(
             status=obs_status,
             outcome=obs_outcome,
             user_resolved=feedback.user_resolved,
@@ -259,17 +319,17 @@ class CaseSnapshot:
             actual_response_text=feedback.actual_response_text,
         )
 
-        # 2. 更新前の同一構造・同一解釈条件 (frozen_context) による後続結果 EFP' の真の再解釈 (F')
+        # 2. 更新前の同一構造・同一初期キャッシュ条件 C0 (frozen_context) による後続結果 EFP' の真の再解釈 (F')
         efp_prime_input = EFPPrimeAdapter.adapt(self.efp, feedback)
         reinterpreted_pred = None
         if self.frozen_context:
             reinterpreted_pred = self.frozen_context.interpret_efp(efp_prime_input)
 
-        # 純粋な事後予測 F' の属性決定
+        # 純粋な事後予測 F' の属性決定 (外界観測ステータスによる確信度の直接書き換えを完全排除)
         if reinterpreted_pred:
             f_prime_action = reinterpreted_pred.action_type
             f_prime_content = reinterpreted_pred.content
-            base_conf = reinterpreted_pred.confidence
+            confidence_prime = reinterpreted_pred.confidence  # 純粋な再推論確信度
             matched_nid = reinterpreted_pred.matched_node_id
             cost_tier_prime = reinterpreted_pred.cost_tier
             domain_prime = reinterpreted_pred.domain
@@ -278,34 +338,26 @@ class CaseSnapshot:
             base_node = self.frozen_node_snapshot
             f_prime_action = getattr(base_node, "action_template", {}).get("type", self.f_pred.action_type) if base_node else self.f_pred.action_type
             f_prime_content = getattr(base_node, "action_template", {}).get("payload", self.f_pred.content) if base_node else self.f_pred.content
-            base_conf = getattr(base_node, "confidence", self.f_pred.confidence) if base_node else self.f_pred.confidence
+            confidence_prime = getattr(base_node, "confidence", self.f_pred.confidence) if base_node else self.f_pred.confidence
             matched_nid = self.f_pred.matched_node_id
             cost_tier_prime = self.f_pred.cost_tier
             domain_prime = self.f_pred.domain
             expected_outcome_prime = self.f_pred.expected_outcome
 
-        # 外界帰結 O' と連動した更新前前提での確信度評価 (confidence_prime)
+        # 3. 総合誤差 E = Δ(F, F') の算出
+        # (a) 外界帰結シグナルに基づく予測破断ペナルティ Δ_reaction
+        delta_reaction = 0.0
         if obs_status == CaseStatus.REJECTED:
-            confidence_prime = 0.0
-        elif obs_status == CaseStatus.FAILURE:
-            confidence_prime = max(0.0, base_conf - 0.4)
-        else:
-            confidence_prime = min(1.0, base_conf + 0.05)
-
-        # 3. 総合誤差 E = Δ(F, F', O') の算出
-        # (a) 外界帰結不整合 Δ_outcome(F, O')
-        delta_outcome = 0.0
-        if obs_status == CaseStatus.REJECTED:
-            delta_outcome += 1.5
+            delta_reaction += 1.5
             explanation = "F' 事後解釈: 権限者による差し戻し（更新前モデルの解釈境界が破断）"
         elif obs_status == CaseStatus.FAILURE:
-            delta_outcome += 1.0
+            delta_reaction += 1.0
             explanation = "F' 事後解釈: ユーザー未解決（更新前モデルの予測回答が不適合）"
         else:
             explanation = "F' 事後解釈: ユーザー解決完了（更新前モデルの予測と外界帰結が整合）"
 
         if self.f_pred.expected_outcome in ("resolve", "resolved") and obs_outcome not in ("resolve", "resolved"):
-            delta_outcome += 0.5
+            delta_reaction += 0.5
 
         # (b) 解釈器内部の予測差分 Δ_pred(F, F') (確信度乖離・ノード境界変異)
         delta_pred = 0.0
@@ -317,7 +369,7 @@ class CaseSnapshot:
                 delta_pred += 0.3
                 explanation += f" (更新前 M_B 再解釈でのノード境界変異検知: {self.f_pred.matched_node_id} -> {reinterpreted_pred.matched_node_id})"
 
-        e_pred = delta_outcome + delta_pred
+        e_pred = delta_reaction + delta_pred
 
         # (c) 入力素流圧境界差分 Δ_input(EFP, EFP') (E_input)
         e_input = 0.0
@@ -337,10 +389,10 @@ class CaseSnapshot:
             cost_tier=cost_tier_prime,
             domain=domain_prime,
             expected_outcome=expected_outcome_prime,
-            e_prediction_delta=round(e_pred, 4),
-            e_input_delta=round(e_input, 4),
             actual_status=obs_status,    # 後方互換性
             actual_outcome=obs_outcome,  # 後方互換性
+            e_prediction_delta=round(e_pred, 4), # 後方互換性
+            e_input_delta=round(e_input, 4),      # 後方互換性
             explanation=explanation,
         )
 
@@ -352,7 +404,7 @@ class CaseSnapshot:
         """タイムアウト等の理由で結果が回収不能になった場合 (F' は UNKNOWN として解釈)"""
         self.status = CaseStatus.UNKNOWN
         self.resolved_at = datetime.utcnow().isoformat()
-        self.observed_outcome = ObservedOutcome(
+        self.outcome_observation = OutcomeObservation(
             status=CaseStatus.UNKNOWN,
             outcome="unresolved",
             user_resolved=False,
@@ -368,10 +420,10 @@ class CaseSnapshot:
             cost_tier=self.f_pred.cost_tier,
             domain=self.f_pred.domain,
             expected_outcome="escalate",
-            e_prediction_delta=e_pred,
-            e_input_delta=e_input,
             actual_status=CaseStatus.UNKNOWN,
             actual_outcome="unresolved",
+            e_prediction_delta=e_pred,
+            e_input_delta=e_input,
             explanation="タイムアウトにより事後結果回収不能：未回収関係 ξ として不確実性熱を残存",
         )
         self.e_prediction = e_pred

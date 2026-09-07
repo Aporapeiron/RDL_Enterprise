@@ -200,17 +200,13 @@ class EnterpriseRuntime:
             target_domain=efp.category,
             llm_bridge=self.cascade.llm_bridge,
             initial_level0_cache=cache_snapshot,
-            cascade_config=cascade_cfg,
+            cascade_config=copy.deepcopy(cascade_cfg),
             llm_identity=llm_id,
         )
 
-        # 2. 同一凍結コンテキストによる事前多層推論 (EFP -> F)
+        # 2. 同一凍結コンテキスト（初期状態 C0）による事前多層推論 (EFP -> F)
         pred = frozen_ctx.interpret_efp(efp)
         self.cost_tier_counts[pred.cost_tier] = self.cost_tier_counts.get(pred.cost_tier, 0) + 1
-
-        # 新規に昇格・獲得された Level 0 キャッシュがあればライブ cascade にも還元
-        ctx_cascade = frozen_ctx.get_or_create_cascade()
-        active_cascade.import_cache(ctx_cascade.export_cache())
 
         # シャドウ並行推論 (有効な場合、本番実績予測 pred を渡し、候補 M_B' でも並行推論して差分を記録)
         if self.active_shadow_evaluator:

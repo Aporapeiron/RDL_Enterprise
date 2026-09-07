@@ -483,9 +483,13 @@ class TestCandidateImmutabilityAndBinding(unittest.TestCase):
         # 3. 後続作用解釈 F' (SubsequentInterpretation) が更新前構造から正しく導出されていること
         self.assertIsNotNone(snapshot.f_prime)
         self.assertIsInstance(snapshot.f_prime, SubsequentInterpretation)
+        # 外界帰結シグナル（EFP'）は OutcomeObservation として客観記録
+        self.assertEqual(snapshot.outcome_observation.status, CaseStatus.REJECTED)
+        self.assertEqual(snapshot.outcome_observation.outcome, "rejected")
         self.assertEqual(snapshot.f_prime.actual_status, CaseStatus.REJECTED)
         self.assertEqual(snapshot.f_prime.actual_outcome, "rejected")
-        self.assertEqual(snapshot.f_prime.confidence_prime, 0.0)
+        # F' の確信度は更新前モデルの純粋再推論値 (外界ステータスによる直接書き換えではなく純粋推論)
+        self.assertGreater(snapshot.f_prime.confidence_prime, 0.0)
         self.assertIn("更新前モデルの解釈境界が破断", snapshot.f_prime.explanation)
 
         # 4. F と F' の差分 Δ(F, F') からの誤差 E 算出が一致していること
@@ -577,18 +581,24 @@ class TestCandidateImmutabilityAndBinding(unittest.TestCase):
         self.assertIn("F' 事後解釈", resolved_snap.f_prime.explanation)
 
     def test_frozen_context_identity_drift_detection(self):
-        """Identity Drift 検知: 凍結コンテキストのハッシュ変質を検知して遮断すること"""
+        """Identity Drift & Immutability 検知: 凍結コンテキスト自体の不変性とハッシュ変質を検知して遮断すること"""
         runtime = EnterpriseRuntime(mb_graph=self.prod_graph, theta_0=2.0)
         efp = BusinessInput("T_DRIFT_01", "U1", "workflow", "稟議申請")
         runtime.dispatch_ticket(efp)
         snapshot = runtime.pending_snapshots["T_DRIFT_01"]
 
-        # 不正にコンテキストの期待ハッシュを改変して変質状態をシミュレート
-        snapshot.frozen_context.mb_content_hash = "tampered_hash_12345"
+        # 1. コンテキスト自体の属性直接改変が完全凍結により拒絶されること
+        with self.assertRaises(RuntimeError) as imm_ctx:
+            snapshot.frozen_context.mb_content_hash = "tampered_hash_12345"
+        self.assertIn("完全凍結", str(imm_ctx.exception))
+
+        # 2. 内部コンポーネント改変による暗号論的コンテキスト変質 (Context Drift) を検知して遮断すること
+        # super().__setattr__ を用いて不正改変をシミュレート
+        object.__setattr__(snapshot.frozen_context, "mb_content_hash", "tampered_hash_12345")
 
         with self.assertRaises(RuntimeError) as ctx:
             snapshot.record_feedback(FeedbackResult(user_resolved=True))
-        self.assertIn("Identity Drift", str(ctx.exception))
+        self.assertIn("変質を検知", str(ctx.exception))
 
     def test_external_compensation_client_fail_closed_and_success(self):
         """公理B5 (Zero Trust): 外界補償は外部クライアント未接続時に fail-closed (False)、接続時に実送信成功 (True) となること"""
@@ -641,11 +651,11 @@ class TestCandidateImmutabilityAndBinding(unittest.TestCase):
         self.assertEqual(comp_client.sent_reverts[0]["ticket_id"], "T_CANARY_SUCCESS")
 
     def test_f_generated_from_same_frozen_context_as_f_prime_and_cache_preserved(self):
-        """優先順位 1 & 2: F が FrozenInterpretationContext から先行生成され、Level 0 キャッシュが F と F' 間で維持されること"""
+        """優先順位 1 & 2: F と F' が同一の初期キャッシュ C0 (FrozenInterpretationContext) から独立生成され、F のキャッシュ変異に F' が汚染されないこと"""
         runtime = EnterpriseRuntime(mb_graph=self.prod_graph, theta_0=2.0)
         efp = BusinessInput("T_CACHE_SEQ_01", "U1", "workflow", "稟議申請")
 
-        # dispatch_ticket 実行
+        # dispatch_ticket 実行 (初期状態 C0 から F を解釈)
         d_res = runtime.dispatch_ticket(efp)
         snapshot = runtime.pending_snapshots["T_CACHE_SEQ_01"]
 
@@ -654,18 +664,22 @@ class TestCandidateImmutabilityAndBinding(unittest.TestCase):
         self.assertEqual(d_res.prediction.matched_node_id, snapshot.f_pred.matched_node_id)
         self.assertEqual(snapshot.frozen_context.mb_version, self.prod_graph.version)
 
-        # 2. 事前推論 (F) によって Level 0 キャッシュに昇格したノードが、凍結コンテキスト内の InterpCascade に存在すること
-        frozen_cascade = snapshot.frozen_context.get_or_create_cascade()
+        # 2. 初期コンテキスト C0 に保存された初期キャッシュが不変に維持されていること
+        # (F の実行によって C0 自体が破壊的に書き換えられていないこと)
         cache_key = ("workflow", "稟議申請")
-        self.assertIn(cache_key, frozen_cascade.level0_cache)
-        self.assertEqual(frozen_cascade.level0_cache[cache_key], "node_wf")
+        self.assertEqual(snapshot.frozen_context.initial_level0_cache, {})
 
-        # 3. 事後結果受領時に同一の frozen_context で再解釈した際、cache hit (Tier 0) が引き継がれ、不当な確信度低下や偽のEが発生しないこと
+        # 3. 独立生成された cascade で F' が初期 C0 から再解釈され、正しくノードにマッチすること
+        isolated_cascade = snapshot.frozen_context.create_isolated_cascade()
+        prime_pred = isolated_cascade.interpret(efp)
+        self.assertEqual(prime_pred.matched_node_id, "node_wf")
+        self.assertEqual(prime_pred.cost_tier, 1)
+
+        # 4. 事後結果受領時に同一の frozen_context で再解釈した際、更新前グラフと整合し、不当な偽のEが発生しないこと
         feedback = FeedbackResult(user_resolved=True, human_approved=True)
         r_res = runtime.resolve_ticket_feedback("T_CACHE_SEQ_01", feedback)
         self.assertEqual(r_res.status, CaseStatus.SUCCESS)
-        self.assertEqual(snapshot.f_prime.cost_tier, 0)  # キャッシュヒットにより Tier 0 を維持
-        self.assertEqual(snapshot.e_prediction, 0.0)    # キャッシュ差異による偽の熱が発生しない
+        self.assertEqual(snapshot.e_prediction, 0.0)    # 解釈差異による偽の熱が発生しない
 
     def test_llm_identity_drift_detection(self):
         """優先順位 3: 推論器 (LLM Bridge) の構成・パラメータが F と F' の間で改変された場合に LLM Identity Drift を検知・遮断すること"""

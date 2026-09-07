@@ -536,7 +536,9 @@ class WebhookCompensationClient(BaseCompensationClient):
         if self.sender_fn is not None:
             try:
                 res = self.sender_fn(self.endpoint_url, payload, self.auth_token, self.timeout_seconds)
-                if isinstance(res, dict) and res.get("status_code", 200) in (200, 201, 202, 204):
+                # 公理B5 (Zero Trust): 明示的な成功ステータスコード (200..299) がない場合は fail-closed
+                status = res.get("status_code") if isinstance(res, dict) else None
+                if status is not None and 200 <= status < 300:
                     return {
                         "success": True,
                         "endpoint": self.endpoint_url,
@@ -546,7 +548,7 @@ class WebhookCompensationClient(BaseCompensationClient):
                 return {
                     "success": False,
                     "endpoint": self.endpoint_url,
-                    "reason": f"Webhook returned non-success response: {res}",
+                    "reason": f"Webhook returned non-success response (fail-closed: status={status}): {res}",
                 }
             except Exception as ex:
                 return {
@@ -586,6 +588,7 @@ class WebhookCompensationClient(BaseCompensationClient):
 class SlackCompensationClient(BaseCompensationClient):
     """
     Slack Incoming Webhook 等に向けた訂正通知発行クライアント
+    Slack 固有のメッセージ構造 (text, channel, attachments) を構築して送信する。
     """
     def __init__(
         self,
@@ -593,13 +596,58 @@ class SlackCompensationClient(BaseCompensationClient):
         channel: Optional[str] = None,
         sender_fn: Optional[Any] = None,
     ):
-        self.webhook_client = WebhookCompensationClient(
-            endpoint_url=webhook_url,
-            sender_fn=sender_fn,
-        )
+        self.webhook_url = webhook_url
         self.channel = channel
+        self.sender_fn = sender_fn
 
     def send_revert(self, action_record: ActionRecord) -> Dict[str, Any]:
-        notice = action_record.compensating_action.get("revert_notice", "システム訂正") if action_record.compensating_action else "訂正"
-        return self.webhook_client.send_revert(action_record)
+        notice = action_record.compensating_action.get("revert_notice", "【システム訂正通知】") if action_record.compensating_action else "訂正"
+        slack_payload = {
+            "text": notice,
+            "attachments": [
+                {
+                    "color": "#D32F2F",  # 警告レッド
+                    "title": f"外界作用取り消し・補償通知: {action_record.ticket_id}",
+                    "fields": [
+                        {"title": "Action ID", "value": action_record.action_id, "short": True},
+                        {"title": "MB Version", "value": action_record.mb_version, "short": True},
+                        {"title": "Action Type", "value": action_record.action_type, "short": True},
+                        {"title": "Timestamp", "value": datetime.utcnow().isoformat(), "short": False},
+                    ],
+                }
+            ],
+        }
+        if self.channel:
+            slack_payload["channel"] = self.channel
+
+        # Webhook クライアントの sender_fn または HTTP 送信を利用
+        webhook_client = WebhookCompensationClient(
+            endpoint_url=self.webhook_url,
+            sender_fn=self.sender_fn,
+        )
+        # payload を差し替えて実行
+        if self.sender_fn is not None:
+            try:
+                res = self.sender_fn(self.webhook_url, slack_payload, None, 3.0)
+                status = res.get("status_code") if isinstance(res, dict) else None
+                if status is not None and 200 <= status < 300:
+                    return {
+                        "success": True,
+                        "endpoint": self.webhook_url,
+                        "receipt": res.get("receipt", f"slack_{action_record.action_id}"),
+                        "slack_payload": slack_payload,
+                    }
+                return {
+                    "success": False,
+                    "endpoint": self.webhook_url,
+                    "reason": f"Slack webhook returned non-success response: {res}",
+                }
+            except Exception as ex:
+                return {
+                    "success": False,
+                    "endpoint": self.webhook_url,
+                    "reason": f"Slack webhook exception: {str(ex)}",
+                }
+
+        return webhook_client.send_revert(action_record)
 
