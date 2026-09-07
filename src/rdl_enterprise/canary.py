@@ -96,10 +96,11 @@ class CompensationExecutor:
             except Exception as ex:
                 return {"success": False, "error": str(ex)}
 
+        # ハンドラが未登録の場合は fail-closed 原則（ゼロトラスト: 公理B5）に基づき失敗とする
         return {
-            "success": True,
+            "success": False,
             "action_id": action_record.action_id,
-            "executed_type": action_record.compensating_action.get("type", "default_revert"),
+            "reason": f"補償ハンドラ未登録 (fail-closed: comp_type={comp_type}, action_type={action_record.action_type})",
             "timestamp": datetime.utcnow().isoformat(),
         }
 
@@ -335,6 +336,7 @@ class CanaryManager:
         e_pred: float,
         e_input: float,
         rejected: bool = False,
+        current_heat: Optional[float] = None,
     ) -> Tuple[bool, Optional[str]]:
         """
         フィードバック受領時のカナリア発熱監視と自動ロールバック判定
@@ -345,8 +347,13 @@ class CanaryManager:
 
         dep = self.active_deployment
         dep.canary_cases_count += 1
-        case_heat = e_pred + e_input
-        dep.canary_heat += case_heat
+        case_heat = e_pred + 0.4 * e_input
+
+        # HState の統一熱が渡されている場合はそれを信頼できる累積熱として同期
+        if current_heat is not None:
+            dep.canary_heat = current_heat
+        else:
+            dep.canary_heat += case_heat
 
         is_failure = rejected or (e_pred > 0.5)
         if is_failure:

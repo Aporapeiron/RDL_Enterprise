@@ -7,6 +7,13 @@ from typing import Optional, Dict, List, Any
 
 class ReadOnlyDict(dict):
     """凍結ノード内部の辞書不変性を担保する読み取り専用辞書"""
+    def __copy__(self):
+        return ReadOnlyDict(self)
+
+    def __deepcopy__(self, memo):
+        import copy
+        return ReadOnlyDict({copy.deepcopy(k, memo): copy.deepcopy(v, memo) for k, v in self.items()})
+
     def __setitem__(self, key, value):
         raise TypeError(f"ReadOnlyDict は凍結されており変更できません (キー: {key})")
 
@@ -31,6 +38,13 @@ class ReadOnlyDict(dict):
 
 class ReadOnlyList(list):
     """凍結ノード内部のリスト不変性を担保する読み取り専用リスト"""
+    def __copy__(self):
+        return ReadOnlyList(self)
+
+    def __deepcopy__(self, memo):
+        import copy
+        return ReadOnlyList([copy.deepcopy(x, memo) for x in self])
+
     def __setitem__(self, index, value):
         raise TypeError(f"ReadOnlyList は凍結されており変更できません (インデックス: {index})")
 

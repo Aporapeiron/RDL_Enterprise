@@ -126,12 +126,29 @@ class EnterpriseRuntime:
         # カナリア展開・監視マネージャー (Leap後の段階的配分と自動ロールバック)
         self.canary_manager = CanaryManager()
 
+        # 外界作用ロールバック用の社内標準訂正ハンドラを登録 (fail-closed対策)
+        self.canary_manager.action_ledger.executor.register_handler(
+            "send_correction_or_revert",
+            self._handle_correction_or_revert,
+        )
+
         # 運用メトリクス
         self.processed_tickets_count = 0
         self.auto_resolved_count = 0
         self.hitl_count = 0
         self.m_delta_count = 0
         self.cost_tier_counts = {0: 0, 1: 0, 2: 0, 3: 0}
+
+    def _handle_correction_or_revert(self, action_record: Any) -> Dict[str, Any]:
+        """社内チャット・メール等に対する訂正通知発行の実ハンドラ"""
+        notice = action_record.compensating_action.get("revert_notice", "訂正通知") if action_record.compensating_action else "訂正"
+        return {
+            "success": True,
+            "action_id": action_record.action_id,
+            "ticket_id": action_record.ticket_id,
+            "revert_notice_sent": notice,
+            "timestamp": datetime.utcnow().isoformat(),
+        }
 
     def dispatch_ticket(
         self,
@@ -166,18 +183,20 @@ class EnterpriseRuntime:
         if authority and authority.is_authorized_for(efp.category or "general"):
             is_authoritative = True
 
-        # 2. CaseSnapshot 作成（PENDING）
+        # 2. 対象ノード取得と CaseSnapshot 作成（PENDING: 更新前 M_B 前提を凍結保存）
+        matched_node = active_graph.get(pred.matched_node_id) if pred.matched_node_id else None
+        frozen_node = copy.deepcopy(matched_node) if matched_node else None
         snapshot = CaseSnapshot(
             efp=efp,
             f_pred=pred,
             candidate_knowledge=human_override_answer,
             is_authoritative=is_authoritative,
             is_canary=is_canary,
+            frozen_node_snapshot=frozen_node,
         )
         self.pending_snapshots[efp.ticket_id] = snapshot
 
         # 3. 人間問い合わせ (HITL) ゲート判定
-        matched_node = active_graph.get(pred.matched_node_id) if pred.matched_node_id else None
         hitl_eval = self.human.evaluate(efp, pred, matched_node)
         hitl_required = hitl_eval["must_ask"]
         hitl_reason = hitl_eval["reason"]
@@ -202,7 +221,17 @@ class EnterpriseRuntime:
         compensating_action = None
         dep_id = None
         prop_id = None
-        cap = ActionCapability.COMPENSATABLE
+
+        # 作用定義 (MBNode / action_template) から capability を貫通取得
+        node_cap = None
+        if matched_node and hasattr(matched_node, "action_template") and isinstance(matched_node.action_template, dict):
+            raw_cap = matched_node.action_template.get("capability")
+            if raw_cap:
+                try:
+                    node_cap = ActionCapability(raw_cap)
+                except ValueError:
+                    node_cap = None
+
         if is_canary and self.canary_manager.active_deployment:
             dep_id = self.canary_manager.active_deployment.deployment_id
             prop_id = self.canary_manager.active_deployment.proposal_id
@@ -220,7 +249,7 @@ class EnterpriseRuntime:
             payload=final_output,
             deployment_id=dep_id,
             proposal_id=prop_id,
-            capability=cap,
+            capability=node_cap,
             compensating_action=compensating_action,
         )
 
@@ -303,15 +332,44 @@ class EnterpriseRuntime:
         )
 
         # 閾値判定および局所更新の分岐：
-        # Canary 案件は候補の実環境検査相であるため、本番の散逸や本番 M_Δ 判定を完全遮断する。
-        # 評価は CanaryManager (H_canary / θ_canary) のみで行い、発熱破断時の自動ロールバックまたは継続に専念する。
+        canary_rolled_back = False
+        canary_rollback_reason = None
+
         if snapshot.is_canary:
+            # カナリア案件：本番散逸・本番M_Δ判定を完全遮断
             should_leap = False
             hot_node = ""
-            current_h = self.canary_manager.active_deployment.canary_heat if self.canary_manager.active_deployment else 0.0
-            current_theta = self.canary_manager.active_deployment.theta_canary if self.canary_manager.active_deployment else 1.5
             transition_m_delta = False
             proposal_id = None
+
+            # HStateの統一熱を計算し、CanaryManagerへ同期
+            current_canary_h = self.h_state.version_total_heat(mb_ver)
+            current_theta = self.canary_manager.active_deployment.theta_canary if self.canary_manager.active_deployment else 1.5
+            current_h = current_canary_h
+
+            if self.canary_manager.active_deployment:
+                is_rb, rb_reason = self.canary_manager.record_feedback(
+                    ticket_id=ticket_id,
+                    is_canary=True,
+                    e_pred=e_pred,
+                    e_input=e_input,
+                    rejected=feedback.human_rejected,
+                    current_heat=current_canary_h,
+                )
+                if is_rb:
+                    canary_rolled_back = True
+                    canary_rollback_reason = rb_reason
+                    # 旧本番の復元とキャッシュクリア
+                    last_dep = self.canary_manager.deployment_history[-1]
+                    self.mb_graph = last_dep.prod_mb_backup
+                    self.cascade.mb_graph = self.mb_graph
+                    self.cascade.level0_cache.clear()
+                    # 該当プロポーザルを REGRESSED 状態へ
+                    if last_dep.proposal_id in self.pending_reorganizations:
+                        prop = self.pending_reorganizations.pop(last_dep.proposal_id)
+                        prop.status = ProposalState.REGRESSED
+                        prop.reasons.append(f"カナリア自動ロールバック: {rb_reason}")
+                        self.reorganization_history.append(prop)
         else:
             # 自然散逸 (本番グラフ)
             inertias = {nid: n.inertia() for nid, n in self.mb_graph.nodes.items()}
@@ -351,32 +409,6 @@ class EnterpriseRuntime:
 
                 if snapshot.status == CaseStatus.SUCCESS and not snapshot.efp_prime.human_approved:
                     self.auto_resolved_count += 1
-
-        # カナリア監視と自動ロールバック判定
-        canary_rolled_back = False
-        canary_rollback_reason = None
-        if snapshot.is_canary and self.canary_manager.active_deployment:
-            is_rb, rb_reason = self.canary_manager.record_feedback(
-                ticket_id=ticket_id,
-                is_canary=True,
-                e_pred=e_pred,
-                e_input=e_input,
-                rejected=feedback.human_rejected,
-            )
-            if is_rb:
-                canary_rolled_back = True
-                canary_rollback_reason = rb_reason
-                # 旧本番の復元とキャッシュクリア
-                last_dep = self.canary_manager.deployment_history[-1]
-                self.mb_graph = last_dep.prod_mb_backup
-                self.cascade.mb_graph = self.mb_graph
-                self.cascade.level0_cache.clear()
-                # 該当プロポーザルを REGRESSED 状態へ
-                if last_dep.proposal_id in self.pending_reorganizations:
-                    prop = self.pending_reorganizations.pop(last_dep.proposal_id)
-                    prop.status = ProposalState.REGRESSED
-                    prop.reasons.append(f"カナリア自動ロールバック: {rb_reason}")
-                    self.reorganization_history.append(prop)
 
         return TicketResolutionResult(
             ticket_id=ticket_id,

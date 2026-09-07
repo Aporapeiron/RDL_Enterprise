@@ -5,7 +5,7 @@ import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
 from rdl_enterprise.mb_graph import MBGraph, MBNode
-from rdl_enterprise.snapshot import BusinessInput, FeedbackResult
+from rdl_enterprise.snapshot import BusinessInput, FeedbackResult, SubsequentInterpretation, CaseStatus
 from rdl_enterprise.authority import AuthorityContext
 from rdl_enterprise.promotion_gate import ProposalState, PromotionPolicy, PromotionGate
 from rdl_enterprise.runtime import EnterpriseRuntime, ReorganizationProposal
@@ -98,6 +98,7 @@ class TestCandidateImmutabilityAndBinding(unittest.TestCase):
     def test_action_ledger_scoped_to_deployment_id(self):
         """ActionLedger: ロールバック時の補償実行が該当 deployment_id のみに限定されること"""
         ledger = ActionLedger()
+        ledger.executor.register_handler("revert", lambda rec: {"success": True, "reverted": True})
 
         # セッション1 (dep_01)
         ledger.record_action(
@@ -242,8 +243,9 @@ class TestCandidateImmutabilityAndBinding(unittest.TestCase):
     def test_compensation_states_and_executor_results(self):
         """World Rollback: 補償実行の成否が厳格に記録され、succeeded の場合のみ is_compensated が True となること"""
         ledger = ActionLedger()
+        ledger.executor.register_handler("send_correction", lambda rec: {"success": True, "corrected": True})
 
-        # 成功する補償アクション
+        # 成功する補償アクション (ハンドラ登録済み)
         rec1 = ledger.record_action(
             ticket_id="T_SUCC_01",
             mb_version="v2.0",
@@ -270,6 +272,18 @@ class TestCandidateImmutabilityAndBinding(unittest.TestCase):
             compensating_action={"type": "send_correction"},
         )
 
+        # 3. ハンドラ未登録の補償アクション (fail-closed 検証)
+        unregistered_ledger = ActionLedger()
+        rec3 = unregistered_ledger.record_action(
+            ticket_id="T_UNREG_01",
+            mb_version="v2.0",
+            is_canary=True,
+            action_type="direct_reply",
+            payload="回答",
+            deployment_id="dep_unreg",
+            compensating_action={"type": "unregistered_action_type"},
+        )
+
         # 成功ケースの補償実行
         ledger.compensate_canary_actions("dep_test")
         self.assertEqual(rec1.status, "succeeded")
@@ -279,6 +293,12 @@ class TestCandidateImmutabilityAndBinding(unittest.TestCase):
         failing_ledger.compensate_canary_actions("dep_fail")
         self.assertEqual(rec2.status, "failed")
         self.assertFalse(rec2.is_compensated)  # 失敗時は is_compensated が False になる！
+
+        # 未登録ケース (fail-closed) の補償実行
+        unregistered_ledger.compensate_canary_actions("dep_unreg")
+        self.assertEqual(rec3.status, "failed")
+        self.assertFalse(rec3.is_compensated)
+        self.assertIn("補償ハンドラ未登録 (fail-closed", rec3.compensation_result.get("reason", ""))
 
     def test_true_deep_freeze_blocks_attribute_and_dict_mutations(self):
         """真のDeep Freeze: 凍結ノードの属性直接代入、および内部辞書・リストの変更試行が例外で阻止されること"""
@@ -429,6 +449,89 @@ class TestCandidateImmutabilityAndBinding(unittest.TestCase):
         # DRY_RUN_ONLY: 補償不要で succeeded
         self.assertEqual(rec_dry.status, "succeeded")
         self.assertTrue(rec_dry.is_compensated)
+
+    def test_t0_spec_subsequent_interpretation_f_prime_derivation(self):
+        """T0 SPEC: 更新前の同一構造前提から後続解釈 F' が導出され、Δ(F, F') から E が算出されること"""
+        runtime = EnterpriseRuntime(mb_graph=self.prod_graph, theta_0=2.0)
+        efp = BusinessInput("T_SPEC_01", "U1", "workflow", "稟議申請の承認")
+
+        # 1. チケットディスパッチ (EFP -> F)
+        d_res = runtime.dispatch_ticket(efp)
+        snapshot = runtime.pending_snapshots["T_SPEC_01"]
+
+        # 更新前前提 (frozen_node_snapshot) が保持されていること
+        self.assertIsNotNone(snapshot.frozen_node_snapshot)
+        self.assertEqual(snapshot.frozen_node_snapshot.id, "node_wf")
+        self.assertIsNone(snapshot.f_prime)
+
+        # 2. 事後結果 EFP' 受領 (差し戻し発生)
+        feedback = FeedbackResult(user_resolved=False, human_rejected=True)
+        r_res = runtime.resolve_ticket_feedback("T_SPEC_01", feedback)
+
+        # 3. 後続作用解釈 F' (SubsequentInterpretation) が更新前構造から正しく導出されていること
+        self.assertIsNotNone(snapshot.f_prime)
+        self.assertIsInstance(snapshot.f_prime, SubsequentInterpretation)
+        self.assertEqual(snapshot.f_prime.actual_status, CaseStatus.REJECTED)
+        self.assertEqual(snapshot.f_prime.actual_outcome, "rejected")
+        self.assertEqual(snapshot.f_prime.confidence_prime, 0.0)
+        self.assertIn("更新前モデルの解釈境界が破断", snapshot.f_prime.explanation)
+
+        # 4. F と F' の差分 Δ(F, F') からの誤差 E 算出が一致していること
+        self.assertEqual(snapshot.e_prediction, snapshot.f_prime.e_prediction_delta)
+        self.assertGreaterEqual(r_res.e_prediction, 1.5)
+
+    def test_runtime_wires_action_capability_from_mbnode_definition(self):
+        """ActionCapability 作用定義貫通: MBNode の action_template 定義が Runtime を経て Ledger に正確に伝播すること"""
+        graph = MBGraph(version="v1.0")
+        graph.add_or_update(MBNode(
+            id="node_delete_db",
+            domain="security",
+            trigger_pattern={"exact_keys": ["DB全削除"]},
+            action_template={
+                "type": "tool_call",
+                "payload": "DROP DATABASE prod;",
+                "capability": "irreversible",  # ノード側で不可逆能力を明示
+            },
+            confidence=0.9,
+        ))
+        runtime = EnterpriseRuntime(mb_graph=graph, theta_0=2.0)
+        efp = BusinessInput("T_SEC_IRREV", "U1", "security", "DB全削除を実行して")
+        runtime.dispatch_ticket(efp)
+
+        # ActionLedger に記録された action の capability が IRREVERSIBLE になっていること
+        rec = runtime.canary_manager.action_ledger.records[-1]
+        self.assertEqual(rec.ticket_id, "T_SEC_IRREV")
+        self.assertEqual(rec.capability, ActionCapability.IRREVERSIBLE)
+        self.assertFalse(rec.is_reversible)
+
+    def test_h_canary_unified_with_h_state_and_resolution_result_current_h_updated(self):
+        """H_canary 一本化 & 更新順修正: TicketResolutionResult.current_h が最新の熱を即座に返し、HState と一致すること"""
+        runtime = EnterpriseRuntime(mb_graph=self.prod_graph, theta_0=2.0)
+        prop = ReorganizationProposal(
+            proposal_id="prop_h_unify",
+            hot_node_id="node_wf",
+            candidate_mb=self.candidate_graph,
+            durability_test_result={"all_passed": True, "candidate_content_hash": self.candidate_graph.content_hash()},
+            policy=PromotionPolicy(require_durability=True, require_shadow=False, require_human_approval=True),
+            status=ProposalState.APPROVAL_READY,
+        )
+        runtime.pending_reorganizations["prop_h_unify"] = prop
+        mgr = AuthorityContext(actor_id="mgr_01", role="manager", scope="workflow", actor_type="human", authenticated_by="idp_sso")
+        runtime.promote_candidate_mb("prop_h_unify", authority=mgr, use_canary=True, canary_ratio=1.0, theta_canary=5.0)
+
+        efp = BusinessInput("T_HEAT_SEQ", "U1", "workflow", "稟議申請の承認")
+        runtime.dispatch_ticket(efp)
+
+        # 失敗フィードバック (E_pred=1.0)
+        res = runtime.resolve_ticket_feedback("T_HEAT_SEQ", FeedbackResult(user_resolved=False))
+
+        # 返却された current_h が 0.0 (古い値) ではなく、今回の E を取り込んだ最新値であること
+        self.assertGreater(res.current_h, 0.0)
+        # HState の versioned_heats と CanaryManager.canary_heat が完全一致していること
+        cand_ver = self.candidate_graph.version
+        unified_h = runtime.h_state.version_total_heat(cand_ver)
+        self.assertEqual(res.current_h, unified_h)
+        self.assertEqual(runtime.canary_manager.active_deployment.canary_heat, unified_h)
 
 
 if __name__ == "__main__":

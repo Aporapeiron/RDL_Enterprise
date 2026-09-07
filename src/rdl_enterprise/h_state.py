@@ -249,3 +249,15 @@ class HState:
         # 3. 隔離バケットのクリーンアップ
         self.clear_version_heat(canary_version)
 
+    def version_total_heat(self, mb_version: str) -> float:
+        """
+        指定されたバージョンで蓄積された総熱 (T0 SPEC 4, 6.2: H = ||H_vec||)
+        HStateの統一パラメータ (w_pred, w_input) で算出
+        """
+        total = 0.0
+        for (ver, _), h in self.versioned_heats.items():
+            if ver == mb_version:
+                total += h.total(self.w_pred, self.w_input)
+        return total
+
+
