@@ -136,9 +136,9 @@ class EnterpriseRuntime:
         pred = self.cascade.interpret(efp)
         self.cost_tier_counts[pred.cost_tier] = self.cost_tier_counts.get(pred.cost_tier, 0) + 1
 
-        # シャドウ並行推論 (有効な場合、候補 M_B' でも並行推論して差分を記録)
+        # シャドウ並行推論 (有効な場合、本番実績予測 pred を渡し、候補 M_B' でも並行推論して差分を記録)
         if self.active_shadow_evaluator:
-            self.active_shadow_evaluator.evaluate_input(efp)
+            self.active_shadow_evaluator.evaluate_input(efp, prod_pred=pred)
 
         is_authoritative = False
         if authority and authority.is_authorized_for(efp.category or "general"):
@@ -360,7 +360,12 @@ class EnterpriseRuntime:
 
         return True
 
-    def enable_shadow_mode(self, proposal_id: str, max_allowed_regression_rate: float = 0.05) -> bool:
+    def enable_shadow_mode(
+        self,
+        proposal_id: str,
+        max_allowed_regression_rate: float = 0.05,
+        minimum_resolved_cases: int = 1,
+    ) -> bool:
         """
         再編候補 M_B' をシャドウ推論エンジンにセットし、本番並行評価を開始する
         """
@@ -372,6 +377,7 @@ class EnterpriseRuntime:
             prod_mb=self.mb_graph,
             candidate_mb=proposal.candidate_mb,
             max_allowed_regression_rate=max_allowed_regression_rate,
+            minimum_resolved_cases=minimum_resolved_cases,
         )
         return True
 

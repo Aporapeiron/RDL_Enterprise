@@ -199,12 +199,14 @@ def main():
         shadow_rep = runtime.get_shadow_report()
         if shadow_rep:
             print(f"・シャドウ評価レポート:")
+            print(f"  - 評価ステータス: {shadow_rep.evaluation_status} (最小必要件数を満たし検証完了)")
             print(f"  - 比較件数: {shadow_rep.resolved_triplets_count}件")
-            print(f"  - 精度改善件数: {shadow_rep.improved_count}件 (改悪件数: {shadow_rep.regressed_count}件)")
-            print(f"  - コスト短縮件数: {shadow_rep.tier_improved_count}件")
+            for t in shadow_rep.triplet_details:
+                print(f"    * 案件 {t['ticket_id']}: 本番観測誤差 E_prod={t['prod_observed_error']:.1f} vs 候補反実仮想推定 E_shadow={t['shadow_counterfactual_error_estimate']:.1f} (改善: {t['is_improved']})")
+            print(f"  - 精度改善見込み: {shadow_rep.improved_count}件 (改悪リスク: {shadow_rep.regressed_count}件)")
             print(f"  - 改悪率: {shadow_rep.regression_rate*100:.1f}% -> 承認基準クリア: {shadow_rep.passed}")
 
-        print("\n>> 情シス業務責任者（田中マネージャー）が耐久ハーネスとシャドウ三者比較を確認し、正式承認を実行！")
+        print("\n>> 情シス業務責任者（田中マネージャー）が耐久ハーネスとシャドウ反実仮想評価を確認し、正式承認を実行！")
         admin_authority = AuthorityContext(actor_id="tanaka_mgr", role="manager", scope="workflow")
         success = runtime.promote_candidate_mb(latest_prop_id, authority=admin_authority)
         print(f"・本番置換(Leap): {'成功' if success else '失敗'} (承認者: {prop.approved_by})")

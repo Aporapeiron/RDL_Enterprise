@@ -28,12 +28,13 @@ class TestShadowExecution(unittest.TestCase):
             confidence=0.85,
         ))
 
-    def test_shadow_prediction_and_triplet_comparison(self):
-        """本番とシャドウの並行推論、および実結果フィードバック時の三者比較を検証"""
+    def test_shadow_prediction_and_counterfactual_triplet(self):
+        """本番予測(実績)と候補推論(シャドウ)、および実結果フィードバック時の反実仮想三者比較を検証"""
         evaluator = ShadowEvaluator(
             proposal_id="prop_test_01",
             prod_mb=self.prod_graph,
             candidate_mb=self.candidate_graph,
+            minimum_resolved_cases=1,
         )
 
         efp = BusinessInput(
@@ -49,8 +50,8 @@ class TestShadowExecution(unittest.TestCase):
         self.assertEqual(pair.shadow_pred.content, "https://new-saas.corp")
         self.assertTrue(pair.content_changed)
 
-        # 2. 事後結果受領 (三者比較: 旧予測 vs 新予測 vs 実結果)
-        # ユーザー:「新SaaSポータル(https://new-saas.corp)からじゃないと申請できない！」
+        # 2. 事後結果受領 (観測誤差 E_prod vs 反実仮想推定 E_shadow)
+        # ユーザー:「旧URLは繋がらない！新SaaS(https://new-saas.corp)が正解」
         feedback = FeedbackResult(
             user_resolved=False,
             human_rejected=True,
@@ -58,8 +59,8 @@ class TestShadowExecution(unittest.TestCase):
         )
         triplet = evaluator.record_feedback("TICK-SHADOW-01", feedback)
         self.assertIsNotNone(triplet)
-        self.assertEqual(triplet.prod_pred_error, 1.0)
-        self.assertEqual(triplet.shadow_pred_error, 0.0)
+        self.assertEqual(triplet.prod_observed_error, 1.0)                      # 観測された事実
+        self.assertEqual(triplet.shadow_counterfactual_error_estimate, 0.0)    # 反実仮想の推定
         self.assertTrue(triplet.is_improved)
         self.assertFalse(triplet.is_regressed)
 
@@ -69,10 +70,25 @@ class TestShadowExecution(unittest.TestCase):
         self.assertEqual(report.improved_count, 1)
         self.assertEqual(report.regressed_count, 0)
         self.assertEqual(report.regression_rate, 0.0)
+        self.assertEqual(report.evaluation_status, "passed")
         self.assertTrue(report.passed)
 
-    def test_runtime_shadow_mode_integration(self):
-        """EnterpriseRuntime に統合されたシャドウモードのライフサイクル検証"""
+    def test_insufficient_evidence_when_zero_cases_resolved(self):
+        """非終端閉包性: 解決案件が0件の場合は passed=True ではなく insufficient_evidence (不合格) とする"""
+        evaluator = ShadowEvaluator(
+            proposal_id="prop_empty_01",
+            prod_mb=self.prod_graph,
+            candidate_mb=self.candidate_graph,
+            minimum_resolved_cases=1,
+        )
+
+        # 1件も解決していない段階
+        report = evaluator.generate_report()
+        self.assertEqual(report.evaluation_status, "insufficient_evidence")
+        self.assertFalse(report.passed)  # 証拠不十分なので昇格不可！
+
+    def test_runtime_shadow_mode_integration_and_prod_pred_injection(self):
+        """EnterpriseRuntime で本番予測が二重推論されずに注入され、三者比較が回ることを検証"""
         runtime = EnterpriseRuntime(
             mb_graph=self.prod_graph,
             theta_0=1.0,
@@ -90,18 +106,22 @@ class TestShadowExecution(unittest.TestCase):
             ),
         )
 
-        self.assertEqual(len(runtime.pending_reorganizations), 1)
         prop_id = list(runtime.pending_reorganizations.keys())[0]
 
-        # シャドウモードを起動！
-        success = runtime.enable_shadow_mode(prop_id)
+        # シャドウモードを起動！(最小必要件数: 1)
+        success = runtime.enable_shadow_mode(prop_id, minimum_resolved_cases=1)
         self.assertTrue(success)
-        self.assertIsNotNone(runtime.active_shadow_evaluator)
 
-        # その後のチケットを通常通り dispatch & resolve
+        # チケットを dispatch & resolve
         efp_after = BusinessInput("TICK-AFTER-01", "U02", "workflow", "稟議申請")
-        runtime.dispatch_ticket(efp_after)
+        dispatch_res = runtime.dispatch_ticket(efp_after)
 
+        # dispatch時に本番予測が正しくシャドウ側に記録されていること
+        pair = runtime.active_shadow_evaluator.pending_pairs.get("TICK-AFTER-01")
+        self.assertIsNotNone(pair)
+        self.assertEqual(pair.prod_pred.content, dispatch_res.final_output)
+
+        # フィードバック受領
         runtime.resolve_ticket_feedback(
             "TICK-AFTER-01",
             FeedbackResult(
@@ -114,10 +134,11 @@ class TestShadowExecution(unittest.TestCase):
         # シャドウレポートを確認
         report = runtime.get_shadow_report()
         self.assertIsNotNone(report)
-        self.assertEqual(report.resolved_triplets_count, 1)
+        self.assertEqual(report.evaluation_status, "passed")
+        self.assertTrue(report.passed)
         self.assertEqual(report.improved_count, 1)
 
-        # 正式承認・本番置換 (Leap) 実行 -> シャドウモードが自動終了すること
+        # 正式承認・本番置換 (Leap)
         admin = AuthorityContext(actor_id="admin_01", role="manager", scope="workflow")
         runtime.promote_candidate_mb(prop_id, authority=admin)
         self.assertIsNone(runtime.active_shadow_evaluator)
