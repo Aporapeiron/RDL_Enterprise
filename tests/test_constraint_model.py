@@ -1023,6 +1023,178 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
         self.assertIn("束内部", result.rupture_reason)
 
 
+    def test_supporting_nodes_selection_is_deterministic(self):
+        """候補が多数ある場合でも、find_co_occurring_nodes が完全に決定的な順序で選出すること"""
+        from rdl_enterprise.mb_graph import MBGraph, MBNode
+
+        graph = MBGraph()
+        n_main = MBNode(id="n_main", domain="tech", trigger_pattern={"exact_keys": ["デプロイ"]}, action_template={"type": "direct_reply", "payload": "OK"})
+        graph.add_or_update(n_main)
+
+        # 10個のノードを追加 (承認数やIDをバラバラに設定)
+        for i in range(10):
+            node = MBNode(
+                id=f"node_{i:02d}",
+                domain="tech",
+                trigger_pattern={"exact_keys": ["デプロイ", f"サブ_{i}"]},
+                action_template={"type": "direct_reply", "payload": f"OK_{i}"},
+                approval_count=i * 2,
+                confidence=0.5 + (i * 0.04),
+            )
+            graph.add_or_update(node)
+
+        # 複数回呼び出して完全に同一のID順列が返ることを確認
+        res1 = [n.id for n in graph.find_co_occurring_nodes(n_main, limit=4)]
+        res2 = [n.id for n in graph.find_co_occurring_nodes(n_main, limit=4)]
+        self.assertEqual(res1, res2)
+        # 承認数降順・confidence降順により、上位は node_09, node_08, node_07, node_06 であること
+        self.assertEqual(res1, ["node_09", "node_08", "node_07", "node_06"])
+
+    def test_stale_or_rejected_support_node_cannot_boost_survive(self):
+        """陳腐化または大量拒絶された支援ノードは健全性検査で除外され、未承認ノードを survive させないこと"""
+        from datetime import datetime, timezone, timedelta
+        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.constraint import RelationConstraintLocator, RuptureProbe, ConstraintContext
+
+        now = datetime(2026, 9, 1, 12, 0, 0, tzinfo=timezone.utc)
+        graph = MBGraph()
+        # 代表ノード: 未承認
+        n_primary = MBNode(
+            id="n_prim",
+            domain="ops",
+            trigger_pattern={"exact_keys": ["サーバー再起動"]},
+            action_template={"type": "direct_reply", "payload": "再起動手順"},
+            confidence=0.6,
+            approval_count=0,
+            last_updated=now.isoformat(),
+        )
+        # 支援ノードA: 承認数100だが、500日前の更新（freshness < 0.2 で陳腐化）
+        n_stale = MBNode(
+            id="n_stale",
+            domain="ops",
+            trigger_pattern={"exact_keys": ["サーバー再起動", "緊急"]},
+            action_template={"type": "direct_reply", "payload": "再起動手順"},
+            confidence=0.8,
+            approval_count=100,
+            last_updated=(now - timedelta(days=500)).isoformat(),
+        )
+        # 支援ノードB: 承認数100だが、差し戻し80（rejection_ratio = 80/180 = 0.44 >= 0.4 で拒絶多数）
+        n_rejected = MBNode(
+            id="n_rejected",
+            domain="ops",
+            trigger_pattern={"exact_keys": ["サーバー再起動", "通常"]},
+            action_template={"type": "direct_reply", "payload": "再起動手順"},
+            confidence=0.8,
+            approval_count=100,
+            rejection_count=80,
+            last_updated=now.isoformat(),
+        )
+        graph.add_or_update(n_primary)
+        graph.add_or_update(n_stale)
+        graph.add_or_update(n_rejected)
+
+        locator = RelationConstraintLocator()
+        efp = _make_efp("サーバー再起動の手順", category="ops")
+        ctx = ConstraintContext(efp=efp, current_time=now, active_domain="ops")
+
+        bundle = locator.locate_bundle_for_node(graph, n_primary, ctx)
+        probe = RuptureProbe()
+        result = probe.probe(bundle, graph, ctx)
+
+        # 健全な支援ノードが存在しないため、未検証として unresolved (ξ) に留まること
+        self.assertEqual(result.verdict, "unresolved")
+
+    def test_support_lineage_duplicate_suppression(self):
+        """同一 source_lineage からの複製ノードは synergy が抑制され、独立関係源のみが相乗効果を持つこと"""
+        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.constraint import RelationConstraintLocator, ConstraintContext
+
+        # グラフA: 同一マニュアルから複製されたノード群
+        graph_dup = MBGraph()
+        n_base_dup = MBNode(id="n_b1", domain="hr", trigger_pattern={"exact_keys": ["育休"]}, action_template={"type": "direct_reply", "payload": "A"}, confidence=0.7, approval_count=5, source_lineage="manual_hr_v1")
+        n_s1_dup = MBNode(id="n_s1", domain="hr", trigger_pattern={"exact_keys": ["育休", "給付金"]}, action_template={"type": "direct_reply", "payload": "A"}, confidence=0.7, approval_count=5, source_lineage="manual_hr_v1")
+        n_s2_dup = MBNode(id="n_s2", domain="hr", trigger_pattern={"exact_keys": ["育休", "申請書"]}, action_template={"type": "direct_reply", "payload": "A"}, confidence=0.7, approval_count=5, source_lineage="manual_hr_v1")
+        graph_dup.add_or_update(n_base_dup)
+        graph_dup.add_or_update(n_s1_dup)
+        graph_dup.add_or_update(n_s2_dup)
+
+        # グラフB: 独立した関係源（法務決定、監査ログ）からのノード群
+        graph_indep = MBGraph()
+        n_base_ind = MBNode(id="n_b2", domain="hr", trigger_pattern={"exact_keys": ["育休"]}, action_template={"type": "direct_reply", "payload": "A"}, confidence=0.7, approval_count=5, source_lineage="manual_hr_v1")
+        n_s1_ind = MBNode(id="n_s1_ind", domain="hr", trigger_pattern={"exact_keys": ["育休", "給付金"]}, action_template={"type": "direct_reply", "payload": "A"}, confidence=0.7, approval_count=5, source_lineage="audit_log_2026")
+        n_s2_ind = MBNode(id="n_s2_ind", domain="hr", trigger_pattern={"exact_keys": ["育休", "申請書"]}, action_template={"type": "direct_reply", "payload": "A"}, confidence=0.7, approval_count=5, source_lineage="labor_law_amendment")
+        graph_indep.add_or_update(n_base_ind)
+        graph_indep.add_or_update(n_s1_ind)
+        graph_indep.add_or_update(n_s2_ind)
+
+        locator = RelationConstraintLocator()
+        efp = _make_efp("育休の申請手続き", category="hr")
+        ctx = ConstraintContext(efp=efp, active_domain="hr")
+
+        bundle_dup = locator.locate_bundle_for_node(graph_dup, n_base_dup, ctx)
+        bundle_indep = locator.locate_bundle_for_node(graph_indep, n_base_ind, ctx)
+
+        # 独立した系譜からの支持を持つ bundle_indep の方が総合拘束スコアが高いこと
+        self.assertGreater(bundle_indep.constraint_score, bundle_dup.constraint_score)
+
+    def test_actual_bundle_removal_perturbation(self):
+        """実効的バンドル除去切断摂動: 束を切断したときに潜在対向ノードが露出すれば break と判定されること"""
+        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.constraint import RelationConstraintLocator, RuptureProbe, ConstraintContext
+
+        graph = MBGraph()
+        # 既存バンドル（代表ノード: 振込を通常回答）
+        n_normal = MBNode(
+            id="n_normal",
+            domain="finance",
+            trigger_pattern={"exact_keys": ["送金振込"]},
+            action_template={"type": "direct_reply", "payload": "通常振込手続"},
+            confidence=0.70,
+            approval_count=5,
+        )
+        # 潜在対向ノード（同じキーだが、より高い confidence で異なるアクションを要求）
+        n_compliance = MBNode(
+            id="n_compliance",
+            domain="finance",
+            trigger_pattern={"exact_keys": ["送金振込"]},
+            action_template={"type": "escalate_to_aml", "payload": "AMLコンプライアンス調査必須"},
+            confidence=0.90,
+            approval_count=20,
+        )
+        graph.add_or_update(n_normal)
+        graph.add_or_update(n_compliance)
+
+        locator = RelationConstraintLocator()
+        efp = _make_efp("送金振込", category="finance")
+        ctx = ConstraintContext(efp=efp, active_domain="finance")
+
+        bundle = locator.locate_bundle_for_node(graph, n_normal, ctx)
+        bundle.node_ids = ["n_normal"]
+
+        probe = RuptureProbe()
+        result = probe.probe(bundle, graph, ctx)
+
+        # 実効的切断摂動により、潜在対向ノード n_compliance との衝突が露出し break すること
+        self.assertEqual(result.verdict, "break")
+        self.assertIn("実効的バンドル切断", result.rupture_reason)
+
+    def test_authoritative_general_claim_is_not_full_1_0(self):
+        """公式機関による表明であっても claim_type="general"（一般広報等）は 1.0 に固定されず 0.90 に抑制されること"""
+        from rdl_enterprise.snapshot import FeedbackResult, RelationProvenance
+        from rdl_enterprise.constraint import compute_efp_prime_constraint
+
+        prov_general = RelationProvenance(
+            source_type="oracle",
+            is_authoritative=True,
+            channel="standard",
+            claim_type="general",
+        )
+        fb_gen = FeedbackResult(user_resolved=False, human_rejected=True, provenance=prov_general)
+        c_gen = compute_efp_prime_constraint(fb_gen)
+        # 1.0 ではなく 0.90 に抑制されていること
+        self.assertAlmostEqual(c_gen, 0.90, places=2)
+
+
 if __name__ == "__main__":
     unittest.main()
 

@@ -85,9 +85,21 @@ class InterpCascade:
         return 0.0
 
 
-    def interpret(self, efp: BusinessInput) -> InterpretationPrediction:
+    def interpret(
+        self,
+        efp: BusinessInput,
+        exclude_node_ids: Optional[Any] = None,
+        skip_constraint_boost: bool = False,
+    ) -> InterpretationPrediction:
+        """
+        事前予測 F または事後解釈 F' の形成。
+        exclude_node_ids: 破断検査（RuptureProbe）における実効的除去摂動用。
+                          指定されたノード群を仮想的に排除した M_B \ bundle の解釈を形成する。
+        skip_constraint_boost: RuptureProbe 内での再帰呼び出しを防止するためのフラグ。
+        """
         norm_query = self._normalize(efp.query_text)
         target_domain = efp.category or "any"
+        exclude_set = set(exclude_node_ids) if exclude_node_ids else set()
 
         # 有限境界 B による推論空間の拘束:
         # 明示的なワイルドカード (None, "*", "__any__", "any") のみ全域走査を許容し、
@@ -99,7 +111,7 @@ class InterpCascade:
 
         eligible_nodes = [
             node for node in self.mb_graph.list_nodes()
-            if is_domain_eligible(node.domain, efp.category)
+            if is_domain_eligible(node.domain, efp.category) and (node.id not in exclude_set)
         ]
 
         is_prime = bool(efp.metadata.get("is_efp_prime", False))
@@ -133,11 +145,12 @@ class InterpCascade:
         cache_key = (target_domain, norm_query)
         if cache_key in self.level0_cache:
             nid = self.level0_cache[cache_key]
-            node = self.mb_graph.get(nid)
-            if node and is_domain_eligible(node.domain, efp.category):
-                boost = self._constraint_boost(node, efp)
-                base_c = node.confidence + self.config.cost_tier0_confidence_boost + boost
-                return _build_prediction(node, base_c, cost_tier=0)
+            if nid not in exclude_set:
+                node = self.mb_graph.get(nid)
+                if node and is_domain_eligible(node.domain, efp.category):
+                    boost = 0.0 if skip_constraint_boost else self._constraint_boost(node, efp)
+                    base_c = node.confidence + self.config.cost_tier0_confidence_boost + boost
+                    return _build_prediction(node, base_c, cost_tier=0)
 
         # -------------------------------------------------------------
         # Level 1: 構造化確定ルール・正規表現 (Cost Tier 1)
@@ -150,14 +163,14 @@ class InterpCascade:
                 if self._normalize(key) == norm_query or key.lower() in efp.query_text.lower():
                     # ヒットしたらLevel 0キャッシュに昇格 (ドメイン境界付き)
                     self.level0_cache[cache_key] = node.id
-                    boost = self._constraint_boost(node, efp)
+                    boost = 0.0 if skip_constraint_boost else self._constraint_boost(node, efp)
                     base_c = node.confidence + boost
                     return _build_prediction(node, base_c, cost_tier=1)
 
             # 正規表現ルールのチェック
             rule_expr = pattern.get("rule_expr")
             if rule_expr and re.search(rule_expr, efp.query_text, re.IGNORECASE):
-                boost = self._constraint_boost(node, efp)
+                boost = 0.0 if skip_constraint_boost else self._constraint_boost(node, efp)
                 base_c = node.confidence + boost
                 return _build_prediction(node, base_c, cost_tier=1)
 

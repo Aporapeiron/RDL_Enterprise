@@ -105,6 +105,8 @@ class MBNode:
     approval_count: int = 0
     rejection_count: int = 0
     is_frozen: bool = False
+    source_id: Optional[str] = None       # 固有の発行元・作成元ID (BASE v2.0 §4.2: ソース独立性)
+    source_lineage: Optional[str] = None  # 上流系譜 (例: "manual_hr_v1", "policy_sec_2026")
     created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
     last_updated: str = field(default_factory=lambda: datetime.utcnow().isoformat())
 
@@ -239,7 +241,7 @@ class MBGraph:
         canonical_nodes = []
         for nid in sorted(self.nodes.keys()):
             node = self.nodes[nid]
-            canonical_nodes.append({
+            n_dict = {
                 "id": node.id,
                 "domain": node.domain,
                 "trigger_pattern": node.trigger_pattern,
@@ -250,7 +252,12 @@ class MBGraph:
                 "failure_count": node.failure_count,
                 "approval_count": node.approval_count,
                 "rejection_count": node.rejection_count,
-            })
+            }
+            if getattr(node, "source_id", None) is not None:
+                n_dict["source_id"] = node.source_id
+            if getattr(node, "source_lineage", None) is not None:
+                n_dict["source_lineage"] = node.source_lineage
+            canonical_nodes.append(n_dict)
         payload = {
             "version": self.version,
             "m0": round(self.m0, 4),
@@ -290,16 +297,23 @@ class MBGraph:
         """
         指定ノードとトリガーキーを共有する同一ドメインのノード群を高速逆引き (O(keys))。
         推論ホットパスでの全ノード走査 O(N) を排除する。
+
+        【決定的ランキング (Top-k Determinism: SPEC 4 / BASE v2.0 §4.2)】:
+        候補が limit を超える場合でも、反復順序のブレを排除して完全に決定的な順序で選出する。
+        ソート順:
+          1. 共有トリガーキー数（降順）
+          2. 承認数 approval_count（降順）
+          3. confidence（降順）
+          4. ノード ID（昇順: タイブレークにより完全な決定性を保証）
         """
         candidate_ids = set()
+        my_keys = set(k.strip().lower() for k in node.trigger_pattern.get("exact_keys", []))
         if hasattr(self, "_key_index"):
-            for k in node.trigger_pattern.get("exact_keys", []):
-                nk = k.strip().lower()
+            for nk in my_keys:
                 if nk in self._key_index:
                     candidate_ids.update(self._key_index[nk])
         else:
             # インデックスがない場合のフォールバック
-            my_keys = set(k.strip().lower() for k in node.trigger_pattern.get("exact_keys", []))
             for other in self.nodes.values():
                 if other.id != node.id and other.domain == node.domain:
                     other_keys = set(k.strip().lower() for k in other.trigger_pattern.get("exact_keys", []))
@@ -309,14 +323,23 @@ class MBGraph:
         candidate_ids.discard(node.id)
 
         d = node.domain or "general"
-        related = []
+        scored_candidates = []
         for cid in candidate_ids:
             cand = self.nodes.get(cid)
             if cand and cand.domain == d:
-                related.append(cand)
-                if len(related) >= limit:
-                    break
-        return related
+                cand_keys = set(k.strip().lower() for k in cand.trigger_pattern.get("exact_keys", []))
+                overlap_count = len(my_keys & cand_keys)
+                scored_candidates.append((
+                    -overlap_count,
+                    -cand.approval_count,
+                    -cand.confidence,
+                    cand.id,
+                    cand,
+                ))
+
+        # 決定的ソート
+        scored_candidates.sort()
+        return [item[4] for item in scored_candidates[:limit]]
 
     def total_inertia(self) -> float:
         return sum(n.inertia() for n in self.nodes.values())

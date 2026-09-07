@@ -145,6 +145,28 @@ def _bigram_jaccard(a: str, b: str) -> float:
     return len(bg_a & bg_b) / len(bg_a | bg_b)
 
 
+def _compute_relevance(query: str, pattern: dict) -> float:
+    """現在の問い query とノードのトリガー pattern の適合度 ∈ [0, 1]"""
+    keys = pattern.get("exact_keys", [])
+    norm_q = _normalize(query)
+    best_rel = 0.0
+    for k in keys:
+        norm_k = _normalize(k)
+        if norm_k and (norm_k in norm_q or norm_q in norm_k):
+            best_rel = max(best_rel, 0.8)
+        else:
+            best_rel = max(best_rel, _bigram_jaccard(query, k))
+
+    rule_expr = pattern.get("rule_expr")
+    if rule_expr:
+        try:
+            if re.search(rule_expr, query, re.IGNORECASE):
+                best_rel = max(best_rel, 0.8)
+        except re.error:
+            pass
+    return best_rel
+
+
 def _compute_freshness(last_updated_iso: str, half_life_days: float, now: datetime) -> float:
     """
     最終更新日からの経過日数をもとに freshness ∈ [0, 1] を算出。
@@ -347,10 +369,25 @@ def compute_efp_prime_constraint(
             time_factor = 1.0
 
     # 制度的公式決定 (is_authoritative=True) の評価 (BASE v2.0 §4.2: 権限の無制限特権化の排除)
-    # - 事実決定・制度制定 (fact / rule / policy / general) かつ管轄内であれば 1.0 を保証
-    # - ただし主観的裁量意見 (judgment) や管轄外の場合は claim_factor / scope_factor により相対化される
-    if prov and getattr(prov, "is_authoritative", False) and scope_factor >= 1.0 and time_factor >= 0.99 and claim_type != "judgment":
-        c_prime = 1.0
+    # - 確定事実・制度制定・公式規則 (fact / rule / policy) かつ管轄内・新鮮であれば最大拘束 1.0 を保証
+    # - 一般公式言明 (general) は 1.0 に固定せず上限 0.90 に抑制
+    # - 主観的裁量意見 (judgment) は claim_factor (0.80) により明確に減衰
+    if prov and getattr(prov, "is_authoritative", False):
+        if scope_factor >= 1.0 and time_factor >= 0.99:
+            if claim_type in ("fact", "rule", "policy") or getattr(prov, "channel", "") in ("official_doc", "audit_log") or getattr(prov, "source_type", "") in ("admin", "audit"):
+                if claim_type == "judgment":
+                    effective_score = auth_weight * scope_factor * claim_factor
+                    c_prime = min(1.0, effective_score * time_factor)
+                else:
+                    c_prime = 1.0
+            elif claim_type == "general":
+                c_prime = 0.90
+            else:
+                effective_score = auth_weight * scope_factor * claim_factor
+                c_prime = min(1.0, effective_score * time_factor)
+        else:
+            effective_score = auth_weight * scope_factor * claim_factor
+            c_prime = min(1.0, effective_score * time_factor)
     else:
         effective_score = (auth_weight + substance) * scope_factor * claim_factor
         c_prime = min(1.0, effective_score * time_factor)
@@ -372,6 +409,34 @@ def compute_opposing_conflict_strength(
     # 衝突時: C_old と C_prime がともに強いほど熱蓄積が大きくブーストされる
     # 最大で 1.0 + 1.0 * 1.0 * 2.0 = 3.0
     return max(1.0, 1.0 + (c_old * c_prime) * 2.0)
+
+
+def is_support_node_eligible(
+    support_node: object,
+    query: str,
+    cfg: ConstraintConfig,
+    now: datetime,
+) -> bool:
+    """
+    支援ノードが束の拘束力（synergy / survive）を支える健全な状態にあるかを個別検査。
+    (1) freshness: rupture_freshness_threshold 未満なら除外（陳腐化ノードは支えられない）
+    (2) rejection_ratio: rupture_rejection_ratio_threshold 以上なら除外（拒絶多数ノードは支えられない）
+    (3) relevance: 問いへの適合度が極小（< 0.3）なら除外（無関係ノードは支えられない）
+    """
+    s_rel = _compute_relevance(query, support_node.trigger_pattern)
+    if s_rel < 0.3:
+        return False
+
+    s_fresh = _compute_freshness(support_node.last_updated, cfg.freshness_half_life_days, now)
+    if s_fresh < cfg.rupture_freshness_threshold:
+        return False
+
+    s_total = support_node.success_count + support_node.failure_count + support_node.rejection_count
+    if s_total > 0:
+        if (support_node.rejection_count / s_total) >= cfg.rupture_rejection_ratio_threshold:
+            return False
+
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -409,14 +474,7 @@ class RelationConstraintLocator:
         now = ctx.current_time
 
         keys = node.trigger_pattern.get("exact_keys", [])
-        rel = max((_bigram_jaccard(query, k) for k in keys), default=0.0)
-        rule_expr = node.trigger_pattern.get("rule_expr")
-        if rule_expr:
-            try:
-                if re.search(rule_expr, query, re.IGNORECASE):
-                    rel = max(rel, 0.8)
-            except re.error:
-                pass
+        rel = _compute_relevance(query, node.trigger_pattern)
 
         fresh = _compute_freshness(node.last_updated, cfg.freshness_half_life_days, now)
         auth = _compute_authority_weight(node.authority_level)
@@ -432,8 +490,6 @@ class RelationConstraintLocator:
 
         # 関連ノード（同一ドメイン内でトリガーキーを共有・支援する共起ルール群）を束ねる
         # BASE v2.0: 単一ノード属性ではなく「関係の束 (ConstraintBundle)」として拘束位置を表現
-        # 【純化】同一 action_type（例: direct_reply）を持つだけの無関係ノードを束ねる粗い条件を排除し、
-        # 共通キーの共有関係（共起・支援関係）に限定する。
         supporting_nodes = []
         if hasattr(mb_graph, "find_co_occurring_nodes"):
             supporting_nodes = mb_graph.find_co_occurring_nodes(node, limit=4)
@@ -454,18 +510,36 @@ class RelationConstraintLocator:
         bundle_node_ids = [node.id] + [s.id for s in supporting_nodes]
 
         # 束としての総合拘束強度 (Bundle Constraint Score: BASE v2.0 §4.2)
-        # 代表ノード単体だけでなく、束に含まれる支援ノード群がどれだけ強固に裏付けているかを相乗評価
+        # 代表ノード単体だけでなく、束に含まれる健全な支援ノード群がどれだけ強固に裏付けているかを相乗評価
         synergy_boost = 0.0
+        seen_lineages = set()
+        primary_lineage = getattr(node, "source_lineage", None) or getattr(node, "source_id", None)
+        if primary_lineage:
+            seen_lineages.add(primary_lineage)
+
+        eligible_support_count = 0
         if supporting_nodes:
             for s in supporting_nodes:
-                s_keys = s.trigger_pattern.get("exact_keys", [])
-                s_rel = max((_bigram_jaccard(query, k) for k in s_keys), default=0.0)
+                # 支援ノード自身の健全性検査（陳腐化・拒絶多数・無関係ノードは除外）
+                if not is_support_node_eligible(s, query, cfg, now):
+                    continue
+                eligible_support_count += 1
+                s_rel = _compute_relevance(query, s.trigger_pattern)
                 s_src = _compute_source_strength(s.approval_count, s.rejection_count)
-                s_fresh = _compute_freshness(s.last_updated, cfg.freshness_half_life_days, now)
-                if s_rel > 0.3 and s_src > 0.5 and s_fresh > 0.4:
-                    synergy_boost += 0.04 * s_rel * s_src
+
+                # 系譜（Lineage）重複検査: 同一マニュアル・同一上流の複製ルールは相乗効果を抑制
+                s_lineage = getattr(s, "source_lineage", None) or getattr(s, "source_id", None)
+                if s_lineage and s_lineage in seen_lineages:
+                    lineage_factor = 0.15  # 同一起源の複製は 15% のみ（水増し防止）
+                else:
+                    lineage_factor = 1.0   # 独立した関係源からの支持
+                    if s_lineage:
+                        seen_lineages.add(s_lineage)
+
+                synergy_boost += 0.04 * s_rel * s_src * lineage_factor
+
             synergy_boost = min(0.12, synergy_boost)
-            conv = min(1.0, conv + 0.05 * len(supporting_nodes))
+            conv = min(1.0, conv + 0.05 * eligible_support_count)
 
         bundle_score = min(1.0, score + synergy_boost)
 
@@ -515,15 +589,7 @@ class RelationConstraintLocator:
 
         for node in all_nodes:
             keys = node.trigger_pattern.get("exact_keys", [])
-            rel = max((_bigram_jaccard(query, k) for k in keys), default=0.0)
-
-            rule_expr = node.trigger_pattern.get("rule_expr")
-            if rule_expr:
-                try:
-                    if re.search(rule_expr, query, re.IGNORECASE):
-                        rel = max(rel, 0.8)
-                except re.error:
-                    pass
+            rel = _compute_relevance(query, node.trigger_pattern)
 
             fresh = _compute_freshness(node.last_updated, cfg.freshness_half_life_days, now)
             auth = _compute_authority_weight(node.authority_level)
@@ -588,14 +654,30 @@ class RelationConstraintLocator:
                 bundle_node_ids.extend(s.id for s in supporting_nodes)
 
                 synergy_boost = 0.0
+                seen_lineages = set()
+                primary_lineage = getattr(node, "source_lineage", None) or getattr(node, "source_id", None)
+                if primary_lineage:
+                    seen_lineages.add(primary_lineage)
+
+                eligible_support_count = 0
                 if supporting_nodes:
                     for s in supporting_nodes:
-                        s_keys = s.trigger_pattern.get("exact_keys", [])
-                        s_rel = max((_bigram_jaccard(query, k) for k in s_keys), default=0.0)
+                        if not is_support_node_eligible(s, query, cfg, now):
+                            continue
+                        eligible_support_count += 1
+                        s_rel = _compute_relevance(query, s.trigger_pattern)
                         s_src = _compute_source_strength(s.approval_count, s.rejection_count)
-                        s_fresh = _compute_freshness(s.last_updated, cfg.freshness_half_life_days, now)
-                        if s_rel > 0.3 and s_src > 0.5 and s_fresh > 0.4:
-                            synergy_boost += 0.04 * s_rel * s_src
+
+                        s_lineage = getattr(s, "source_lineage", None) or getattr(s, "source_id", None)
+                        if s_lineage and s_lineage in seen_lineages:
+                            lineage_factor = 0.15
+                        else:
+                            lineage_factor = 1.0
+                            if s_lineage:
+                                seen_lineages.add(s_lineage)
+
+                        synergy_boost += 0.04 * s_rel * s_src * lineage_factor
+
                     synergy_boost = min(0.12, synergy_boost)
 
                 bundle_score = min(1.0, score + synergy_boost)
@@ -608,7 +690,7 @@ class RelationConstraintLocator:
                     freshness=d.get("freshness", 0.0),
                     authority_weight=d.get("authority_weight", 0.0),
                     source_strength=d.get("source_strength", 0.0),
-                    convergence=min(1.0, d.get("convergence", 0.0) + 0.05 * len(supporting_nodes)),
+                    convergence=min(1.0, d.get("convergence", 0.0) + 0.05 * eligible_support_count),
                     is_structural_bridge=False,
                 ))
 
@@ -782,15 +864,49 @@ class RuptureProbe:
                             )
 
         # -------------------------------------------------------------
+        # 2.5 実効的バンドル切断・除去摂動 (Actual Bundle Removal Perturbation: BASE v2.0 §4.2)
+        # -------------------------------------------------------------
+        # 「この束を切断したとき、現在の解釈可能域がどう変わるか」
+        # F_base = interp(M_B, EFP) vs F_without = interp(M_B \ bundle, EFP)
+        from rdl_enterprise.cascade import InterpCascade
+        cascade = InterpCascade(
+            mb_graph,
+            constraint_config=cfg,
+            constraint_evaluation_time=ctx.current_time,
+        )
+        f_base = cascade.interpret(ctx.efp, skip_constraint_boost=True)
+        f_without = cascade.interpret(ctx.efp, exclude_node_ids=bundle.node_ids, skip_constraint_boost=True)
+
+        # もし束を除去した結果、同一ドメイン内で異なるアクション（対立解釈）が同等以上の拘束で浮上した場合、
+        # 構造的に競合を抑え込んでいるだけの脆い状態であるため break
+        if (f_without.matched_node_id and
+            f_without.matched_node_id not in bundle.node_ids and
+            f_without.action_type != f_base.action_type and
+            f_without.confidence >= f_base.confidence):
+            return RuptureResult(
+                bundle=bundle,
+                verdict="break",
+                opposing_strength=1.8,
+                rupture_reason=(
+                    f"実効的バンドル切断(M_B \\ bundle)により、対向解釈ノード "
+                    f"({f_without.matched_node_id}: conf={f_without.confidence:.2f} >= {f_base.confidence:.2f}) "
+                    f"との潜在衝突が露出して破断"
+                ),
+            )
+
+        # -------------------------------------------------------------
         # 3. 生存判定 (Survive)
         # -------------------------------------------------------------
         # 摂動に耐え、十分な承認実績または制度的権限を持ち、現在の問いに適合している場合のみ survive
-        # 【束の相互補強・冗長性】代表ノード単体だけでなく、束に含まれる支援ノード群の承認実績も評価
-        bundle_approvals = (node.approval_count if node else 0) + sum(s.approval_count for s in supporting_nodes)
+        # 【健全な支援ノードのみ算入】陳腐化・拒絶多数の支援ノードは除外し、健全な支援ノードの実績のみ評価
+        eligible_supporting_nodes = [
+            sn for sn in supporting_nodes
+            if is_support_node_eligible(sn, ctx.efp.query_text, cfg, ctx.current_time)
+        ]
         has_proven_track_record = (
             (node is not None and node.approval_count >= cfg.min_survive_approvals) or
             bundle.authority_weight >= 0.8 or
-            (supporting_nodes and any(s.approval_count >= cfg.min_survive_approvals for s in supporting_nodes))
+            (eligible_supporting_nodes and any(s.approval_count >= cfg.min_survive_approvals for s in eligible_supporting_nodes))
         )
         if has_proven_track_record and bundle.relevance >= cfg.min_survive_relevance:
             return RuptureResult(
