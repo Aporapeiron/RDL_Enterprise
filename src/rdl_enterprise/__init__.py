@@ -39,6 +39,9 @@ from .canary import (
     CanaryStatus,
     CanaryDeployment,
     CanaryManager,
+    CanaryCompletionPolicy,
+    ActionRecord,
+    ActionLedger,
 )
 from .runtime import (
     EnterpriseRuntime,
@@ -81,6 +84,9 @@ __all__ = [
     "CanaryStatus",
     "CanaryDeployment",
     "CanaryManager",
+    "CanaryCompletionPolicy",
+    "ActionRecord",
+    "ActionLedger",
     "EnterpriseRuntime",
     "TicketExecutionResult",
     "TicketDispatchResult",

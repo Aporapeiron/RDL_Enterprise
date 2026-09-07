@@ -24,9 +24,11 @@ class HState:
         self.w_pred = w_pred
         self.w_input = w_input
 
-        # ノード別またはドメイン別の熱管理: node_id -> HeatVector
+        # ノード別またはドメイン別の熱管理: node_id -> HeatVector (本番用)
         self.node_heats: Dict[str, HeatVector] = {}
-        # 全体グローバル熱
+        # バージョン別複合キー熱管理: (mb_version, node_id) -> HeatVector
+        self.versioned_heats: Dict[Tuple[str, str], HeatVector] = {}
+        # 全体グローバル熱 (本番用)
         self.global_heat = HeatVector()
         # 観測可能な残存指標プール
         self.unclassified_count = 0
@@ -35,16 +37,46 @@ class HState:
         self.rejection_events_count = 0
         self.total_tickets = 0
 
-    def add_heat(self, node_id: Optional[str], pred_err: float = 0.0, input_err: float = 0.0):
-        """誤差 E を熱として蓄積"""
-        if node_id:
-            if node_id not in self.node_heats:
-                self.node_heats[node_id] = HeatVector()
-            self.node_heats[node_id].prediction += pred_err
-            self.node_heats[node_id].input_err += input_err
+    def add_heat(
+        self,
+        node_id: Optional[str],
+        pred_err: float = 0.0,
+        input_err: float = 0.0,
+        mb_version: str = "prod",
+        is_canary: bool = False,
+    ):
+        """
+        誤差 E を熱として蓄積。
+        is_canary=True の場合は本番の node_heats / global_heat を汚染せず、
+        versioned_heats[(mb_version, node_id)] にのみ隔離蓄積する。
+        """
+        target_nid = node_id or "__unmatched__"
+        v_key = (mb_version, target_nid)
+        if v_key not in self.versioned_heats:
+            self.versioned_heats[v_key] = HeatVector()
+        self.versioned_heats[v_key].prediction += pred_err
+        self.versioned_heats[v_key].input_err += input_err
 
-        self.global_heat.prediction += pred_err
-        self.global_heat.input_err += input_err
+        # カナリア案件は本番熱状態を汚染させない
+        if not is_canary:
+            if node_id:
+                if node_id not in self.node_heats:
+                    self.node_heats[node_id] = HeatVector()
+                self.node_heats[node_id].prediction += pred_err
+                self.node_heats[node_id].input_err += input_err
+
+            self.global_heat.prediction += pred_err
+            self.global_heat.input_err += input_err
+
+    def get_heat_for_version(self, node_id: str, mb_version: str = "prod") -> HeatVector:
+        """特定バージョンのノード熱を取得"""
+        return self.versioned_heats.get((mb_version, node_id), HeatVector())
+
+    def clear_version_heat(self, mb_version: str):
+        """ロールバック時などに特定バージョンの熱を全消去"""
+        keys_to_del = [k for k in self.versioned_heats if k[0] == mb_version]
+        for k in keys_to_del:
+            del self.versioned_heats[k]
 
     def record_observation(self, unclassified: bool = False, missing_info: bool = False, unknown_input: bool = False, rejected: bool = False):
         """ξ_obs（観測可能な残存指標）の統計を更新"""

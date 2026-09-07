@@ -25,6 +25,91 @@ class CanaryStatus(str, Enum):
 
 
 @dataclass
+class CanaryCompletionPolicy:
+    """カナリア全面展開完了のためのエビデンス検証ポリシー"""
+    minimum_cases: int = 1                         # カナリアで処理すべき最小解決件数
+    minimum_successes: int = 1                     # カナリアで確認すべき最小成功件数
+    max_allowed_failure_rate: float = 0.05         # 許容最大失敗率 (5%)
+    max_allowed_heat: float = 1.0                  # 許容累積熱 H_canary
+
+
+@dataclass
+class ActionRecord:
+    """AIが外界へ及ぼした作用・ツールの監査ログ"""
+    action_id: str
+    ticket_id: str
+    mb_version: str
+    is_canary: bool
+    action_type: str                               # "direct_reply" | "tool_call" | "email" | "db_write" | "external_api"
+    payload: Any
+    is_reversible: bool = True                     # 可逆（取り消し可能）か
+    compensating_action: Optional[Dict[str, Any]] = None # 補償アクション (Undo定義)
+    executed_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+    status: str = "executed"                       # "executed" | "compensated" | "dry_run" | "uncompensated_irreversible"
+    compensation_executed_at: Optional[str] = None
+
+    @property
+    def is_compensated(self) -> bool:
+        return self.status == "compensated"
+
+
+class ActionLedger:
+    """外界作用監査台帳 (Model Rollback と World Rollback の架け橋)"""
+    def __init__(self):
+        self.records: List[ActionRecord] = []
+
+    def record_action(
+        self,
+        ticket_id: str,
+        mb_version: str,
+        is_canary: bool,
+        action_type: str,
+        payload: Any,
+        is_reversible: bool = True,
+        compensating_action: Optional[Dict[str, Any]] = None,
+    ) -> ActionRecord:
+        action_id = f"act_{len(self.records) + 1:04d}"
+        rec = ActionRecord(
+            action_id=action_id,
+            ticket_id=ticket_id,
+            mb_version=mb_version,
+            is_canary=is_canary,
+            action_type=action_type,
+            payload=payload,
+            is_reversible=is_reversible,
+            compensating_action=compensating_action,
+        )
+        self.records.append(rec)
+        return rec
+
+    def compensate_canary_actions(self, proposal_id: str) -> List[Dict[str, Any]]:
+        """カナリア期間中に実行された作用に対して補償アクションを実行"""
+        compensated = []
+        for rec in reversed(self.records):
+            if rec.is_canary and rec.status == "executed":
+                if rec.compensating_action:
+                    rec.status = "compensated"
+                    rec.compensation_executed_at = datetime.utcnow().isoformat()
+                    compensated.append({
+                        "action_id": rec.action_id,
+                        "ticket_id": rec.ticket_id,
+                        "action_type": rec.action_type,
+                        "compensating_action": rec.compensating_action,
+                        "status": "compensated",
+                    })
+                else:
+                    rec.status = "uncompensated_irreversible" if not rec.is_reversible else "acknowledged"
+                    compensated.append({
+                        "action_id": rec.action_id,
+                        "ticket_id": rec.ticket_id,
+                        "action_type": rec.action_type,
+                        "status": rec.status,
+                        "warning": "補償アクションが未定義です",
+                    })
+        return compensated
+
+
+@dataclass
 class CanaryDeployment:
     """カナリア展開セッション情報"""
     proposal_id: str
@@ -55,6 +140,7 @@ class CanaryManager:
     def __init__(self):
         self.active_deployment: Optional[CanaryDeployment] = None
         self.deployment_history: List[CanaryDeployment] = []
+        self.action_ledger = ActionLedger()
 
     def start_canary(
         self,
@@ -170,10 +256,35 @@ class CanaryManager:
         })
         return True
 
-    def complete_rollout(self) -> Optional[MBGraph]:
-        """全面展開完了: カナリア新 M_B' を本番として確定"""
+    def evaluate_completion_readiness(self, policy: CanaryCompletionPolicy) -> Tuple[bool, List[str]]:
+        """完了ポリシーに対するエビデンス検証"""
+        if not self.active_deployment or self.active_deployment.status != CanaryStatus.ACTIVE:
+            return False, ["アクティブなカナリア展開が存在しません"]
+
+        dep = self.active_deployment
+        reasons = []
+        if dep.canary_cases_count < policy.minimum_cases:
+            reasons.append(f"カナリア解決事例が不足しています ({dep.canary_cases_count}/{policy.minimum_cases}件)")
+        if dep.canary_success_count < policy.minimum_successes:
+            reasons.append(f"カナリア成功事例が不足しています ({dep.canary_success_count}/{policy.minimum_successes}件)")
+        if dep.canary_cases_count > 0:
+            failure_rate = dep.canary_failure_count / dep.canary_cases_count
+            if failure_rate > policy.max_allowed_failure_rate:
+                reasons.append(f"カナリア失敗率が許容値を超過しています ({failure_rate*100:.1f}% > {policy.max_allowed_failure_rate*100:.1f}%)")
+        if dep.canary_heat > policy.max_allowed_heat:
+            reasons.append(f"カナリア累積熱が許容値を超過しています (H_canary={dep.canary_heat:.2f} > {policy.max_allowed_heat:.2f})")
+
+        return (len(reasons) == 0), reasons
+
+    def complete_rollout(self, policy: Optional[CanaryCompletionPolicy] = None) -> Optional[MBGraph]:
+        """全面展開完了: カナリア新 M_B' を本番として確定 (ポリシー指定時は検証実行)"""
         if not self.active_deployment or self.active_deployment.status != CanaryStatus.ACTIVE:
             return None
+
+        if policy is not None:
+            can_complete, reasons = self.evaluate_completion_readiness(policy)
+            if not can_complete:
+                return None
 
         dep = self.active_deployment
         dep.status = CanaryStatus.COMPLETED
@@ -184,14 +295,22 @@ class CanaryManager:
         return dep.canary_mb
 
     def trigger_rollback(self, reason: str) -> Optional[MBGraph]:
-        """自動または手動ロールバック: 旧本番 M_B を復元"""
+        """自動または手動ロールバック: 旧本番 M_B を復元し、外界補償アクションを実行"""
         if not self.active_deployment or self.active_deployment.status != CanaryStatus.ACTIVE:
             return None
 
         dep = self.active_deployment
+        comp_logs = self.action_ledger.compensate_canary_actions(dep.proposal_id)
         dep.status = CanaryStatus.ROLLED_BACK
         dep.rolled_back_at = datetime.utcnow().isoformat()
         dep.rollback_reason = reason
+        dep.audit_log.append({
+            "action": "rollback",
+            "reason": reason,
+            "compensated_actions_count": len(comp_logs),
+            "compensation_details": comp_logs,
+            "timestamp": datetime.utcnow().isoformat(),
+        })
         self.deployment_history.append(dep)
         self.active_deployment = None
         return dep.prod_mb_backup

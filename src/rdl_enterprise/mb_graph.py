@@ -55,9 +55,10 @@ class MBNode:
 
 
 class MBGraph:
-    def __init__(self, m0: float = 3.0):
+    def __init__(self, m0: float = 3.0, version: str = "v1.0"):
         self.nodes: Dict[str, MBNode] = {}
         self.m0 = m0
+        self.version = version
 
     def add_or_update(self, node: MBNode):
         self.nodes[node.id] = node
@@ -87,12 +88,13 @@ class MBGraph:
     def to_dict(self) -> Dict[str, Any]:
         return {
             "m0": self.m0,
+            "version": self.version,
             "nodes": {nid: asdict(node) for nid, node in self.nodes.items()}
         }
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "MBGraph":
-        graph = cls(m0=data.get("m0", 3.0))
+        graph = cls(m0=data.get("m0", 3.0), version=data.get("version", "v1.0"))
         for nid, ndict in data.get("nodes", {}).items():
             graph.add_or_update(MBNode(**ndict))
         return graph

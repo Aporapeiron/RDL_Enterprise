@@ -17,7 +17,7 @@ from .human import HumanQuery
 from .authority import AuthorityContext
 from .durability import DurabilityHarness
 from .shadow import ShadowEvaluator, ShadowReport
-from .canary import CanaryManager, CanaryDeployment, CanaryStatus
+from .canary import CanaryManager, CanaryDeployment, CanaryStatus, CanaryCompletionPolicy
 from .promotion_gate import ProposalState, PromotionPolicy, PromotionGate
 
 @dataclass
@@ -196,6 +196,26 @@ class EnterpriseRuntime:
             action_taken = pred.action_type
             final_output = pred.content
 
+        # 5. 外界作用台帳 (ActionLedger) への記録 (Model Rollback / World Rollback 追跡)
+        mb_ver = getattr(active_graph, "version", "prod")
+        compensating_action = None
+        if is_canary:
+            compensating_action = {
+                "type": "send_correction_or_revert",
+                "original_output": final_output,
+                "revert_notice": f"【システム訂正】案件 {efp.ticket_id} の回答を取り消し・訂正いたします。",
+            }
+
+        self.canary_manager.action_ledger.record_action(
+            ticket_id=efp.ticket_id,
+            mb_version=mb_ver,
+            is_canary=is_canary,
+            action_type=action_taken,
+            payload=final_output,
+            is_reversible=True,
+            compensating_action=compensating_action,
+        )
+
         return TicketDispatchResult(
             ticket_id=efp.ticket_id,
             prediction=pred,
@@ -231,12 +251,21 @@ class EnterpriseRuntime:
             self.active_shadow_evaluator.record_feedback(ticket_id, feedback)
 
         pred = snapshot.f_pred
-        matched_node = self.mb_graph.get(pred.matched_node_id) if pred.matched_node_id else None
+
+        # 局所学習およびノード参照対象の厳格分離 (Canary新M_B' vs 旧本番M_B)
+        if snapshot.is_canary and self.canary_manager.active_deployment:
+            target_graph = self.canary_manager.active_deployment.canary_mb
+            target_cascade = InterpCascade(target_graph, llm_bridge=self.cascade.llm_bridge)
+        else:
+            target_graph = self.mb_graph
+            target_cascade = self.cascade
+
+        matched_node = target_graph.get(pred.matched_node_id) if pred.matched_node_id else None
 
         promoted_to_mb = False
         # 学習ガバナンス：成功確認後にのみ M_B へ昇格（沈澱）
         if snapshot.status == CaseStatus.SUCCESS and snapshot.candidate_knowledge and not snapshot.is_authoritative:
-            self.cascade.crystallize_rule(
+            target_cascade.crystallize_rule(
                 snapshot.efp,
                 snapshot.candidate_knowledge,
                 snapshot.efp.category or "general",
@@ -244,9 +273,16 @@ class EnterpriseRuntime:
             )
             promoted_to_mb = True
 
-        # 熱 H の蓄積
+        # 熱 H の蓄積 (Version-aware: カナリアの熱は本番熱状態を汚染させない)
         target_nid = pred.matched_node_id or "__unmatched__"
-        self.h_state.add_heat(target_nid, pred_err=e_pred, input_err=e_input)
+        mb_ver = getattr(target_graph, "version", "prod")
+        self.h_state.add_heat(
+            target_nid,
+            pred_err=e_pred,
+            input_err=e_input,
+            mb_version=mb_ver,
+            is_canary=snapshot.is_canary,
+        )
         self.h_state.record_observation(
             unclassified=(pred.matched_node_id is None),
             missing_info=(e_input > 0),
@@ -490,13 +526,13 @@ class EnterpriseRuntime:
         """カナリア配分比率を拡大 (例: 0.1 -> 0.5 -> 1.0)"""
         return self.canary_manager.step_up_traffic(new_ratio)
 
-    def complete_canary_rollout(self) -> bool:
-        """カナリア展開を完了し、新 M_B' を本番として確定コミット"""
+    def complete_canary_rollout(self, policy: Optional[CanaryCompletionPolicy] = None) -> bool:
+        """カナリア展開を完了し、新 M_B' を本番として確定コミット (エビデンス検証を含む)"""
         if not self.canary_manager.active_deployment:
             return False
 
         prop_id = self.canary_manager.active_deployment.proposal_id
-        new_mb = self.canary_manager.complete_rollout()
+        new_mb = self.canary_manager.complete_rollout(policy=policy)
         if not new_mb:
             return False
 
