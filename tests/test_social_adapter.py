@@ -1,4 +1,4 @@
-﻿import unittest
+import unittest
 import os
 from rdl_enterprise.mb_graph import MBGraph, MBNode
 from rdl_enterprise.durability import DurabilityHarness, PerturbationStressChecker
@@ -131,6 +131,44 @@ class TestSocialAdapter(unittest.TestCase):
         self.assertFalse(report.passed)
         self.assertEqual(len(report.break_points), 1)
         self.assertIn("特権ノード node_bad_root が auto で誤マッチ", report.break_points[0])
+
+    def test_domain_constraint_and_cache_isolation(self):
+        """有限境界 B の実拘束: 指定された domain 以外のノードはマッチせず、キャッシュも分離される"""
+        from rdl_enterprise.cascade import InterpCascade
+        from rdl_enterprise.snapshot import BusinessInput
+
+        graph = MBGraph()
+        # account ドメインのパスワードノード
+        graph.add_or_update(MBNode(
+            id="node_acc_pwd",
+            domain="account",
+            trigger_pattern={"exact_keys": ["パスワード変更"]},
+            action_template={"type": "direct_reply", "payload": "account-portal"},
+            confidence=0.9,
+        ))
+
+        cascade = InterpCascade(graph)
+
+        # 1. category="account" で投入 -> マッチして Tier 1
+        efp_acc = BusinessInput("T1", "U1", "account", "パスワード変更")
+        pred_acc = cascade.interpret(efp_acc)
+        self.assertEqual(pred_acc.matched_node_id, "node_acc_pwd")
+        self.assertEqual(pred_acc.cost_tier, 1)
+
+        # 2. もう一度投入 -> Level 0 キャッシュにヒットして Tier 0
+        pred_acc2 = cascade.interpret(efp_acc)
+        self.assertEqual(pred_acc2.cost_tier, 0)
+
+        # 3. 同一の文面だが category="security" で投入 -> 推論空間が拘束され、accountノードにはマッチせず Tier 3
+        efp_sec = BusinessInput("T2", "U2", "security", "パスワード変更")
+        pred_sec = cascade.interpret(efp_sec)
+        self.assertIsNone(pred_sec.matched_node_id)
+        self.assertEqual(pred_sec.cost_tier, 3)
+
+        # 4. category=None または "any" で投入 -> 全ドメインが対象となりマッチ
+        efp_any = BusinessInput("T3", "U3", "any", "パスワード変更")
+        pred_any = cascade.interpret(efp_any)
+        self.assertEqual(pred_any.matched_node_id, "node_acc_pwd")
 
 if __name__ == "__main__":
     unittest.main()

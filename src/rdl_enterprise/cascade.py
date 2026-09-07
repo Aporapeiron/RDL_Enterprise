@@ -1,5 +1,5 @@
 import re
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 from .mb_graph import MBGraph, MBNode
 from .snapshot import BusinessInput, InterpretationPrediction
 
@@ -12,21 +12,36 @@ class InterpCascade:
         self.mb_graph = mb_graph
         self.llm_bridge = llm_bridge
         # Level 0 キャッシュ: normalized_query -> node_id
-        self.level0_cache: Dict[str, str] = {}
+        self.level0_cache: Dict[Tuple[str, str], str] = {}  # (domain, norm_query) -> node_id
 
     def _normalize(self, text: str) -> str:
         return re.sub(r"\s+", "", text.lower())
 
     def interpret(self, efp: BusinessInput) -> InterpretationPrediction:
         norm_query = self._normalize(efp.query_text)
+        target_domain = efp.category or "any"
+
+        # 有限境界 B による推論空間の拘束:
+        # category が指定されている場合（any/general以外）、該当ドメインのノードのみを候補とする
+        def is_domain_eligible(node_domain: str, category: Optional[str]) -> bool:
+            if not category or category in ("any", "general"):
+                return True
+            return node_domain == category
+
+        eligible_nodes = [
+            node for node in self.mb_graph.list_nodes()
+            if is_domain_eligible(node.domain, efp.category)
+        ]
 
         # -------------------------------------------------------------
         # Level 0: 完全一致キャッシュ (Cost Tier 0: ローカル最小コスト)
+        # ドメイン境界 B とクエリのタプルで管理
         # -------------------------------------------------------------
-        if norm_query in self.level0_cache:
-            nid = self.level0_cache[norm_query]
+        cache_key = (target_domain, norm_query)
+        if cache_key in self.level0_cache:
+            nid = self.level0_cache[cache_key]
             node = self.mb_graph.get(nid)
-            if node:
+            if node and is_domain_eligible(node.domain, efp.category):
                 return InterpretationPrediction(
                     action_type=node.action_template.get("type", "direct_reply"),
                     content=node.action_template.get("payload", ""),
@@ -39,14 +54,15 @@ class InterpCascade:
 
         # -------------------------------------------------------------
         # Level 1: 構造化確定ルール・正規表現 (Cost Tier 1)
+        # 境界内 (eligible_nodes) のみを探索
         # -------------------------------------------------------------
-        for node in self.mb_graph.list_nodes():
+        for node in eligible_nodes:
             pattern = node.trigger_pattern
             # 完全一致キー群のチェック
             for key in pattern.get("exact_keys", []):
                 if self._normalize(key) == norm_query or key.lower() in efp.query_text.lower():
-                    # ヒットしたらLevel 0キャッシュに昇格
-                    self.level0_cache[norm_query] = node.id
+                    # ヒットしたらLevel 0キャッシュに昇格 (ドメイン境界付き)
+                    self.level0_cache[cache_key] = node.id
                     return InterpretationPrediction(
                         action_type=node.action_template.get("type", "direct_reply"),
                         content=node.action_template.get("payload", ""),
@@ -72,7 +88,7 @@ class InterpCascade:
 
         # -------------------------------------------------------------
         # Level 2: 局所類似度マッチング (Cost Tier 2)
-        # 日本語対応 文字bi-gram Jaccard類似度
+        # 日本語対応 文字bi-gram Jaccard類似度 (境界内 eligible_nodes のみ)
         # -------------------------------------------------------------
         def get_bigrams(text: str) -> set:
             cleaned = self._normalize(text)
@@ -84,7 +100,7 @@ class InterpCascade:
         best_score = 0.0
         query_bigrams = get_bigrams(efp.query_text)
 
-        for node in self.mb_graph.list_nodes():
+        for node in eligible_nodes:
             for k in node.trigger_pattern.get("exact_keys", []):
                 key_bigrams = get_bigrams(k)
                 if query_bigrams and key_bigrams:
@@ -153,6 +169,6 @@ class InterpCascade:
             approval_count=1 if approved else 0,
         )
         self.mb_graph.add_or_update(new_node)
-        # Level 0 キャッシュにも即座に登録
-        self.level0_cache[self._normalize(efp.query_text)] = new_id
+        # Level 0 キャッシュにも即座に登録（ドメイン境界付き）
+        self.level0_cache[(category, self._normalize(efp.query_text))] = new_id
         return new_node
