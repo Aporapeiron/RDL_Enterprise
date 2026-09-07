@@ -5,7 +5,16 @@ import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
 from rdl_enterprise.mb_graph import MBGraph, MBNode
-from rdl_enterprise.snapshot import BusinessInput, FeedbackResult, SubsequentInterpretation, CaseStatus, FrozenInterpretationContext
+from rdl_enterprise.snapshot import (
+    BusinessInput,
+    FeedbackResult,
+    SubsequentInterpretation,
+    CaseStatus,
+    FrozenInterpretationContext,
+    EFPPrimeAdapter,
+    ObservedOutcome,
+    LLMBridgeIdentity,
+)
 from rdl_enterprise.authority import AuthorityContext
 from rdl_enterprise.promotion_gate import ProposalState, PromotionPolicy, PromotionGate
 from rdl_enterprise.runtime import EnterpriseRuntime, ReorganizationProposal
@@ -18,6 +27,8 @@ from rdl_enterprise.canary import (
     CompensationExecutor,
     ActionCapability,
     InMemoryCompensationClient,
+    WebhookCompensationClient,
+    SlackCompensationClient,
 )
 
 
@@ -628,6 +639,146 @@ class TestCandidateImmutabilityAndBinding(unittest.TestCase):
         self.assertEqual(rec2.status, "succeeded")
         self.assertEqual(len(comp_client.sent_reverts), 1)
         self.assertEqual(comp_client.sent_reverts[0]["ticket_id"], "T_CANARY_SUCCESS")
+
+    def test_f_generated_from_same_frozen_context_as_f_prime_and_cache_preserved(self):
+        """優先順位 1 & 2: F が FrozenInterpretationContext から先行生成され、Level 0 キャッシュが F と F' 間で維持されること"""
+        runtime = EnterpriseRuntime(mb_graph=self.prod_graph, theta_0=2.0)
+        efp = BusinessInput("T_CACHE_SEQ_01", "U1", "workflow", "稟議申請")
+
+        # dispatch_ticket 実行
+        d_res = runtime.dispatch_ticket(efp)
+        snapshot = runtime.pending_snapshots["T_CACHE_SEQ_01"]
+
+        # 1. F (事前予測) が frozen_context と同一の解釈結果であり、同一コンテキストが保持されていること
+        self.assertIsNotNone(snapshot.frozen_context)
+        self.assertEqual(d_res.prediction.matched_node_id, snapshot.f_pred.matched_node_id)
+        self.assertEqual(snapshot.frozen_context.mb_version, self.prod_graph.version)
+
+        # 2. 事前推論 (F) によって Level 0 キャッシュに昇格したノードが、凍結コンテキスト内の InterpCascade に存在すること
+        frozen_cascade = snapshot.frozen_context.get_or_create_cascade()
+        cache_key = ("workflow", "稟議申請")
+        self.assertIn(cache_key, frozen_cascade.level0_cache)
+        self.assertEqual(frozen_cascade.level0_cache[cache_key], "node_wf")
+
+        # 3. 事後結果受領時に同一の frozen_context で再解釈した際、cache hit (Tier 0) が引き継がれ、不当な確信度低下や偽のEが発生しないこと
+        feedback = FeedbackResult(user_resolved=True, human_approved=True)
+        r_res = runtime.resolve_ticket_feedback("T_CACHE_SEQ_01", feedback)
+        self.assertEqual(r_res.status, CaseStatus.SUCCESS)
+        self.assertEqual(snapshot.f_prime.cost_tier, 0)  # キャッシュヒットにより Tier 0 を維持
+        self.assertEqual(snapshot.e_prediction, 0.0)    # キャッシュ差異による偽の熱が発生しない
+
+    def test_llm_identity_drift_detection(self):
+        """優先順位 3: 推論器 (LLM Bridge) の構成・パラメータが F と F' の間で改変された場合に LLM Identity Drift を検知・遮断すること"""
+        class MockLLMBridge:
+            def __init__(self, model_name="gpt-4", temperature=0.0):
+                self.model_name = model_name
+                self.temperature = temperature
+            def resolve(self, efp):
+                return {"type": "direct_reply", "payload": "LLM response"}
+
+        bridge = MockLLMBridge(model_name="model-v1", temperature=0.0)
+        runtime = EnterpriseRuntime(mb_graph=self.prod_graph, theta_0=2.0, llm_bridge=bridge)
+        efp = BusinessInput("T_LLM_DRIFT", "U1", "workflow", "未知の質問テキスト")
+        runtime.dispatch_ticket(efp)
+        snapshot = runtime.pending_snapshots["T_LLM_DRIFT"]
+
+        # 事後解釈の前に外部で推論器のモデルが書き換えられた場合 (例: model-v1 -> model-v2)
+        bridge.model_name = "model-v2"
+
+        with self.assertRaises(RuntimeError) as ctx:
+            snapshot.record_feedback(FeedbackResult(user_resolved=True))
+        self.assertIn("LLM Identity Drift", str(ctx.exception))
+
+    def test_efp_prime_lossless_structured_adapter_and_outcome_separation(self):
+        """優先順位 4 & 5: EFPPrimeAdapter が情報を欠損なく保持し、ObservedOutcome (O') と SubsequentInterpretation (F') が直交分離されること"""
+        efp = BusinessInput("T_ADAPT_01", "U1", "workflow", "備品購入の手続き", metadata={"dept": "finance"})
+        feedback = FeedbackResult(
+            user_resolved=False,
+            human_rejected=True,
+            actual_response_text="旧システムへアクセスしてください",
+            feedback_comment="URLが404エラーで開けません",
+            new_knowledge_provided="新購買SaaSポータル https://buy.corp へ変更されました",
+        )
+
+        # 1. EFPPrimeAdapter による適応
+        efp_prime = EFPPrimeAdapter.adapt(efp, feedback)
+        self.assertEqual(efp_prime.ticket_id, "T_ADAPT_01_prime")
+        self.assertIn("備品購入の手続き", efp_prime.query_text)
+        self.assertIn("新購買SaaSポータル", efp_prime.query_text)
+        self.assertIn("404エラー", efp_prime.query_text)
+        # metadata が完全保持されていること (lossless)
+        self.assertTrue(efp_prime.metadata["is_efp_prime"])
+        self.assertEqual(efp_prime.metadata["dept"], "finance")
+        self.assertEqual(efp_prime.metadata["new_knowledge_provided"], feedback.new_knowledge_provided)
+        self.assertTrue(efp_prime.metadata["human_rejected"])
+
+        # 2. CaseSnapshot における F' と O' の直交分離の検証
+        runtime = EnterpriseRuntime(mb_graph=self.prod_graph, theta_0=2.0)
+        runtime.dispatch_ticket(efp)
+        runtime.resolve_ticket_feedback("T_ADAPT_01", feedback)
+        snapshot = runtime.resolved_snapshots[-1]
+
+        # O' (ObservedOutcome) の独立性
+        self.assertIsNotNone(snapshot.observed_outcome)
+        self.assertIsInstance(snapshot.observed_outcome, ObservedOutcome)
+        self.assertEqual(snapshot.observed_outcome.status, CaseStatus.REJECTED)
+        self.assertEqual(snapshot.observed_outcome.outcome, "rejected")
+        self.assertTrue(snapshot.observed_outcome.human_rejected)
+        self.assertEqual(snapshot.observed_outcome.feedback_comment, "URLが404エラーで開けません")
+
+        # F' (SubsequentInterpretation) の純粋推論属性
+        self.assertIsNotNone(snapshot.f_prime)
+        self.assertIsInstance(snapshot.f_prime, SubsequentInterpretation)
+        self.assertIn(snapshot.f_prime.action_type, ("direct_reply", "ask_human", "tool_call"))
+        self.assertGreater(snapshot.f_prime.e_prediction_delta, 0.0)
+
+    def test_webhook_and_slack_compensation_clients_fail_closed_and_success(self):
+        """優先順位 6: WebhookCompensationClient および SlackCompensationClient の実送信・fail-closed 防壁"""
+        # 1. Webhook 正常成功ケース
+        mock_calls = []
+        def mock_success_sender(url, payload, auth, timeout):
+            mock_calls.append({"url": url, "payload": payload, "auth": auth})
+            return {"status_code": 200, "receipt": "wh_rec_999"}
+
+        webhook_client = WebhookCompensationClient(
+            endpoint_url="https://api.corp.internal/v1/revert",
+            auth_token="secret-token",
+            sender_fn=mock_success_sender,
+        )
+        rec = ActionRecord(
+            action_id="act_0001",
+            ticket_id="T_WH_01",
+            mb_version="v1.0",
+            is_canary=True,
+            action_type="direct_reply",
+            payload="誤回答",
+            compensating_action={"type": "revert", "revert_notice": "訂正通知文"},
+        )
+        res_ok = webhook_client.send_revert(rec)
+        self.assertTrue(res_ok["success"])
+        self.assertEqual(res_ok["receipt"], "wh_rec_999")
+        self.assertEqual(len(mock_calls), 1)
+        self.assertEqual(mock_calls[0]["auth"], "secret-token")
+
+        # 2. Webhook ネットワーク障害・例外 (fail-closed 検証)
+        def mock_error_sender(url, payload, auth, timeout):
+            raise ConnectionError("接続タイムアウト")
+
+        webhook_err_client = WebhookCompensationClient(
+            endpoint_url="https://api.corp.internal/v1/revert",
+            sender_fn=mock_error_sender,
+        )
+        res_err = webhook_err_client.send_revert(rec)
+        self.assertFalse(res_err["success"])
+        self.assertIn("fail-closed", res_err["reason"])
+
+        # 3. SlackCompensationClient
+        slack_client = SlackCompensationClient(
+            webhook_url="https://hooks.slack.com/services/test/corp",
+            sender_fn=mock_success_sender,
+        )
+        res_slack = slack_client.send_revert(rec)
+        self.assertTrue(res_slack["success"])
 
 
 if __name__ == "__main__":

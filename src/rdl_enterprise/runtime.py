@@ -12,8 +12,10 @@ from .snapshot import (
     CaseSnapshot,
     CaseStatus,
     FrozenInterpretationContext,
+    LLMBridgeIdentity,
+    ObservedOutcome,
 )
-from .cascade import InterpCascade
+from .cascade import InterpCascade, CascadeConfig
 from .human import HumanQuery
 from .authority import AuthorityContext
 from .durability import DurabilityHarness
@@ -183,9 +185,32 @@ class EnterpriseRuntime:
             active_graph = self.canary_manager.active_deployment.canary_mb
             active_cascade = InterpCascade(active_graph, llm_bridge=self.cascade.llm_bridge)
 
-        # 1. 多層カスケード推論 (EFP -> F)
-        pred = active_cascade.interpret(efp)
+        # 1. T0 SPEC 4, 6.1: 更新前 M_B グラフおよび解釈環境全体を先行完全凍結 (FrozenInterpretationContext)
+        # F (事前予測) と F' (事後解釈) は文字通り全く同一の凍結コンテキスト・同一キャッシュから解釈される
+        frozen_graph = MBGraph.from_dict(active_graph.to_dict())
+        frozen_graph.freeze()
+        cache_snapshot = active_cascade.export_cache()
+        llm_id = LLMBridgeIdentity.from_bridge(self.cascade.llm_bridge)
+        cascade_cfg = getattr(active_cascade, "config", CascadeConfig())
+
+        frozen_ctx = FrozenInterpretationContext(
+            mb_version=getattr(active_graph, "version", "v1.0"),
+            mb_content_hash=getattr(active_graph, "content_hash", lambda: "unknown")(),
+            frozen_mb=frozen_graph,
+            target_domain=efp.category,
+            llm_bridge=self.cascade.llm_bridge,
+            initial_level0_cache=cache_snapshot,
+            cascade_config=cascade_cfg,
+            llm_identity=llm_id,
+        )
+
+        # 2. 同一凍結コンテキストによる事前多層推論 (EFP -> F)
+        pred = frozen_ctx.interpret_efp(efp)
         self.cost_tier_counts[pred.cost_tier] = self.cost_tier_counts.get(pred.cost_tier, 0) + 1
+
+        # 新規に昇格・獲得された Level 0 キャッシュがあればライブ cascade にも還元
+        ctx_cascade = frozen_ctx.get_or_create_cascade()
+        active_cascade.import_cache(ctx_cascade.export_cache())
 
         # シャドウ並行推論 (有効な場合、本番実績予測 pred を渡し、候補 M_B' でも並行推論して差分を記録)
         if self.active_shadow_evaluator:
@@ -195,20 +220,9 @@ class EnterpriseRuntime:
         if authority and authority.is_authorized_for(efp.category or "general"):
             is_authoritative = True
 
-        # 2. 対象ノード取得と CaseSnapshot 作成（PENDING: 更新前 M_B 前提を完全凍結保存）
+        # 3. 対象ノード取得と CaseSnapshot 作成（PENDING: 更新前 M_B 前提を完全凍結保存）
         matched_node = active_graph.get(pred.matched_node_id) if pred.matched_node_id else None
         frozen_node = copy.deepcopy(matched_node) if matched_node else None
-
-        # T0 SPEC 4, 6.1: 更新前 M_B グラフ全体を不変コピー＆凍結し、完全な解釈コンテキストを生成
-        frozen_graph = MBGraph.from_dict(active_graph.to_dict())
-        frozen_graph.freeze()
-        frozen_ctx = FrozenInterpretationContext(
-            mb_version=getattr(active_graph, "version", "v1.0"),
-            mb_content_hash=getattr(active_graph, "content_hash", lambda: "unknown")(),
-            frozen_mb=frozen_graph,
-            target_domain=efp.category,
-            llm_bridge=self.cascade.llm_bridge,
-        )
 
         snapshot = CaseSnapshot(
             efp=efp,

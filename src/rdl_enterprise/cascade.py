@@ -1,18 +1,42 @@
+from dataclasses import dataclass, field
 import re
 from typing import Optional, List, Dict, Any, Tuple
 from .mb_graph import MBGraph, MBNode
 from .snapshot import BusinessInput, InterpretationPrediction
+
+@dataclass
+class CascadeConfig:
+    """推論カスケードの設定（同一解釈条件の保証）"""
+    level2_threshold: float = 0.35
+    cost_tier0_confidence_boost: float = 0.1
+    llm_default_confidence: float = 0.5
+    level2_max_confidence: float = 0.85
 
 class InterpCascade:
     """
     多層推論カスケード (Level 0 〜 Level 3)
     経験によって判断が高コスト層から低コスト層へと沈澱する
     """
-    def __init__(self, mb_graph: MBGraph, llm_bridge: Optional[Any] = None):
+    def __init__(
+        self,
+        mb_graph: MBGraph,
+        llm_bridge: Optional[Any] = None,
+        config: Optional[CascadeConfig] = None,
+        initial_cache: Optional[Dict[Tuple[str, str], str]] = None,
+    ):
         self.mb_graph = mb_graph
         self.llm_bridge = llm_bridge
-        # Level 0 キャッシュ: normalized_query -> node_id
-        self.level0_cache: Dict[Tuple[str, str], str] = {}  # (domain, norm_query) -> node_id
+        self.config = config or CascadeConfig()
+        # Level 0 キャッシュ: (domain, norm_query) -> node_id
+        self.level0_cache: Dict[Tuple[str, str], str] = dict(initial_cache) if initial_cache else {}
+
+    def export_cache(self) -> Dict[Tuple[str, str], str]:
+        """現在保持している Level 0 キャッシュの不変スナップショットを複製出力"""
+        return dict(self.level0_cache)
+
+    def import_cache(self, cache: Dict[Tuple[str, str], str]):
+        """外部キャッシュスナップショットを取り込み"""
+        self.level0_cache.update(cache)
 
     def _normalize(self, text: str) -> str:
         return re.sub(r"\s+", "", text.lower())
@@ -46,7 +70,7 @@ class InterpCascade:
                 return InterpretationPrediction(
                     action_type=node.action_template.get("type", "direct_reply"),
                     content=node.action_template.get("payload", ""),
-                    confidence=min(1.0, node.confidence + 0.1),
+                    confidence=min(1.0, node.confidence + self.config.cost_tier0_confidence_boost),
                     matched_node_id=node.id,
                     cost_tier=0,
                     domain=node.domain,
@@ -110,11 +134,11 @@ class InterpCascade:
                         best_score = overlap
                         best_node = node
 
-        if best_node and best_score >= 0.35:
+        if best_node and best_score >= self.config.level2_threshold:
             return InterpretationPrediction(
                 action_type=best_node.action_template.get("type", "direct_reply"),
                 content=best_node.action_template.get("payload", ""),
-                confidence=min(0.85, best_node.confidence * (0.6 + best_score)),
+                confidence=min(self.config.level2_max_confidence, best_node.confidence * (0.6 + best_score)),
                 matched_node_id=best_node.id,
                 cost_tier=2,
                 domain=best_node.domain,
@@ -130,7 +154,7 @@ class InterpCascade:
             return InterpretationPrediction(
                 action_type=llm_res.get("type", "direct_reply"),
                 content=llm_res.get("payload", "LLMによる汎用回答"),
-                confidence=0.5,  # 未知初見のため標準確信度
+                confidence=self.config.llm_default_confidence,  # 未知初見のため標準確信度
                 matched_node_id=None,
                 cost_tier=3,
                 domain=efp.category or "unknown",

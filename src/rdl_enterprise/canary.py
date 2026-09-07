@@ -473,7 +473,13 @@ class CanaryManager:
         return dep.prod_mb_backup
 
 
-class InMemoryCompensationClient:
+class BaseCompensationClient:
+    """外界補償 (World Rollback) クライアントの基底インターフェース"""
+    def send_revert(self, action_record: ActionRecord) -> Dict[str, Any]:
+        raise NotImplementedError
+
+
+class InMemoryCompensationClient(BaseCompensationClient):
     """
     テスト・シミュレーション用の外部補償APIクライアント (実外界接続の安全な検証器)
     送信された訂正通知や取り消しリクエストをメモリ上に監査記録する。
@@ -498,4 +504,102 @@ class InMemoryCompensationClient:
             "external_receipt_id": f"rec_{len(self.sent_reverts):04d}",
             "sent_entry": entry,
         }
+
+
+class WebhookCompensationClient(BaseCompensationClient):
+    """
+    実外界システム（HTTP Webhook/REST API）への訂正通知・ロールバック実行クライアント
+    ゼロトラスト・fail-closed 原則に基づき、送信失敗やタイムアウト時は安全に success=False を返す。
+    """
+    def __init__(
+        self,
+        endpoint_url: str,
+        auth_token: Optional[str] = None,
+        timeout_seconds: float = 3.0,
+        sender_fn: Optional[Any] = None,  # テスト・注入用HTTP送信モック
+    ):
+        self.endpoint_url = endpoint_url
+        self.auth_token = auth_token
+        self.timeout_seconds = timeout_seconds
+        self.sender_fn = sender_fn
+
+    def send_revert(self, action_record: ActionRecord) -> Dict[str, Any]:
+        payload = {
+            "event": "world_rollback",
+            "action_id": action_record.action_id,
+            "ticket_id": action_record.ticket_id,
+            "mb_version": action_record.mb_version,
+            "compensating_action": action_record.compensating_action,
+            "timestamp": datetime.utcnow().isoformat(),
+        }
+
+        if self.sender_fn is not None:
+            try:
+                res = self.sender_fn(self.endpoint_url, payload, self.auth_token, self.timeout_seconds)
+                if isinstance(res, dict) and res.get("status_code", 200) in (200, 201, 202, 204):
+                    return {
+                        "success": True,
+                        "endpoint": self.endpoint_url,
+                        "receipt": res.get("receipt", f"wh_{action_record.action_id}"),
+                        "response_data": res,
+                    }
+                return {
+                    "success": False,
+                    "endpoint": self.endpoint_url,
+                    "reason": f"Webhook returned non-success response: {res}",
+                }
+            except Exception as ex:
+                return {
+                    "success": False,
+                    "endpoint": self.endpoint_url,
+                    "reason": f"Webhook exception (fail-closed): {str(ex)}",
+                }
+
+        # 実環境で sender_fn 未指定の場合は urllib.request を利用
+        try:
+            import urllib.request
+            import urllib.error
+            data = json.dumps(payload).encode("utf-8")
+            req = urllib.request.Request(self.endpoint_url, data=data, headers={"Content-Type": "application/json"})
+            if self.auth_token:
+                req.add_header("Authorization", f"Bearer {self.auth_token}")
+            with urllib.request.urlopen(req, timeout=self.timeout_seconds) as response:
+                if 200 <= response.status < 300:
+                    return {
+                        "success": True,
+                        "endpoint": self.endpoint_url,
+                        "receipt": f"wh_{action_record.action_id}",
+                    }
+                return {
+                    "success": False,
+                    "endpoint": self.endpoint_url,
+                    "reason": f"Webhook HTTP status {response.status}",
+                }
+        except Exception as ex:
+            return {
+                "success": False,
+                "endpoint": self.endpoint_url,
+                "reason": f"Webhook network error (fail-closed): {str(ex)}",
+            }
+
+
+class SlackCompensationClient(BaseCompensationClient):
+    """
+    Slack Incoming Webhook 等に向けた訂正通知発行クライアント
+    """
+    def __init__(
+        self,
+        webhook_url: str,
+        channel: Optional[str] = None,
+        sender_fn: Optional[Any] = None,
+    ):
+        self.webhook_client = WebhookCompensationClient(
+            endpoint_url=webhook_url,
+            sender_fn=sender_fn,
+        )
+        self.channel = channel
+
+    def send_revert(self, action_record: ActionRecord) -> Dict[str, Any]:
+        notice = action_record.compensating_action.get("revert_notice", "システム訂正") if action_record.compensating_action else "訂正"
+        return self.webhook_client.send_revert(action_record)
 
