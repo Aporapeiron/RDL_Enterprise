@@ -10,6 +10,7 @@ if sys.stdout.encoding != "utf-8":
 
 from rdl_enterprise.mb_graph import MBGraph
 from rdl_enterprise.snapshot import BusinessInput, FeedbackResult
+from rdl_enterprise.authority import AuthorityContext
 from rdl_enterprise.runtime import EnterpriseRuntime
 
 def print_header(title: str):
@@ -137,7 +138,40 @@ def main():
         )
         print_step(
             f"申請問い合わせ #{i}",
-            f"H={res_wf.current_h:.2f} / θ_eff={res_wf.current_theta_eff:.2f} | 再編相M_Δ移行: {res_wf.transition_to_m_delta}"
+            f"H={res_wf.current_h:.2f} / θ_eff={res_wf.current_theta_eff:.2f} | 再編相M_Δ移行: {res_wf.transition_to_m_delta} (プロポーザル起草: {res_wf.reorganization_proposal_id})"
+        )
+
+    # 再編相 M_Δ プロポーザルの審査と承認
+    if runtime.pending_reorganizations:
+        latest_prop_id = list(runtime.pending_reorganizations.keys())[-1]
+        prop = runtime.pending_reorganizations[latest_prop_id]
+        print(f"\n[再編相 M_Δ ガバナンス審査]")
+        print(f"・プロポーザルID: {prop.proposal_id}")
+        print(f"・対象ノード: {prop.hot_node_id}")
+        print(f"・ステータス: {prop.status} (自動昇格は行わず承認待ち)")
+        print(f"・耐久検査総合スコア: {prop.durability_test_result['overall_score']:.2f}")
+        for rep in prop.durability_test_result['reports']:
+            print(f"  - {rep['checker']}: {'合格' if rep['passed'] else '不合格'} (スコア: {rep['score']:.2f})")
+
+        print("\n>> 情シス業務責任者（田中マネージャー）が変更内容と耐久結果を確認し、正式承認を実行！")
+        admin_authority = AuthorityContext(actor_id="tanaka_mgr", role="manager", scope="workflow")
+        success = runtime.promote_candidate_mb(latest_prop_id, authority=admin_authority)
+        print(f"・本番置換(Leap): {'成功' if success else '失敗'} (承認者: {prop.approved_by})")
+
+        # 置換後の動作確認（新M_B'による自律解決）
+        efp_wf_after = BusinessInput(
+            ticket_id="TICK-WF-VERIFY",
+            user_id="employee_new",
+            category="workflow",
+            query_text="備品購入申請の方法を教えてください",
+        )
+        res_wf_after = runtime.handle_ticket(
+            efp_wf_after,
+            feedback=FeedbackResult(user_resolved=True, human_approved=False),
+        )
+        print_step(
+            "新制度への適応検証 (M_B' 置換後)",
+            f"Cost Tier: {res_wf_after.cost_tier} | 自律回答: {res_wf_after.final_output} (新SaaSへ正しく誘導！)"
         )
 
     # =========================================================================

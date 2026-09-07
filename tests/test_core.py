@@ -250,6 +250,103 @@ class TestRDLCore(unittest.TestCase):
         self.assertEqual(runtime.mb_graph.get("node_wf").action_template["payload"], "http://new-saas.corp")
         self.assertEqual(len(runtime.pending_reorganizations), 0)
 
+    def test_delegated_authority_and_scope_limitation(self):
+        """自己例外化禁止：委任権限なしでの自動昇格拒絶とスコープ限定の検証"""
+        from rdl_enterprise.authority import AuthorityContext
+        graph = MBGraph()
+        graph.add_or_update(MBNode(
+            id="node_wf2",
+            domain="workflow",
+            trigger_pattern={"exact_keys": ["稟議申請"]},
+            action_template={"type": "direct_reply", "payload": "http://old.corp"},
+            confidence=0.8,
+        ))
+
+        # 1. auto_promote=True だが auto_promote_authority=None の場合 -> 自動昇格せず保留
+        runtime_no_auth = EnterpriseRuntime(mb_graph=graph, theta_0=1.0, auto_promote_reorganizations=True)
+        efp = BusinessInput("T_01", "U1", "workflow", "稟議申請")
+        runtime_no_auth.handle_ticket(
+            efp,
+            feedback=FeedbackResult(user_resolved=False, human_rejected=True, new_knowledge_provided="http://new.corp"),
+        )
+        self.assertEqual(len(runtime_no_auth.pending_reorganizations), 1)
+        prop_id = list(runtime_no_auth.pending_reorganizations.keys())[0]
+        self.assertEqual(runtime_no_auth.pending_reorganizations[prop_id].status, "awaiting_approval")
+
+        # 2. スコープ外の権限 (sales) が委任されている場合 -> 昇格拒絶
+        sales_auth = AuthorityContext(actor_id="sales_bot", role="manager", scope="sales")
+        runtime_wrong_scope = EnterpriseRuntime(
+            mb_graph=graph,
+            theta_0=1.0,
+            auto_promote_reorganizations=True,
+            auto_promote_authority=sales_auth,
+        )
+        runtime_wrong_scope.handle_ticket(
+            efp,
+            feedback=FeedbackResult(user_resolved=False, human_rejected=True, new_knowledge_provided="http://new.corp"),
+        )
+        # スコープ不一致により昇格却下（本番M_Bは置換されず旧URLのまま、プロポーザルはrejectedとして履歴へ）
+        self.assertEqual(len(runtime_wrong_scope.reorganization_history), 1)
+        self.assertEqual(runtime_wrong_scope.reorganization_history[0].status, "rejected")
+        self.assertEqual(runtime_wrong_scope.mb_graph.get("node_wf2").action_template["payload"], "http://old.corp")
+
+        # 3. 正当なスコープの権限 (workflow) が委任されている場合 -> 正常に自動昇格
+        wf_auth = AuthorityContext(actor_id="wf_delegated_admin", role="manager", scope="workflow")
+        runtime_valid_auth = EnterpriseRuntime(
+            mb_graph=graph,
+            theta_0=1.0,
+            auto_promote_reorganizations=True,
+            auto_promote_authority=wf_auth,
+        )
+        runtime_valid_auth.handle_ticket(
+            efp,
+            feedback=FeedbackResult(user_resolved=False, human_rejected=True, new_knowledge_provided="http://new.corp"),
+        )
+        # 昇格済み
+        self.assertEqual(len(runtime_valid_auth.pending_reorganizations), 0)
+        self.assertEqual(runtime_valid_auth.mb_graph.get("node_wf2").action_template["payload"], "http://new.corp")
+
+    def test_regression_history_checker_replays_cases(self):
+        """Golden Replay: 過去成功案件が改変M_B'で推論退行した場合にリグレッション検知"""
+        from rdl_enterprise.cascade import InterpCascade
+        from rdl_enterprise.durability import RegressionHistoryChecker
+        from rdl_enterprise.snapshot import CaseSnapshot
+
+        # 過去の成功事例を作成
+        efp_pwd = BusinessInput("T_PWD", "U10", "account", "パスワードリセット")
+        orig_graph = MBGraph()
+        pwd_node = MBNode(
+            id="node_pwd",
+            domain="account",
+            trigger_pattern={"exact_keys": ["パスワードリセット"]},
+            action_template={"type": "direct_reply", "payload": "URL"},
+            confidence=0.9,
+        )
+        orig_graph.add_or_update(pwd_node)
+
+        orig_cascade = InterpCascade(orig_graph)
+        pred = orig_cascade.interpret(efp_pwd)
+        snapshot = CaseSnapshot(efp=efp_pwd, f_pred=pred)
+        snapshot.record_feedback(FeedbackResult(user_resolved=True))  # SUCCESS
+
+        # 壊れた候補M_B'（パスワードノードが削除された、またはトリガーが変えられた）
+        broken_candidate = MBGraph()
+        broken_node = MBNode(
+            id="node_other",
+            domain="account",
+            trigger_pattern={"exact_keys": ["別件"]},
+            action_template={"type": "direct_reply", "payload": "URL"},
+        )
+        broken_candidate.add_or_update(broken_node)
+
+        checker = RegressionHistoryChecker()
+        report = checker.test(broken_candidate, history=[snapshot])
+
+        self.assertFalse(report.passed)
+        self.assertGreater(len(report.break_points), 0)
+        self.assertIn("node_pwd", report.break_points[0])
+
 
 if __name__ == "__main__":
     unittest.main()
+

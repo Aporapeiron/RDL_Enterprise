@@ -90,7 +90,8 @@ class EnterpriseRuntime:
         gamma: float = 0.05,
         llm_bridge: Optional[Any] = None,
         durability_harness: Optional[DurabilityHarness] = None,
-        auto_promote_reorganizations: bool = True,  # 破断検査合格時に自動昇格させるか
+        auto_promote_reorganizations: bool = False,  # 破断検査合格時の自動昇格フラグ (デフォルトは厳格にFalse)
+        auto_promote_authority: Optional[AuthorityContext] = None,  # 事前委任された権限コンテキスト (限定スコープ用)
     ):
         self.mb_graph = mb_graph or MBGraph()
         self.h_state = HState(theta_0=theta_0, gamma=gamma)
@@ -98,6 +99,7 @@ class EnterpriseRuntime:
         self.human = HumanQuery()
         self.durability_harness = durability_harness or DurabilityHarness()
         self.auto_promote_reorganizations = auto_promote_reorganizations
+        self.auto_promote_authority = auto_promote_authority
 
         # 非同期案件スナップショット管理
         self.pending_snapshots: Dict[str, CaseSnapshot] = {}
@@ -234,11 +236,15 @@ class EnterpriseRuntime:
             proposal = self._trigger_m_delta_proposal(hot_node, snapshot.efp, feedback)
             proposal_id = proposal.proposal_id
 
-            # 自動昇格設定かつ全テスト合格の場合
-            if self.auto_promote_reorganizations and proposal.durability_test_result.get("all_passed"):
+            # 自動昇格設定かつ全テスト合格の場合（委任された正式権限コンテキストが存在する場合のみ実行）
+            if (
+                self.auto_promote_reorganizations
+                and self.auto_promote_authority is not None
+                and proposal.durability_test_result.get("all_passed")
+            ):
                 self.promote_candidate_mb(
                     proposal_id,
-                    authority=AuthorityContext(actor_id="auto_pipeline", role="admin"),
+                    authority=self.auto_promote_authority,
                 )
         else:
             # 通常運転：局所更新 (dM_B/dt)
