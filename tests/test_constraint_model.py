@@ -358,11 +358,62 @@ class TestFrozenContextConstraintIntegration(unittest.TestCase):
         custom_cfg = ConstraintConfig(constraint_boost_cap=0.02)
         cascade = InterpCascade(graph, constraint_config=custom_cfg)
 
+        pred = cascade.interpret(efp)
+        # node.confidence 0.7 に対し、boost 分は最大でも 0.02 に抑えられているはず (confidence <= 0.72)
+        self.assertLessEqual(pred.confidence, 0.72 + 1e-6)
+
+
 class TestPerturbationAndOpposingConstraint(unittest.TestCase):
     """
     RuptureProbe の摂動検査 (B4/B5: 未検査は unresolved、揺らして耐えたもののみ survive)
     および C_old × C_prime による対向拘束強度の検証 (BASE v2.0 §4.2)
     """
+
+    def test_relation_provenance_c_prime_evaluation(self):
+        """
+        後続関係の来歴 (RelationProvenance) が C_prime に厳密に反映されること。
+        - 制度的公式記録 (is_authoritative=True): 1.0
+        - 管理者オーバーライド (admin + admin_override): 0.95 + 0.10 -> 1.0
+        - 監査ログ (audit + audit_log): 0.90 + 0.10 -> 1.0
+        - 一般ユーザーの通常フィードバック: 0.40
+        """
+        from rdl_enterprise.snapshot import RelationProvenance, FeedbackResult
+        from rdl_enterprise.constraint import compute_efp_prime_constraint
+
+        # 公式記録・オラクル
+        fb_authoritative = FeedbackResult(
+            user_resolved=False,
+            provenance=RelationProvenance(
+                source_type="oracle",
+                is_authoritative=True,
+                channel="official_doc",
+            ),
+        )
+        self.assertEqual(compute_efp_prime_constraint(fb_authoritative), 1.0)
+
+        # 管理者の是正命令
+        fb_admin = FeedbackResult(
+            user_resolved=False,
+            correction_content="新制度条文第4条に基づく差し戻し",
+            provenance=RelationProvenance(
+                source_type="admin",
+                authority_level="human_only",
+                channel="admin_override",
+            ),
+        )
+        self.assertGreaterEqual(compute_efp_prime_constraint(fb_admin), 0.95)
+
+        # 一般ユーザーの通常フィードバック（来歴権限なし）
+        fb_user = FeedbackResult(
+            user_resolved=True,
+            provenance=RelationProvenance(
+                source_type="user",
+                authority_level="auto",
+                channel="standard",
+            ),
+        )
+        self.assertLess(compute_efp_prime_constraint(fb_user), 0.6)
+
 
     def test_unproven_node_defaults_to_unresolved(self):
         """
@@ -435,6 +486,52 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
         self.assertEqual(result.verdict, "break")
         self.assertIn("境界拡張摂動", result.rupture_reason)
         self.assertGreaterEqual(result.opposing_strength, 1.5)
+
+    def test_domain_boundary_perturbation_uses_relational_constraint_not_confidence(self):
+        """
+        境界拡張摂動の比較軸純化テスト (BASE v2.0):
+        ノード A (hr) は confidence=0.95 と高いが、古い・未承認で関係拘束強度 C_rel は低い。
+        他ドメインのノード B (security) は confidence=0.70 と A より低いが、
+        human_only 権限・高承認・最新で関係拘束強度 C_rel は高い。
+        旧実装 (confidence比較) では見逃されていたが、
+        新実装 (C_rel比較) では B の強い関係拘束が A を圧倒し、正しく break を検出する。
+        """
+        old_date = (datetime.now(timezone.utc) - timedelta(days=120)).isoformat()
+        graph = MBGraph()
+        # confidence は高いが、古く未承認のルール
+        node_a = _make_node(
+            "node_a_hr",
+            domain="hr",
+            exact_keys=["APIキーの発行"],
+            confidence=0.95,
+            approval_count=0,
+            last_updated=old_date,
+        )
+        # confidence は低いが、制度的権限・高承認・新鮮なルール
+        node_b = MBNode(
+            id="node_b_sec",
+            domain="security",
+            trigger_pattern={"exact_keys": ["APIキーの発行"], "rule_expr": None},
+            action_template={"type": "security_approval_flow", "payload": "情報セキュリティ部門承認必須"},
+            authority_level="human_only",
+            confidence=0.70,  # A (0.95) より低い！
+            approval_count=20,
+            last_updated=datetime.now(timezone.utc).isoformat(),
+        )
+        graph.add_or_update(node_a)
+        graph.add_or_update(node_b)
+
+        efp = _make_efp("APIキーの発行", category="hr")
+        ctx = _make_ctx(efp)
+
+        locator = RelationConstraintLocator()
+        bundle_a = locator.locate_bundle_for_node(graph, node_a, ctx)
+        probe = RuptureProbe()
+        result = probe.probe(bundle_a, graph, ctx)
+
+        # confidence が低くても C_rel の高い B によって破断されること
+        self.assertEqual(result.verdict, "break")
+        self.assertIn("C_rel", result.rupture_reason)
 
     def test_c_prime_opposing_strength_boost_on_authoritative_conflict(self):
         """

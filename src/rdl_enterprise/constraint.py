@@ -208,23 +208,58 @@ def compute_efp_prime_constraint(
     snapshot: Optional[object] = None, # CaseSnapshot
 ) -> float:
     """
-    後続作用 EFP' およびフィードバックから抽出される対向拘束強度 C_prime ∈ [0.1, 1.0]
+    後続作用 EFP' およびフィードバックから抽出される対向関係拘束強度 C_prime ∈ [0.1, 1.0]
     (BASE v2.0 §4.2: 外界から入ってきた後続情報が持つ関係拘束の強さ)
 
-    - 人間・管理者による明示的差し戻し (human_rejected): 権限拘束 1.0
-    - 公式オラクル・制度的記録 (is_authoritative): 制度的拘束 1.0
-    - 代替・修正コンテンツの提示がある場合: 強い反証 0.85
-    - 通常の受動的成功/軽微不整合: 0.5
+    【真正な Provenance 評価】:
+      「誰が・どの関係位置から・何を・いつ・どの媒体/制度経路を通して報告したか」を評価する。
+      - 制度的記録・公式決定 (is_authoritative=True): C_prime = 1.0
+      - 管理者・監査権限 (source_type="admin" / "audit", authority_level="human_only"): 0.90 ~ 0.95
+      - 先輩・上級権限 (source_type="senior", authority_level="require_approval"): 0.85
+      - 伝達経路 (official_doc, audit_log, admin_override): チャネル加算
+      - 反証の実質性 (correction_content, new_knowledge_provided): 具現性加算
     """
-    if getattr(feedback, "human_rejected", False):
-        return 1.0
-    if getattr(feedback, "is_authoritative", False):
-        return 1.0
-    if snapshot is not None and getattr(snapshot, "is_authoritative", False):
-        return 1.0
-    if getattr(feedback, "correction_content", None) or getattr(feedback, "correct_outcome", None):
-        return 0.85
-    return 0.5
+    prov = getattr(feedback, "provenance", None)
+
+    # 1. 来歴の制度的・権威的位置付け
+    if prov is not None:
+        if getattr(prov, "is_authoritative", False):
+            auth_weight = 1.0
+        elif getattr(prov, "source_type", "") in ("admin", "oracle") or getattr(prov, "authority_level", "") == "human_only":
+            auth_weight = 0.95
+        elif getattr(prov, "source_type", "") == "audit":
+            auth_weight = 0.90
+        elif getattr(prov, "source_type", "") == "senior" or getattr(prov, "authority_level", "") == "require_approval":
+            auth_weight = 0.85
+        else:
+            auth_weight = 0.40
+
+        # 伝達経路・チャネルの重み加算
+        channel = getattr(prov, "channel", "standard")
+        channel_boost = {
+            "official_doc": 0.15,
+            "audit_log": 0.10,
+            "admin_override": 0.10,
+        }.get(channel, 0.0)
+        auth_weight = min(1.0, auth_weight + channel_boost)
+    else:
+        # provenance 未定義時の後方互換フォールバック
+        if getattr(feedback, "human_rejected", False):
+            auth_weight = 0.85
+        elif getattr(feedback, "human_approved", False):
+            auth_weight = 0.70
+        else:
+            auth_weight = 0.40
+
+    # 2. 反証の実質性（具体的な対向命題・是正知識の提示）
+    substance = 0.0
+    if getattr(feedback, "correction_content", None):
+        substance += 0.15
+    if getattr(feedback, "new_knowledge_provided", None):
+        substance += 0.10
+
+    c_prime = min(1.0, auth_weight + substance)
+    return max(0.1, float(c_prime))
 
 
 def compute_opposing_conflict_strength(
@@ -522,9 +557,19 @@ class RuptureProbe:
         # 2. 摂動検査 (Perturbation: 境界拡張による潜在競合の炙り出し)
         # -------------------------------------------------------------
         # ドメイン境界 B をワイルドカードに拡張して、同一クエリに対して
-        # 他ドメインにより強い・異なる結論を持つ競合拘束が存在しないかを検査
+        # 他ドメインにより強い関係拘束 (C_rel) を持つ異なる結論が存在しないかを検査
         if node is not None and ctx.active_domain and ctx.active_domain not in ("*", "__any__", "any"):
             all_nodes = mb_graph.list_nodes()
+            ctx_expanded = ConstraintContext(
+                efp=ctx.efp,
+                current_time=ctx.current_time,
+                mb_version=ctx.mb_version,
+                active_domain="*",
+                config=cfg,
+            )
+            locator = RelationConstraintLocator(cfg)
+            node_bundle_any = locator.locate_bundle_for_node(mb_graph, node, ctx_expanded)
+
             for other in all_nodes:
                 if other.id == node.id or other.domain == node.domain:
                     continue
@@ -532,15 +577,21 @@ class RuptureProbe:
                 common_keys = set(k.lower() for k in node.trigger_pattern.get("exact_keys", [])) & \
                               set(k.lower() for k in other.trigger_pattern.get("exact_keys", []))
                 if common_keys:
-                    # 異なるアクションを提案しているなら競合破断
+                    # 異なるアクションを提案しているか
                     if other.action_template.get("type") != node.action_template.get("type") or \
                        other.action_template.get("payload") != node.action_template.get("payload"):
-                        if other.confidence >= node.confidence:
+                        # 【BASE v2.0 整合】confidence ではなく関係拘束強度 C_rel で競合判定！
+                        other_bundle_any = locator.locate_bundle_for_node(mb_graph, other, ctx_expanded)
+                        if other_bundle_any.constraint_score >= node_bundle_any.constraint_score:
                             return RuptureResult(
                                 bundle=bundle,
                                 verdict="break",
                                 opposing_strength=1.5,
-                                rupture_reason=f"境界拡張摂動により他ドメイン({other.domain})の競合拘束({other.id})が露出",
+                                rupture_reason=(
+                                    f"境界拡張摂動により他ドメイン({other.domain})の競合拘束"
+                                    f"({other.id}: C_rel={other_bundle_any.constraint_score:.2f} >= "
+                                    f"{node_bundle_any.constraint_score:.2f})が露出"
+                                ),
                             )
 
         # -------------------------------------------------------------

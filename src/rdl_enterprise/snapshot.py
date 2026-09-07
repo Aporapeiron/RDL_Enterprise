@@ -35,14 +35,55 @@ class InterpretationPrediction:
 
 
 @dataclass
+class RelationProvenance:
+    """
+    後続作用 EFP' や関係入力の来歴・制度的位置付け (BASE v2.0 §4.2)
+    「誰が・どの関係位置から・何を・いつ・どの媒体/制度経路を通して報告したか」を構造化。
+    """
+    source_type: str = "user"           # "user" | "senior" | "admin" | "oracle" | "audit" | "system"
+    authority_level: str = "auto"       # "auto" | "require_approval" | "human_only"
+    observed_at: Optional[datetime] = None
+    source_id: Optional[str] = None     # 報告者・システムID
+    channel: str = "standard"           # "standard" | "official_doc" | "audit_log" | "admin_override"
+    is_authoritative: bool = False      # 制度的公式記録・オラクル決定か
+
+
+@dataclass
 class FeedbackResult:
-    """事後結果 EFP'"""
-    user_resolved: bool               # ユーザーが解決したか
-    human_approved: bool = False      # 先輩/管理者が承認したか
-    human_rejected: bool = False      # 先輩/管理者が差し戻したか
+    """事後結果 EFP' (外界反作用および後続拘束)"""
+    user_resolved: bool                         # ユーザーが解決したか
+    human_approved: bool = False                # 先輩/管理者が承認したか
+    human_rejected: bool = False                # 先輩/管理者が差し戻したか
     actual_response_text: Optional[str] = None
     feedback_comment: Optional[str] = None
     new_knowledge_provided: Optional[str] = None
+    correction_content: Optional[str] = None    # 修正・是正内容（明示的対向命題）
+    provenance: Optional[RelationProvenance] = None  # 後続関係の来歴・権限
+
+    def __post_init__(self):
+        # provenance 未指定時の後方互換補正
+        if self.provenance is None:
+            if self.human_rejected:
+                self.provenance = RelationProvenance(
+                    source_type="admin",
+                    authority_level="human_only",
+                    channel="admin_override",
+                    is_authoritative=True,
+                )
+            elif self.human_approved:
+                self.provenance = RelationProvenance(
+                    source_type="senior",
+                    authority_level="require_approval",
+                    channel="standard",
+                    is_authoritative=False,
+                )
+            else:
+                self.provenance = RelationProvenance(
+                    source_type="user",
+                    authority_level="auto",
+                    channel="standard",
+                    is_authoritative=False,
+                )
 
 
 import hashlib
