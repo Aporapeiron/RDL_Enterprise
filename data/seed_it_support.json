@@ -1,0 +1,105 @@
+{
+  "m0": 3.0,
+  "nodes": {
+    "node_pwd_reset": {
+      "id": "node_pwd_reset",
+      "domain": "account",
+      "trigger_pattern": {
+        "exact_keys": ["パスワードリセット", "パスワードを忘れた", "パスワード再発行", "パスワード初期化"],
+        "rule_expr": "(パスワード|password).*(リセット|忘れ|初期化|再発行)"
+      },
+      "action_template": {
+        "type": "direct_reply",
+        "payload": "社内ポータル(https://sso.corp.internal/reset)より本人認証を行ってパスワードを再設定してください。"
+      },
+      "authority_level": "auto",
+      "confidence": 0.6,
+      "success_count": 0,
+      "failure_count": 0,
+      "approval_count": 0,
+      "rejection_count": 0,
+      "created_at": "2026-09-07T00:00:00Z",
+      "last_updated": "2026-09-07T00:00:00Z"
+    },
+    "node_wifi_setup": {
+      "id": "node_wifi_setup",
+      "domain": "network",
+      "trigger_pattern": {
+        "exact_keys": ["wifi接続", "wi-fi設定", "社内wifi", "無線lan"],
+        "rule_expr": "(wifi|wi-fi|無線lan).*(繋がらない|接続|設定)"
+      },
+      "action_template": {
+        "type": "direct_reply",
+        "payload": "SSID『Corp-Secure』を選択し、社員番号とPCログインパスワードを入力してください。"
+      },
+      "authority_level": "auto",
+      "confidence": 0.7,
+      "success_count": 0,
+      "failure_count": 0,
+      "approval_count": 0,
+      "rejection_count": 0,
+      "created_at": "2026-09-07T00:00:00Z",
+      "last_updated": "2026-09-07T00:00:00Z"
+    },
+    "node_vpn_general": {
+      "id": "node_vpn_general",
+      "domain": "network",
+      "trigger_pattern": {
+        "exact_keys": ["vpn接続エラー", "vpnが繋がらない", "vpn障害"],
+        "rule_expr": "vpn.*(エラー|繋がらない|切れる)"
+      },
+      "action_template": {
+        "type": "direct_reply",
+        "payload": "VPNクライアントを一度終了し、PCを再起動してから再接続を試みてください。"
+      },
+      "authority_level": "auto",
+      "confidence": 0.4,
+      "success_count": 0,
+      "failure_count": 0,
+      "approval_count": 0,
+      "rejection_count": 0,
+      "created_at": "2026-09-07T00:00:00Z",
+      "last_updated": "2026-09-07T00:00:00Z"
+    },
+    "node_admin_privilege": {
+      "id": "node_admin_privilege",
+      "domain": "security",
+      "trigger_pattern": {
+        "exact_keys": ["管理者権限", "root権限", "admin権限申請"],
+        "rule_expr": "(管理者権限|admin|特権).*(申請|付与|欲しい)"
+      },
+      "action_template": {
+        "type": "delegate",
+        "payload": "管理者権限付与はセキュリティポリシー上、情シス部長の直接承認が必要です。"
+      },
+      "authority_level": "human_only",
+      "confidence": 0.9,
+      "success_count": 0,
+      "failure_count": 0,
+      "approval_count": 0,
+      "rejection_count": 0,
+      "created_at": "2026-09-07T00:00:00Z",
+      "last_updated": "2026-09-07T00:00:00Z"
+    },
+    "node_workflow_app": {
+      "id": "node_workflow_app",
+      "domain": "workflow",
+      "trigger_pattern": {
+        "exact_keys": ["稟議申請", "備品購入申請", "社内申請"],
+        "rule_expr": "(稟議|経費|備品).*(申請|方法)"
+      },
+      "action_template": {
+        "type": "direct_reply",
+        "payload": "社内ワークフロー旧システム(http://legacy-wf.corp.internal)より申請書を作成してください。"
+      },
+      "authority_level": "auto",
+      "confidence": 0.8,
+      "success_count": 5,
+      "failure_count": 0,
+      "approval_count": 3,
+      "rejection_count": 0,
+      "created_at": "2026-09-07T00:00:00Z",
+      "last_updated": "2026-09-07T00:00:00Z"
+    }
+  }
+}

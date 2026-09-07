@@ -1,0 +1,142 @@
+import math
+from typing import Dict, Optional, Tuple, Any
+from dataclasses import dataclass, field
+
+@dataclass
+class HeatVector:
+    prediction: float = 0.0  # SPEC本来の予測誤差熱 (重み 1.0)
+    input_err: float = 0.0   # 入力補助熱 (重み 0.4)
+
+    def total(self, w_pred: float = 1.0, w_input: float = 0.4) -> float:
+        return w_pred * self.prediction + w_input * self.input_err
+
+
+class HState:
+    def __init__(
+        self,
+        theta_0: float = 2.0,
+        gamma: float = 0.05,
+        w_pred: float = 1.0,
+        w_input: float = 0.4,
+    ):
+        self.theta_0 = theta_0
+        self.gamma = gamma
+        self.w_pred = w_pred
+        self.w_input = w_input
+
+        # ノード別またはドメイン別の熱管理: node_id -> HeatVector
+        self.node_heats: Dict[str, HeatVector] = {}
+        # 全体グローバル熱
+        self.global_heat = HeatVector()
+        # 観測可能な残存指標プール
+        self.unclassified_count = 0
+        self.missing_info_count = 0
+        self.unknown_input_count = 0
+        self.rejection_events_count = 0
+        self.total_tickets = 0
+
+    def add_heat(self, node_id: Optional[str], pred_err: float = 0.0, input_err: float = 0.0):
+        """誤差 E を熱として蓄積"""
+        if node_id:
+            if node_id not in self.node_heats:
+                self.node_heats[node_id] = HeatVector()
+            self.node_heats[node_id].prediction += pred_err
+            self.node_heats[node_id].input_err += input_err
+
+        self.global_heat.prediction += pred_err
+        self.global_heat.input_err += input_err
+
+    def record_observation(self, unclassified: bool = False, missing_info: bool = False, unknown_input: bool = False, rejected: bool = False):
+        """ξ_obs（観測可能な残存指標）の統計を更新"""
+        self.total_tickets += 1
+        if unclassified:
+            self.unclassified_count += 1
+        if missing_info:
+            self.missing_info_count += 1
+        if unknown_input:
+            self.unknown_input_count += 1
+        if rejected:
+            self.rejection_events_count += 1
+
+    def xi_obs(self) -> float:
+        """
+        観測可能残存指標 ξ_obs ∈ [0.0, 1.0]
+        未分類率、情報欠落率、未知率、差し戻し率の加重平均
+        """
+        if self.total_tickets == 0:
+            return 0.0
+        r_unclass = self.unclassified_count / self.total_tickets
+        r_miss = self.missing_info_count / self.total_tickets
+        r_unknown = self.unknown_input_count / self.total_tickets
+        r_reject = self.rejection_events_count / self.total_tickets
+
+        # 加重平均
+        return min(1.0, 0.3 * r_unclass + 0.2 * r_miss + 0.3 * r_unknown + 0.2 * r_reject)
+
+    def theta_eff(self) -> float:
+        """
+        有効判定境界 θ_eff = θ0 - g(ξ_obs)
+        g(ξ_obs) = 0.8 * ξ_obs (最大0.8引き下げ、下限0.5ガード)
+        """
+        xi = self.xi_obs()
+        g_xi = 0.8 * xi
+        return max(0.5, self.theta_0 - g_xi)
+
+    def dissipate(self, node_inertias: Dict[str, float]):
+        """
+        熱の受動的自然散逸（冷却）
+        dH/dt = - A * H,  A = diag(γ * ||M_B||)
+        """
+        for nid, heat in list(self.node_heats.items()):
+            inertia = node_inertias.get(nid, 0.5)
+            cooling_rate = min(0.5, self.gamma * (1.0 + inertia))
+            heat.prediction *= (1.0 - cooling_rate)
+            heat.input_err *= (1.0 - cooling_rate)
+
+        # グローバル熱もわずかに散逸
+        self.global_heat.prediction *= (1.0 - self.gamma)
+        self.global_heat.input_err *= (1.0 - self.gamma)
+
+    def should_leap(self, node_id: Optional[str] = None) -> Tuple[bool, str, float]:
+        """
+        H >= θ_eff の判定
+        特定のノード、または全体の中で最も熱いノードが閾値を超えたかを返す
+        Returns: (should_leap, hot_node_id, current_heat)
+        """
+        threshold = self.theta_eff()
+
+        if node_id and node_id in self.node_heats:
+            h = self.node_heats[node_id].total(self.w_pred, self.w_input)
+            if h >= threshold:
+                return True, node_id, h
+
+        # 全ノードから最大熱を探す
+        max_nid = None
+        max_h = 0.0
+        for nid, heat in self.node_heats.items():
+            h_val = heat.total(self.w_pred, self.w_input)
+            if h_val > max_h:
+                max_h = h_val
+                max_nid = nid
+
+        if max_nid and max_h >= threshold:
+            return True, max_nid, max_h
+
+        # グローバル熱が閾値を超えた場合
+        g_h = self.global_heat.total(self.w_pred, self.w_input)
+        if g_h >= threshold:
+            return True, "__global__", g_h
+
+        return False, max_nid or "", max_h
+
+    def apply_remaining_heat_after_leap(self, target_node_id: str, remaining_ratio: float = 0.2):
+        """
+        再編相 M_Δ 後の残存熱処理 (H_remaining)
+        単なる 0 リセットではなく、未解消の不整合比率を残す
+        """
+        if target_node_id in self.node_heats:
+            self.node_heats[target_node_id].prediction *= remaining_ratio
+            self.node_heats[target_node_id].input_err *= remaining_ratio
+
+        self.global_heat.prediction *= remaining_ratio
+        self.global_heat.input_err *= remaining_ratio
