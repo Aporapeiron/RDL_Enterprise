@@ -123,6 +123,53 @@ class TestRDLCore(unittest.TestCase):
         self.assertEqual(len(runtime.resolved_snapshots), 1)
         self.assertEqual(node.success_count, 1)
 
+    def test_learning_governance_validation(self):
+        """先輩の助言が成功した時だけM_Bに沈澱し、失敗した時は沈澱しない検証"""
+        from rdl_enterprise.snapshot import CaseStatus
+        graph = MBGraph()
+        runtime = EnterpriseRuntime(mb_graph=graph)
+
+        # ケースA：先輩が教えてくれたが、結果は失敗（未解決）だった場合
+        efp_fail = BusinessInput("T_FAIL", "U001", "dev", "Dockerコンテナが起動しない")
+        dispatch_fail = runtime.dispatch_ticket(efp_fail, human_override_answer="docker restartを実行")
+        # ディスパッチ時点では新ノードはM_Bに追加されていないはず！
+        self.assertEqual(len(graph.nodes), 0)
+
+        # 失敗フィードバック
+        resol_fail = runtime.resolve_ticket_feedback("T_FAIL", FeedbackResult(user_resolved=False))
+        self.assertFalse(resol_fail.promoted_to_mb)
+        # 失敗したのでM_Bには追加されない！
+        self.assertEqual(len(graph.nodes), 0)
+
+        # ケースB：先輩が教えてくれて、結果も大成功した場合
+        efp_succ = BusinessInput("T_SUCC", "U002", "dev", "KubernetesポッドがCrashLoop")
+        dispatch_succ = runtime.dispatch_ticket(efp_succ, human_override_answer="メモリ制限を2GBへ増強")
+        self.assertEqual(len(graph.nodes), 0)
+
+        # 成功フィードバック
+        resol_succ = runtime.resolve_ticket_feedback("T_SUCC", FeedbackResult(user_resolved=True))
+        self.assertTrue(resol_succ.promoted_to_mb)
+        # 成功したのでM_Bに正式昇格（沈澱）！
+        self.assertEqual(len(graph.nodes), 1)
+
+    def test_pending_timeout_to_unknown(self):
+        """PENDING案件がタイムアウトしてUNKNOWNになり、不確実性熱が加算される検証"""
+        from rdl_enterprise.snapshot import CaseStatus
+        runtime = EnterpriseRuntime()
+        efp = BusinessInput("T_TIMEOUT", "U003", "general", "質問です")
+        runtime.dispatch_ticket(efp)
+        self.assertEqual(len(runtime.pending_snapshots), 1)
+
+        # タイムアウト実行
+        results = runtime.expire_pending_tickets(["T_TIMEOUT"])
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].status, CaseStatus.UNKNOWN)
+        self.assertEqual(len(runtime.pending_snapshots), 0)
+        self.assertEqual(len(runtime.resolved_snapshots), 1)
+
+        metrics = runtime.get_metrics()
+        self.assertEqual(metrics["unknown_tickets_count"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

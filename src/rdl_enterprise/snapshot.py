@@ -49,9 +49,17 @@ class CaseSnapshot:
     同一更新前 M_B に基づく F と F' の差分 E 算出器
     非同期ライフサイクル（PENDING -> SUCCESS/FAILURE/REJECTED/UNKNOWN）を管理する
     """
-    def __init__(self, efp: BusinessInput, f_pred: InterpretationPrediction):
+    def __init__(
+        self,
+        efp: BusinessInput,
+        f_pred: InterpretationPrediction,
+        candidate_knowledge: Optional[str] = None,
+        is_authoritative: bool = False,
+    ):
         self.efp = efp
         self.f_pred = f_pred
+        self.candidate_knowledge = candidate_knowledge
+        self.is_authoritative = is_authoritative
         self.status = CaseStatus.PENDING
         self.efp_prime: Optional[FeedbackResult] = None
         self.e_prediction: Optional[float] = None

@@ -170,6 +170,27 @@ def main():
     )
 
     # =========================================================================
+    # シナリオ5：タイムアウト（UNKNOWN）と学習ガバナンス
+    # =========================================================================
+    print_header("シナリオ5：案件放置によるタイムアウト（UNKNOWN化）")
+
+    efp_timeout = BusinessInput(
+        ticket_id="TICK-TIMEOUT-01",
+        user_id="user_busy_01",
+        category="hardware",
+        query_text="マウスの調子が悪いです",
+    )
+    runtime.dispatch_ticket(efp_timeout)
+    print_step("チケット受付 (回答後、ユーザーが無反応のまま放置)", f"保留中案件数: {len(runtime.pending_snapshots)} 件")
+
+    print("... (一定期間経過：タイムアウトバッチ実行) ...")
+    timeout_results = runtime.expire_pending_tickets(["TICK-TIMEOUT-01"])
+    print_step(
+        "タイムアウト処理 (UNKNOWN化)",
+        f"案件状態: {timeout_results[0].status.value} | 軽微な不確実性熱が蓄積 | 保留中: {len(runtime.pending_snapshots)} 件"
+    )
+
+    # =========================================================================
     # 最終メトリクス
     # =========================================================================
     print_header("シミュレーション結果（RDL運用メトリクス）")
@@ -180,11 +201,13 @@ def main():
     print(f"・総受信チケット数: {metrics['total_tickets_received']} 件")
     print(f"・保留中(PENDING): {metrics['pending_tickets_count']} 件")
     print(f"・解決完了(RESOLVED): {metrics['resolved_tickets_count']} 件")
-    print(f"・自動解決率: {metrics['auto_resolution_rate']*100:.1f}%")
+    print(f"・回収不能(UNKNOWN): {metrics['unknown_tickets_count']} 件")
+    print(f"・自動解決率 (受信母数): {metrics['auto_resolution_rate_received']*100:.1f}%")
+    print(f"・自動解決率 (解決母数): {metrics['auto_resolution_rate_resolved']*100:.1f}%")
     print(f"・人間エスカレーション(HITL)率: {metrics['hitl_rate']*100:.1f}%")
     print(f"・再編相 M_Δ 発動回数: {metrics['m_delta_transitions']} 回")
     print(f"・コスト分布 (Tier 0 / 1 / 2 / 3): {metrics['cost_tier_distribution']}")
-    print("\n>> すべてのシナリオにおいて、RDL力学通りの振る舞い（ベテラン化・学習・発熱・再編・非同期ライフサイクル）を確認しました！")
+    print("\n>> すべてのシナリオにおいて、RDL力学通りの振る舞い（ベテラン化・学習ガバナンス・発熱・再編・非同期ライフサイクル・UNKNOWN化）を確認しました！")
 
 if __name__ == "__main__":
     main()
