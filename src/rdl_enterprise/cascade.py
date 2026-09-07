@@ -14,9 +14,7 @@ class CascadeConfig:
     cost_tier0_confidence_boost: float = 0.1
     llm_default_confidence: float = 0.5
     level2_max_confidence: float = 0.85
-    # 関係拘束スコアから confidence への寄与上限
-    # (ConstraintConfig.constraint_boost_cap と同期して使用)
-    constraint_boost_cap: float = 0.15
+    # ※ constraint_boost_cap は ConstraintConfig で一元管理（ここには持たない）
 
 class InterpCascade:
     """
@@ -30,14 +28,17 @@ class InterpCascade:
         config: Optional[CascadeConfig] = None,
         initial_cache: Optional[Dict[Tuple[str, str], str]] = None,
         constraint_config: Optional[ConstraintConfig] = None,
+        constraint_evaluation_time: Optional[Any] = None,  # datetime（FrozenInterpretationContext から伝播）
     ):
         self.mb_graph = mb_graph
         self.llm_bridge = llm_bridge
         self.config = config or CascadeConfig()
         # Level 0 キャッシュ: (domain, norm_query) -> node_id
         self.level0_cache: Dict[Tuple[str, str], str] = dict(initial_cache) if initial_cache else {}
-        # 関係拘束評価器
+        # 関係拘束評価器（カスタム ConstraintConfig を保持）
         self.constraint_locator = RelationConstraintLocator(constraint_config or ConstraintConfig())
+        # 凍結された関係拘束評価時刻（None の場合は _constraint_boost() が now() にフォールバック）
+        self.constraint_evaluation_time = constraint_evaluation_time
 
     def export_cache(self) -> Dict[Tuple[str, str], str]:
         """現在保持している Level 0 キャッシュの不変スナップショットを複製出力"""
@@ -55,22 +56,33 @@ class InterpCascade:
         現在の問い EFP に対するノードの関係拘束スコアを算出し、
         confidence への寄与分（boost）を返す。
         survive した拘束のみ boost、break / unresolved は 0。
+
+        【修正点】
+          - 評価時刻: FrozenInterpretationContext から伝播された constraint_evaluation_time を使用。
+            None の場合のみ datetime.now() にフォールバック（凍結なし cascade での使用時）。
+          - 設定: self.constraint_locator.config を ConstraintContext に渡す（カスタム設定が反映される）。
+          - boost cap: ConstraintConfig.constraint_boost_cap を参照（CascadeConfig の二重定義を解消）。
         """
         from datetime import datetime, timezone
+        # 凍結評価時刻を優先（F と F' で同じ freshness になることを保証）
+        eval_time = self.constraint_evaluation_time or datetime.now(timezone.utc)
+        locator_cfg = self.constraint_locator.config
         ctx = ConstraintContext(
             efp=efp,
-            current_time=datetime.now(timezone.utc),
+            current_time=eval_time,
             mb_version=getattr(self.mb_graph, "version", "prod"),
             active_domain=efp.category,
+            config=locator_cfg,  # カスタム ConstraintConfig を必ず渡す
         )
         bundles = self.constraint_locator.locate(self.mb_graph, ctx)
         bundle = next((b for b in bundles if node.id in b.node_ids), None)
         if bundle is None:
             return 0.0
-        probe = RuptureProbe()
+        probe = RuptureProbe(locator_cfg)
         result = probe.probe(bundle, self.mb_graph, ctx)
         if result.verdict == "survive":
-            return min(self.config.constraint_boost_cap, bundle.constraint_score * self.config.constraint_boost_cap)
+            cap = locator_cfg.constraint_boost_cap  # ConstraintConfig から読む（二重定義解消）
+            return min(cap, bundle.constraint_score * cap)
         return 0.0
 
 

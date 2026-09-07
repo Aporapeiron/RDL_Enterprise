@@ -188,13 +188,20 @@ class EnterpriseRuntime:
             active_graph = self.canary_manager.active_deployment.canary_mb
             active_cascade = InterpCascade(active_graph, llm_bridge=self.cascade.llm_bridge)
 
-        # 1. T0 SPEC 4, 6.1: 更新前 M_B グラフおよび解釈環境全体を先行完全凍結 (FrozenInterpretationContext)
-        # F (事前予測) と F' (事後解釈) は文字通り全く同一の凍結コンテキスト・同一キャッシュから解釈される
+        # 1. T0 SPEC 4, 6.1 / BASE v2.0 §4.2:
+        # 更新前 M_B グラフおよび解釈環境全体（関係拘束評価設定・評価時刻を含む）を先行完全凍結
+        # F (事前予測) と F' (事後解釈) は全く同一の凍結コンテキスト・同一キャッシュ・
+        # 同一の関係拘束評価条件（ConstraintConfig + 評価時刻）から解釈される
         frozen_graph = MBGraph.from_dict(active_graph.to_dict())
         frozen_graph.freeze()
         cache_snapshot = active_cascade.export_cache()
         llm_id = LLMBridgeIdentity.from_bridge(self.cascade.llm_bridge)
         cascade_cfg = getattr(active_cascade, "config", CascadeConfig())
+
+        # cascade の constraint_locator.config を FrozenContext へ伝播
+        constraint_cfg = getattr(
+            getattr(active_cascade, "constraint_locator", None), "config", None
+        )
 
         frozen_ctx = FrozenInterpretationContext(
             mb_version=getattr(active_graph, "version", "v1.0"),
@@ -205,6 +212,8 @@ class EnterpriseRuntime:
             initial_level0_cache=cache_snapshot,
             cascade_config=copy.deepcopy(cascade_cfg),
             llm_identity=llm_id,
+            constraint_config=copy.deepcopy(constraint_cfg) if constraint_cfg is not None else None,
+            # constraint_evaluation_time は __post_init__ が dispatch 時刻で自動凍結する
         )
 
         # 2. 同一凍結コンテキスト（初期状態 C0）による事前多層推論 (EFP -> F)
@@ -360,17 +369,31 @@ class EnterpriseRuntime:
         opposing_strength = 1.0
         if matched_node is not None:
             try:
+                # FrozenInterpretationContext から凍結された評価条件を取得する
+                # dispatch 時に凍結した ConstraintConfig・評価時刻を使うことで、
+                # F（dispatch 時）と opposing_strength 評価（feedback 時）の条件が一致する
+                frozen_ctx = getattr(snapshot, "frozen_context", None)
+                frozen_constraint_cfg = (
+                    getattr(frozen_ctx, "constraint_config", None) if frozen_ctx else None
+                )
+                frozen_eval_time = (
+                    getattr(frozen_ctx, "constraint_evaluation_time", None) if frozen_ctx else None
+                )
+                eval_time = frozen_eval_time or datetime.now(timezone.utc)
+                constraint_cfg = frozen_constraint_cfg or ConstraintConfig()
+
                 ctx = ConstraintContext(
                     efp=snapshot.efp,
-                    current_time=datetime.now(timezone.utc),
+                    current_time=eval_time,
                     mb_version=mb_ver,
                     active_domain=snapshot.efp.category,
+                    config=constraint_cfg,  # 凍結された設定を使用
                 )
-                locator = RelationConstraintLocator()
+                locator = RelationConstraintLocator(constraint_cfg)
                 bundles = locator.locate(target_graph, ctx)
                 bundle = next((b for b in bundles if matched_node.id in b.node_ids), None)
                 if bundle is not None:
-                    probe = RuptureProbe()
+                    probe = RuptureProbe(constraint_cfg)
                     rupture = probe.probe(bundle, target_graph, ctx)
                     if rupture.verdict == "break":
                         opposing_strength = rupture.opposing_strength

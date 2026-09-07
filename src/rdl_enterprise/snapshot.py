@@ -76,8 +76,14 @@ class LLMBridgeIdentity:
 @dataclass
 class FrozenInterpretationContext:
     """
-    更新前の同一 M_B および推論環境（キャッシュ・設定・モデルIdentity）の完全凍結スナップショット (T0 SPEC 4, 6.1)
+    更新前の同一 M_B および推論環境（キャッシュ・設定・モデルIdentity・関係拘束条件）の
+    完全凍結スナップショット (T0 SPEC 4, 6.1 / BASE v2.0 §4.2)
+
     F (事前予測) と F' (事後解釈) を厳密に同一の初期前提・同一の解釈条件のもとで独立形成するための暗号論的保証構造。
+
+    【BASE v2.0 整合】関係拘束強度は「時点」によって変わる。
+    したがって、F と F' を同一の「関係拘束評価時刻」のもとで解釈するため、
+    constraint_evaluation_time を dispatch 時に凍結し、F' 形成時にも同じ時刻を使用する。
     """
     mb_version: str
     mb_content_hash: str
@@ -87,16 +93,26 @@ class FrozenInterpretationContext:
     initial_level0_cache: Dict[Tuple[str, str], str] = field(default_factory=dict)
     cascade_config: Optional[Any] = None                  # CascadeConfig
     llm_identity: Optional[LLMBridgeIdentity] = None
+    # 関係拘束評価設定（凍結：F と F' の constraint_score が同一条件で算出されることを保証）
+    constraint_config: Optional[Any] = None               # ConstraintConfig
+    # 関係拘束評価時刻（凍結：freshness 等の時刻断面が F と F' で同一になることを保証）
+    constraint_evaluation_time: Optional[Any] = None      # datetime
     context_hash: str = ""
     is_frozen: bool = False
 
     def __post_init__(self):
         # 外部変更を防ぐため辞書や設定をディープコピー
         import copy
+        from datetime import datetime, timezone
         if not self.is_frozen:
             super().__setattr__("initial_level0_cache", dict(self.initial_level0_cache))
             if self.cascade_config is not None:
                 super().__setattr__("cascade_config", copy.deepcopy(self.cascade_config))
+            if self.constraint_config is not None:
+                super().__setattr__("constraint_config", copy.deepcopy(self.constraint_config))
+            # 関係拘束評価時刻を dispatch 時刻で凍結（未指定なら今この瞬間）
+            if self.constraint_evaluation_time is None:
+                super().__setattr__("constraint_evaluation_time", datetime.now(timezone.utc))
             if not self.context_hash:
                 super().__setattr__("context_hash", self.compute_context_hash())
             super().__setattr__("is_frozen", True)
@@ -107,10 +123,23 @@ class FrozenInterpretationContext:
         super().__setattr__(name, value)
 
     def compute_context_hash(self) -> str:
-        """コンテキスト全体の構成要素（M_B、キャッシュ、設定、LLM、ドメイン）から完全な暗号論的ハッシュを生成"""
+        """
+        コンテキスト全体の構成要素から完全な暗号論的ハッシュを生成。
+        M_B / キャッシュ / CascadeConfig / LLM / ドメイン に加え、
+        ConstraintConfig と constraint_evaluation_time も包含する。
+        (BASE v2.0 §4.2: 関係拘束強度は時点によって変化するため、評価時刻も同一性の要件)
+        """
         from dataclasses import asdict
         cfg_dict = asdict(self.cascade_config) if (self.cascade_config and hasattr(self.cascade_config, "__dataclass_fields__")) else {}
         llm_dict = asdict(self.llm_identity) if (self.llm_identity and hasattr(self.llm_identity, "__dataclass_fields__")) else {}
+        constraint_cfg_dict = asdict(self.constraint_config) if (self.constraint_config and hasattr(self.constraint_config, "__dataclass_fields__")) else {}
+        # 評価時刻は ISO 文字列でハッシュに含める（秒単位で丸める：ミリ秒の微差を吸収）
+        eval_time_str = ""
+        if self.constraint_evaluation_time is not None:
+            try:
+                eval_time_str = self.constraint_evaluation_time.strftime("%Y-%m-%dT%H:%M:%S")
+            except Exception:
+                eval_time_str = str(self.constraint_evaluation_time)
         # キャッシュのソート済みシリアライズ
         sorted_cache = sorted([f"{k[0]}:{k[1]}->{v}" for k, v in self.initial_level0_cache.items()])
         payload = {
@@ -120,6 +149,8 @@ class FrozenInterpretationContext:
             "cascade_config": cfg_dict,
             "llm_identity": llm_dict,
             "cache": sorted_cache,
+            "constraint_config": constraint_cfg_dict,
+            "constraint_evaluation_time": eval_time_str,
         }
         serialized = json.dumps(payload, sort_keys=True, ensure_ascii=False)
         return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
@@ -128,7 +159,10 @@ class FrozenInterpretationContext:
         """
         F および F' が互いの計算によるキャッシュ変化に干渉されないよう、
         初期キャッシュスナップショット C0 から独立した InterpCascade インスタンスを生成。
-        (T0 SPEC: F = interpret(EFP, C0), F' = interpret(EFP', C0))
+        constraint_config と constraint_evaluation_time も伝播させ、
+        F と F' が同一の「関係拘束評価条件」のもとで解釈されることを保証する。
+        (T0 SPEC: F = interpret(EFP, C0, constraint_condition),
+                  F' = interpret(EFP', C0, constraint_condition))
         """
         from .cascade import InterpCascade, CascadeConfig
         cfg = copy.deepcopy(self.cascade_config) if self.cascade_config is not None else CascadeConfig()
@@ -137,6 +171,8 @@ class FrozenInterpretationContext:
             llm_bridge=self.llm_bridge,
             config=cfg,
             initial_cache=dict(self.initial_level0_cache),  # 常に初期 C0 のコピーを渡す
+            constraint_config=copy.deepcopy(self.constraint_config) if self.constraint_config is not None else None,
+            constraint_evaluation_time=self.constraint_evaluation_time,  # 凍結評価時刻を伝播
         )
 
     def get_or_create_cascade(self) -> Any:

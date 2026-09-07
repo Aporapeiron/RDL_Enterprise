@@ -306,5 +306,63 @@ class TestConstraintBoostInCascade(unittest.TestCase):
         )
 
 
+class TestFrozenContextConstraintIntegration(unittest.TestCase):
+    """
+    FrozenInterpretationContext における ConstraintConfig と constraint_evaluation_time の凍結保証
+    (T0 SPEC 4, 6.1 / BASE v2.0 §4.2)
+    """
+
+    def test_frozen_context_includes_constraint_config_and_time_in_hash(self):
+        from rdl_enterprise.snapshot import FrozenInterpretationContext
+
+        graph = MBGraph()
+        graph.freeze()
+        custom_cfg = ConstraintConfig(constraint_boost_cap=0.08, w_freshness=0.5)
+        eval_time = datetime(2026, 9, 7, 12, 0, 0, tzinfo=timezone.utc)
+
+        ctx = FrozenInterpretationContext(
+            mb_version="v1.0",
+            mb_content_hash="dummy_hash",
+            frozen_mb=graph,
+            constraint_config=custom_cfg,
+            constraint_evaluation_time=eval_time,
+        )
+
+        self.assertIsNotNone(ctx.context_hash)
+        self.assertTrue(len(ctx.context_hash) > 0)
+        self.assertEqual(ctx.constraint_evaluation_time, eval_time)
+        self.assertEqual(ctx.constraint_config.constraint_boost_cap, 0.08)
+
+        # isolated cascade に伝播すること
+        cascade = ctx.create_isolated_cascade()
+        self.assertEqual(cascade.constraint_evaluation_time, eval_time)
+        self.assertEqual(cascade.constraint_locator.config.constraint_boost_cap, 0.08)
+
+    def test_custom_constraint_config_injection_respected_in_boost(self):
+        """
+        InterpCascade に注入されたカスタム ConstraintConfig が
+        _constraint_boost 時に正しく適用されること (boost cap の制限)
+        """
+        graph = MBGraph()
+        node = _make_node(
+            "node_cap",
+            exact_keys=["テスト用クエリ"],
+            confidence=0.7,
+            success_count=10,
+            approval_count=8,
+        )
+        graph.add_or_update(node)
+        efp = _make_efp("テスト用クエリ")
+
+        # cap を極小 (0.02) に設定したカスタム config
+        custom_cfg = ConstraintConfig(constraint_boost_cap=0.02)
+        cascade = InterpCascade(graph, constraint_config=custom_cfg)
+
+        pred = cascade.interpret(efp)
+        # boost 分は最大でも 0.02 に抑えられているはず (confidence <= 0.72)
+        self.assertLessEqual(pred.confidence, 0.72 + 1e-6)
+
+
 if __name__ == "__main__":
     unittest.main()
+
