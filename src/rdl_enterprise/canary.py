@@ -47,13 +47,14 @@ class ActionRecord:
     is_reversible: bool = True                     # 可逆（取り消し可能）か
     compensating_action: Optional[Dict[str, Any]] = None # 補償アクション (Undo定義)
     executed_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
-    status: str = "executed"                       # "executed" | "compensation_recorded" | "compensated" | "dry_run" | "uncompensated_irreversible"
+    status: str = "executed"                       # "executed" | "planned" | "attempted" | "succeeded" | "failed" | "uncompensated_irreversible"
     compensation_executed_at: Optional[str] = None
     compensation_result: Optional[Dict[str, Any]] = None
 
     @property
     def is_compensated(self) -> bool:
-        return self.status in ("compensated", "compensation_recorded")
+        """外界への作用が実際に取り消し・補償成功したか（単なる記録ではなく外界成功を要求）"""
+        return self.status == "succeeded"
 
 
 class CompensationExecutor:
@@ -120,10 +121,11 @@ class ActionLedger:
         compensated = []
 
         for rec in reversed(self.records):
-            if rec.deployment_id == deployment_id and rec.is_canary and rec.status == "executed":
+            if rec.deployment_id == deployment_id and rec.is_canary and rec.status in ("executed", "planned"):
                 if rec.compensating_action:
+                    rec.status = "attempted"
                     exec_res = active_executor.execute_compensation(rec)
-                    rec.status = "compensated" if exec_res.get("success") else "compensation_recorded"
+                    rec.status = "succeeded" if exec_res.get("success") else "failed"
                     rec.compensation_executed_at = datetime.utcnow().isoformat()
                     rec.compensation_result = exec_res
                     compensated.append({
@@ -136,7 +138,7 @@ class ActionLedger:
                         "executor_result": exec_res,
                     })
                 else:
-                    rec.status = "uncompensated_irreversible" if not rec.is_reversible else "compensation_recorded"
+                    rec.status = "uncompensated_irreversible" if not rec.is_reversible else "failed"
                     compensated.append({
                         "action_id": rec.action_id,
                         "ticket_id": rec.ticket_id,

@@ -28,9 +28,11 @@ class HState:
         self.node_heats: Dict[str, HeatVector] = {}
         # バージョン別複合キー熱管理: (mb_version, node_id) -> HeatVector
         self.versioned_heats: Dict[Tuple[str, str], HeatVector] = {}
+        # バージョン別観測統計プール (カナリアでの観測統計混入防止)
+        self.versioned_observations: Dict[str, Dict[str, int]] = {}
         # 全体グローバル熱 (本番用)
         self.global_heat = HeatVector()
-        # 観測可能な残存指標プール
+        # 観測可能な残存指標プール (本番用)
         self.unclassified_count = 0
         self.missing_info_count = 0
         self.unknown_input_count = 0
@@ -73,13 +75,45 @@ class HState:
         return self.versioned_heats.get((mb_version, node_id), HeatVector())
 
     def clear_version_heat(self, mb_version: str):
-        """ロールバック時などに特定バージョンの熱を全消去"""
+        """ロールバック時などに特定バージョンの熱および観測統計を全消去"""
         keys_to_del = [k for k in self.versioned_heats if k[0] == mb_version]
         for k in keys_to_del:
             del self.versioned_heats[k]
+        if mb_version in self.versioned_observations:
+            del self.versioned_observations[mb_version]
 
-    def record_observation(self, unclassified: bool = False, missing_info: bool = False, unknown_input: bool = False, rejected: bool = False):
-        """ξ_obs（観測可能な残存指標）の統計を更新"""
+    def record_observation(
+        self,
+        unclassified: bool = False,
+        missing_info: bool = False,
+        unknown_input: bool = False,
+        rejected: bool = False,
+        mb_version: str = "prod",
+        is_canary: bool = False,
+    ):
+        """ξ_obs（観測可能な残存指標）の統計を更新 (is_canary=True時は本番統計を汚染しない)"""
+        if is_canary:
+            if mb_version not in self.versioned_observations:
+                self.versioned_observations[mb_version] = {
+                    "unclassified_count": 0,
+                    "missing_info_count": 0,
+                    "unknown_input_count": 0,
+                    "rejection_events_count": 0,
+                    "total_tickets": 0,
+                }
+            pool = self.versioned_observations[mb_version]
+            pool["total_tickets"] += 1
+            if unclassified:
+                pool["unclassified_count"] += 1
+            if missing_info:
+                pool["missing_info_count"] += 1
+            if unknown_input:
+                pool["unknown_input_count"] += 1
+            if rejected:
+                pool["rejection_events_count"] += 1
+            return
+
+        # 本番統計
         self.total_tickets += 1
         if unclassified:
             self.unclassified_count += 1
@@ -90,11 +124,22 @@ class HState:
         if rejected:
             self.rejection_events_count += 1
 
-    def xi_obs(self) -> float:
+    def xi_obs(self, mb_version: str = "prod") -> float:
         """
         観測可能残存指標 ξ_obs ∈ [0.0, 1.0]
         未分類率、情報欠落率、未知率、差し戻し率の加重平均
         """
+        if mb_version != "prod" and mb_version in self.versioned_observations:
+            pool = self.versioned_observations[mb_version]
+            total = pool["total_tickets"]
+            if total == 0:
+                return 0.0
+            r_unclass = pool["unclassified_count"] / total
+            r_miss = pool["missing_info_count"] / total
+            r_unknown = pool["unknown_input_count"] / total
+            r_reject = pool["rejection_events_count"] / total
+            return min(1.0, 0.3 * r_unclass + 0.2 * r_miss + 0.3 * r_unknown + 0.2 * r_reject)
+
         if self.total_tickets == 0:
             return 0.0
         r_unclass = self.unclassified_count / self.total_tickets
@@ -105,12 +150,12 @@ class HState:
         # 加重平均
         return min(1.0, 0.3 * r_unclass + 0.2 * r_miss + 0.3 * r_unknown + 0.2 * r_reject)
 
-    def theta_eff(self) -> float:
+    def theta_eff(self, mb_version: str = "prod") -> float:
         """
         有効判定境界 θ_eff = θ0 - g(ξ_obs)
         g(ξ_obs) = 0.8 * ξ_obs (最大0.8引き下げ、下限0.5ガード)
         """
-        xi = self.xi_obs()
+        xi = self.xi_obs(mb_version=mb_version)
         g_xi = 0.8 * xi
         return max(0.5, self.theta_0 - g_xi)
 

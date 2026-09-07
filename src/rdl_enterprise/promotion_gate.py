@@ -200,13 +200,14 @@ class PromotionGate:
                     reasons=[f"Shadow 解決事例が不足しています ({shadow_report.resolved_triplets_count}/{ev_req.minimum_cases}件)"],
                 )
 
-            # (b) クエリ多様性チェック (同一パターンの偏り排除)
-            if shadow_report.unique_queries_count < ev_req.minimum_unique_patterns:
+            # (b) 破断面多様性チェック (境界・ノード・故障モードの多次元網羅: 偏った同一パターンの排除)
+            patterns_count = shadow_report.unique_patterns_count or shadow_report.unique_queries_count
+            if patterns_count < ev_req.minimum_unique_patterns:
                 return GateEvaluationResult(
                     can_promote=False,
                     current_state=ProposalState.SHADOW_RUNNING,
                     next_state=ProposalState.INSUFFICIENT_EVIDENCE,
-                    reasons=[f"Shadow 問い合わせ多様性が不足しています ({shadow_report.unique_queries_count}/{ev_req.minimum_unique_patterns}パターン: 偏った同一パターンの可能性)"],
+                    reasons=[f"Shadow 破断面多様性が不足しています ({patterns_count}/{ev_req.minimum_unique_patterns}パターン: 異なる破断面・境界を十分に通過していません)"],
                 )
 
             # (c) 必須カテゴリ網羅チェック (有限境界 B のカバー)

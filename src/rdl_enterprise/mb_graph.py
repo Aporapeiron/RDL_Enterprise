@@ -17,8 +17,17 @@ class MBNode:
     failure_count: int = 0
     approval_count: int = 0
     rejection_count: int = 0
+    is_frozen: bool = False
     created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
     last_updated: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+
+    def freeze(self):
+        """ノードを凍結（Deep Freeze）"""
+        self.is_frozen = True
+
+    def unfreeze(self):
+        """凍結解除"""
+        self.is_frozen = False
 
     def inertia(self) -> float:
         """
@@ -41,6 +50,8 @@ class MBNode:
         return math.exp(-self.inertia() / m0)
 
     def record_success(self, approved: bool = False):
+        if self.is_frozen:
+            raise RuntimeError(f"MBNode(id={self.id}) は凍結(frozen)されています。学習・統計更新は禁止されています。")
         self.success_count += 1
         if approved:
             self.approval_count += 1
@@ -48,6 +59,8 @@ class MBNode:
         self.last_updated = datetime.utcnow().isoformat()
 
     def record_failure(self, rejected: bool = False):
+        if self.is_frozen:
+            raise RuntimeError(f"MBNode(id={self.id}) は凍結(frozen)されています。学習・統計更新は禁止されています。")
         self.failure_count += 1
         if rejected:
             self.rejection_count += 1
@@ -63,17 +76,23 @@ class MBGraph:
         self.is_frozen = is_frozen
 
     def freeze(self):
-        """候補グラフを完全固定（Immutable化: Canary中のIdentity Drift防止）"""
+        """候補グラフおよび所属全ノードを完全固定（Deep Freeze: Canary中のIdentity Drift防止）"""
         self.is_frozen = True
+        for node in self.nodes.values():
+            node.freeze()
 
     def unfreeze(self):
         """凍結解除"""
         self.is_frozen = False
+        for node in self.nodes.values():
+            node.unfreeze()
 
     def content_hash(self) -> str:
         """
-        グラフの論理的実体（ノード構造、ルール、アクション定義）に対する暗号論的ハッシュ (SHA-256)
-        Durability / Shadow 検査時の対象と、最終昇格時の対象が完全一致することを保証する。
+        グラフの論理的・力学的実体に対する暗号論的ハッシュ (SHA-256)
+        ノード構造、ルール、アクション定義に加え、慣性質量 ||M_B|| と κ に直結する
+        成功・失敗・承認・差し戻し回数、および m0 を完全包含する。
+        （タイムスタンプ created_at / last_updated のみ除外）
         """
         canonical_nodes = []
         for nid in sorted(self.nodes.keys()):
@@ -85,9 +104,14 @@ class MBGraph:
                 "action_template": node.action_template,
                 "authority_level": node.authority_level,
                 "confidence": round(node.confidence, 4),
+                "success_count": node.success_count,
+                "failure_count": node.failure_count,
+                "approval_count": node.approval_count,
+                "rejection_count": node.rejection_count,
             })
         payload = {
             "version": self.version,
+            "m0": round(self.m0, 4),
             "nodes": canonical_nodes,
         }
         serialized = json.dumps(payload, sort_keys=True, ensure_ascii=False)

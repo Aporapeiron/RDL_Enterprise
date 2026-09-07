@@ -297,6 +297,8 @@ class EnterpriseRuntime:
             missing_info=(e_input > 0),
             unknown_input=(pred.cost_tier == 3),
             rejected=feedback.human_rejected,
+            mb_version=mb_ver,
+            is_canary=snapshot.is_canary,
         )
 
         # 自然散逸
