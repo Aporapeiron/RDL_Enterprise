@@ -358,11 +358,161 @@ class TestFrozenContextConstraintIntegration(unittest.TestCase):
         custom_cfg = ConstraintConfig(constraint_boost_cap=0.02)
         cascade = InterpCascade(graph, constraint_config=custom_cfg)
 
+class TestPerturbationAndOpposingConstraint(unittest.TestCase):
+    """
+    RuptureProbe の摂動検査 (B4/B5: 未検査は unresolved、揺らして耐えたもののみ survive)
+    および C_old × C_prime による対向拘束強度の検証 (BASE v2.0 §4.2)
+    """
+
+    def test_unproven_node_defaults_to_unresolved(self):
+        """
+        承認実績（approval_count < 3）がなく、制度的権限もない未検証ノードは、
+        破断もしていないが survive にもならず unresolved になる。
+        その結果、confidence boost は付与されない。
+        """
+        graph = MBGraph()
+        node = _make_node(
+            "unproven_rule",
+            exact_keys=["新しい社内手続"],
+            confidence=0.6,
+            success_count=1,
+            approval_count=0,  # 未承認
+        )
+        graph.add_or_update(node)
+        efp = _make_efp("新しい社内手続")
+        ctx = _make_ctx(efp)
+
+        locator = RelationConstraintLocator()
+        bundle = locator.locate_bundle_for_node(graph, node, ctx)
+        self.assertIsNotNone(bundle)
+
+        probe = RuptureProbe()
+        result = probe.probe(bundle, graph, ctx)
+        # 未検証ノードは安易に survive と呼ばず unresolved になること！
+        self.assertEqual(result.verdict, "unresolved")
+
+        # cascade での解釈時にも boost が加算されないこと (confidence == 0.6)
+        cascade = InterpCascade(graph)
         pred = cascade.interpret(efp)
-        # boost 分は最大でも 0.02 に抑えられているはず (confidence <= 0.72)
-        self.assertLessEqual(pred.confidence, 0.72 + 1e-6)
+        self.assertAlmostEqual(pred.confidence, 0.6, places=4)
+
+    def test_domain_boundary_perturbation_detects_cross_domain_conflict(self):
+        """
+        境界拡張摂動：ドメイン境界 B (hr) のノードに対し、他ドメイン (security) に
+        同一キーで異なる結論を持つ競合ノードが存在する場合、
+        ドメイン境界の壁を取り払う摂動によって競合が露出し、break と判定される。
+        """
+        graph = MBGraph()
+        node_hr = _make_node(
+            "hr_pass",
+            domain="hr",
+            exact_keys=["パスワード再発行"],
+            confidence=0.7,
+            approval_count=10,
+        )
+        # security ドメインに異なる結論のルールが存在
+        node_sec = MBNode(
+            id="sec_pass",
+            domain="security",
+            trigger_pattern={"exact_keys": ["パスワード再発行"], "rule_expr": None},
+            action_template={"type": "escalate_to_soc", "payload": "SOCへ緊急エスカレーション"},
+            authority_level="human_only",
+            confidence=0.9,
+            approval_count=15,
+        )
+        graph.add_or_update(node_hr)
+        graph.add_or_update(node_sec)
+
+        efp = _make_efp("パスワード再発行", category="hr")
+        ctx = _make_ctx(efp)
+
+        locator = RelationConstraintLocator()
+        bundle = locator.locate_bundle_for_node(graph, node_hr, ctx)
+        probe = RuptureProbe()
+        result = probe.probe(bundle, graph, ctx)
+
+        # 境界拡張摂動により競合拘束が露出して破断 (break) すること
+        self.assertEqual(result.verdict, "break")
+        self.assertIn("境界拡張摂動", result.rupture_reason)
+        self.assertGreaterEqual(result.opposing_strength, 1.5)
+
+    def test_c_prime_opposing_strength_boost_on_authoritative_conflict(self):
+        """
+        C_old (既存高拘束ノード) と C_prime (人間・管理者による明示的反証) が衝突したとき、
+        実効対向拘束強度 opposing_strength が大きく跳ね上がること。
+        (BASE v2.0: 強い既存ルールと強い後続記録の衝突は H を激しく保持する)
+        """
+        from rdl_enterprise.constraint import (
+            compute_efp_prime_constraint,
+            compute_opposing_conflict_strength,
+        )
+        from rdl_enterprise.snapshot import FeedbackResult
+
+        # 人間管理者による拒絶フィードバック
+        feedback_human = FeedbackResult(
+            user_resolved=False,
+            human_approved=False,
+            human_rejected=True,
+            feedback_comment="新方針によりこのルールは即時無効",
+        )
+        c_prime = compute_efp_prime_constraint(feedback_human)
+        self.assertEqual(c_prime, 1.0, "人間管理者の拒絶は C_prime=1.0")
+
+        # 既存ノードが強固 (C_old = 0.8) である場合
+        c_old_strong = 0.8
+        opposing_strong = compute_opposing_conflict_strength(c_old_strong, c_prime, has_conflict=True)
+        # 1.0 + (0.8 * 1.0) * 2.0 = 2.6
+        self.assertGreater(opposing_strong, 2.5)
+
+        # 逆に既存ノードが仮ルール (C_old = 0.1) の場合
+        c_old_weak = 0.1
+        opposing_weak = compute_opposing_conflict_strength(c_old_weak, c_prime, has_conflict=True)
+        self.assertLess(opposing_weak, 1.5)
+
+        self.assertGreater(opposing_strong, opposing_weak,
+            "強い既存拘束と衝突した方が対向拘束強度 (発熱重み) が遥かに高くなるべき")
+
+    def test_runtime_resolve_uses_frozen_mb_for_rupture_check(self):
+        """
+        T0 代謝規律：
+        dispatch 完了後、live な mb_graph のノードが外部から変更・削除されても、
+        feedback 時の拘束検査 (RuptureProbe) は dispatch 時点の frozen_mb を対象に行われること。
+        """
+        from rdl_enterprise.runtime import EnterpriseRuntime
+        from rdl_enterprise.snapshot import FeedbackResult
+
+        runtime = EnterpriseRuntime()
+        node = _make_node(
+            "node_frozen_test",
+            exact_keys=["凍結検証用クエリ"],
+            confidence=0.8,
+            success_count=5,
+            approval_count=5,
+        )
+        runtime.mb_graph.add_or_update(node)
+
+        efp = _make_efp("凍結検証用クエリ")
+        dispatch_res = runtime.dispatch_ticket(efp)
+        self.assertEqual(dispatch_res.prediction.matched_node_id, "node_frozen_test")
+
+        # dispatch 後、live な mb_graph 側でノードを削除してしまう（意図的な live 改変）
+        runtime.mb_graph.nodes.pop("node_frozen_test", None)
+        self.assertIsNone(runtime.mb_graph.get("node_frozen_test"))
+
+        # feedback を解決
+        feedback = FeedbackResult(
+            user_resolved=True,
+            human_approved=True,
+            feedback_comment="問題なく解決",
+        )
+        # live からノードが消えていても、frozen_mb から旧ノードの拘束が正しく取得・評価され、
+        # 例外なく正常に resolution が完了すること
+        res = runtime.resolve_ticket_feedback(efp.ticket_id, feedback)
+        self.assertIsNotNone(res)
+        self.assertEqual(res.status.value, "success")
 
 
 if __name__ == "__main__":
     unittest.main()
+
 

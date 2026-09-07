@@ -74,8 +74,7 @@ class InterpCascade:
             active_domain=efp.category,
             config=locator_cfg,  # カスタム ConstraintConfig を必ず渡す
         )
-        bundles = self.constraint_locator.locate(self.mb_graph, ctx)
-        bundle = next((b for b in bundles if node.id in b.node_ids), None)
+        bundle = self.constraint_locator.locate_bundle_for_node(self.mb_graph, node, ctx)
         if bundle is None:
             return 0.0
         probe = RuptureProbe(locator_cfg)

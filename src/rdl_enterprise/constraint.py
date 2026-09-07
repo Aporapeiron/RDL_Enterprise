@@ -47,6 +47,11 @@ class ConstraintConfig:
     rupture_freshness_threshold: float = 0.2     # freshness がこれ未満なら break 候補
     rupture_rejection_ratio_threshold: float = 0.4  # rejection_count / total がこれ以上なら break 候補
 
+    # 生存判定 (Survive) のための摂動・実績閾値
+    # (B4/B5: 検査していない・実績が希薄なものは survive と呼ばず unresolved とする)
+    min_survive_approvals: int = 3       # 最低限必要な承認実績数
+    min_survive_relevance: float = 0.4   # 最低限必要な適合度
+
     # Cascade への confidence boost 上限（cascade.py が参照）
     constraint_boost_cap: float = 0.15
 
@@ -168,21 +173,6 @@ def _compute_source_strength(approval_count: int, rejection_count: int) -> float
     return approval_count / (approval_count + rejection_count + 1.0)
 
 
-def _compute_convergence(node_id: str, domain: str, all_nodes: list) -> float:
-    """
-    同一 domain 内の他ノードと「同じ action type」を返す割合を収束一致として使用。
-    """
-    domain_nodes = [n for n in all_nodes if n.domain == domain and n.id != node_id]
-    if not domain_nodes:
-        return 0.5  # 比較対象なしはニュートラル
-    node = next((n for n in all_nodes if n.id == node_id), None)
-    if not node:
-        return 0.5
-    my_type = node.action_template.get("type", "")
-    matches = sum(1 for n in domain_nodes if n.action_template.get("type", "") == my_type)
-    return matches / len(domain_nodes)
-
-
 def _compute_constraint_score(
     relevance: float,
     freshness: float,
@@ -210,6 +200,50 @@ def _compute_constraint_score(
 
 
 # ---------------------------------------------------------------------------
+# 後続 EFP' 側の拘束抽出 (C_prime)
+# ---------------------------------------------------------------------------
+
+def compute_efp_prime_constraint(
+    feedback: object,                  # FeedbackResult
+    snapshot: Optional[object] = None, # CaseSnapshot
+) -> float:
+    """
+    後続作用 EFP' およびフィードバックから抽出される対向拘束強度 C_prime ∈ [0.1, 1.0]
+    (BASE v2.0 §4.2: 外界から入ってきた後続情報が持つ関係拘束の強さ)
+
+    - 人間・管理者による明示的差し戻し (human_rejected): 権限拘束 1.0
+    - 公式オラクル・制度的記録 (is_authoritative): 制度的拘束 1.0
+    - 代替・修正コンテンツの提示がある場合: 強い反証 0.85
+    - 通常の受動的成功/軽微不整合: 0.5
+    """
+    if getattr(feedback, "human_rejected", False):
+        return 1.0
+    if getattr(feedback, "is_authoritative", False):
+        return 1.0
+    if snapshot is not None and getattr(snapshot, "is_authoritative", False):
+        return 1.0
+    if getattr(feedback, "correction_content", None) or getattr(feedback, "correct_outcome", None):
+        return 0.85
+    return 0.5
+
+
+def compute_opposing_conflict_strength(
+    c_old: float,
+    c_prime: float,
+    has_conflict: bool,
+) -> float:
+    """
+    既存拘束 C_old と後続拘束 C_prime の衝突度合いに基づく実効対向拘束強度。
+    BASE v2.0: C_old strong + C_prime strong + conflict (E > 0) のときに H を強く保持する。
+    """
+    if not has_conflict:
+        return 1.0
+    # 衝突時: C_old と C_prime がともに強いほど熱蓄積が大きくブーストされる
+    # 最大で 1.0 + 1.0 * 1.0 * 2.0 = 3.0
+    return max(1.0, 1.0 + (c_old * c_prime) * 2.0)
+
+
+# ---------------------------------------------------------------------------
 # RelationConstraintLocator: 強い位置の特定
 # ---------------------------------------------------------------------------
 
@@ -227,6 +261,56 @@ class RelationConstraintLocator:
     def __init__(self, config: Optional[ConstraintConfig] = None):
         self.config = config or ConstraintConfig()
 
+    def locate_bundle_for_node(
+        self,
+        mb_graph: object,
+        node: object,
+        ctx: ConstraintContext,
+    ) -> ConstraintBundle:
+        """
+        推論カスケードのホットパス用：
+        すでにマッチした単一ノードに対して局所的に ConstraintBundle を評価構築する (O(keys))。
+        全ノード走査を回避し、推論の軽快さを維持する。
+        """
+        cfg = ctx.config if ctx.config is not None else self.config
+        efp = ctx.efp
+        query = efp.query_text
+        now = ctx.current_time
+
+        keys = node.trigger_pattern.get("exact_keys", [])
+        rel = max((_bigram_jaccard(query, k) for k in keys), default=0.0)
+        rule_expr = node.trigger_pattern.get("rule_expr")
+        if rule_expr:
+            try:
+                if re.search(rule_expr, query, re.IGNORECASE):
+                    rel = max(rel, 0.8)
+            except re.error:
+                pass
+
+        fresh = _compute_freshness(node.last_updated, cfg.freshness_half_life_days, now)
+        auth = _compute_authority_weight(node.authority_level)
+        src = _compute_source_strength(node.approval_count, node.rejection_count)
+        conv = 0.5  # 局所評価時のニュートラル収束値
+        score = _compute_constraint_score(rel, fresh, auth, src, conv, cfg)
+
+        locus_type = "strong"
+        if node.authority_level in ("require_approval", "human_only"):
+            locus_type = "authority"
+        elif src > 0.7:
+            locus_type = "source"
+
+        return ConstraintBundle(
+            node_ids=[node.id],
+            locus_type=locus_type,
+            constraint_score=score,
+            relevance=rel,
+            freshness=fresh,
+            authority_weight=auth,
+            source_strength=src,
+            convergence=conv,
+            is_structural_bridge=False,
+        )
+
     def locate(
         self,
         mb_graph: object,     # MBGraph
@@ -234,8 +318,10 @@ class RelationConstraintLocator:
     ) -> List[ConstraintBundle]:
         """
         現在の EFP および ConstraintContext のもとで、
-        拘束が強く働いている ConstraintBundle のリストを返す。
+        拘束が強く働いている ConstraintBundle のリストを返す (一括 O(N) 評価)。
         """
+        from collections import Counter
+
         all_nodes = mb_graph.list_nodes()
         efp = ctx.efp
         query = efp.query_text
@@ -245,16 +331,22 @@ class RelationConstraintLocator:
 
         bundles: List[ConstraintBundle] = []
 
+        # ドメインごとの action_type 出現頻度を O(N) で事前集計
+        domain_type_counts: Dict[str, Counter] = {}
+        for n in all_nodes:
+            d = n.domain or "general"
+            if d not in domain_type_counts:
+                domain_type_counts[d] = Counter()
+            domain_type_counts[d][n.action_template.get("type", "")] += 1
+
         # --- 各ノードの拘束スコアを計算 ---
         node_scores: Dict[str, float] = {}
         node_details: Dict[str, dict] = {}
 
         for node in all_nodes:
-            # relevance: query と exact_keys の最高 Jaccard 類似度
             keys = node.trigger_pattern.get("exact_keys", [])
             rel = max((_bigram_jaccard(query, k) for k in keys), default=0.0)
 
-            # rule_expr がある場合も加点
             rule_expr = node.trigger_pattern.get("rule_expr")
             if rule_expr:
                 try:
@@ -266,7 +358,17 @@ class RelationConstraintLocator:
             fresh = _compute_freshness(node.last_updated, cfg.freshness_half_life_days, now)
             auth = _compute_authority_weight(node.authority_level)
             src = _compute_source_strength(node.approval_count, node.rejection_count)
-            conv = _compute_convergence(node.id, node.domain, all_nodes)
+
+            # convergence を事前集計から O(1) で算出
+            d_counter = domain_type_counts.get(node.domain or "general", Counter())
+            total_d = sum(d_counter.values()) - 1
+            if total_d > 0:
+                my_type = node.action_template.get("type", "")
+                matches = d_counter.get(my_type, 1) - 1
+                conv = matches / total_d
+            else:
+                conv = 0.5
+
             score = _compute_constraint_score(rel, fresh, auth, src, conv, cfg)
 
             node_scores[node.id] = score
@@ -292,14 +394,12 @@ class RelationConstraintLocator:
             d = node_details.get(node.id, {})
             locus_type = "strong"
 
-            # authority ロケス（authority_level が require_approval 以上）
             if node.authority_level in ("require_approval", "human_only"):
                 locus_type = "authority"
-            # source ロケス（承認比率が高い）
             elif d.get("source_strength", 0) > 0.7:
                 locus_type = "source"
 
-            if score > 0.0:  # score > 0 のノードはすべて候補として登録
+            if score > 0.0:
                 bundles.append(ConstraintBundle(
                     node_ids=[node.id],
                     locus_type=locus_type,
@@ -312,70 +412,60 @@ class RelationConstraintLocator:
                     is_structural_bridge=False,
                 ))
 
-        # --- (b) 構造的橋の検出 ---
-        # ノードを除いたとき、eligible なクエリへの応答可能率が大きく落ちるか判定
-        # （簡易実装：exact_keys でカバー可能な問い集合の縮小を見る）
-        all_keys = set()
+        # --- (b) 構造的橋の高速検出 (O(M * keys)) ---
+        key_freq = Counter()
         for n in eligible_nodes:
             for k in n.trigger_pattern.get("exact_keys", []):
-                all_keys.add(_normalize(k))
+                key_freq[_normalize(k)] += 1
 
-        for node in eligible_nodes:
-            remaining_keys = set()
-            for n in eligible_nodes:
-                if n.id == node.id:
-                    continue
-                for k in n.trigger_pattern.get("exact_keys", []):
-                    remaining_keys.add(_normalize(k))
-            if not all_keys:
-                continue
-            coverage_drop = (len(all_keys) - len(remaining_keys)) / len(all_keys)
-            if coverage_drop >= cfg.bridge_coverage_drop_threshold:
-                # bridge として追加（既存エントリを更新または新規追加）
-                existing = next((b for b in bundles if b.node_ids == [node.id]), None)
-                if existing:
-                    # 既存エントリを bridge に昇格
-                    existing.locus_type = "bridge"
-                    existing.is_structural_bridge = True
-                else:
-                    d = node_details.get(node.id, {})
-                    bundles.append(ConstraintBundle(
-                        node_ids=[node.id],
-                        locus_type="bridge",
-                        constraint_score=node_scores.get(node.id, 0.1),
-                        relevance=d.get("relevance", 0.0),
-                        freshness=d.get("freshness", 0.0),
-                        authority_weight=d.get("authority_weight", 0.0),
-                        source_strength=d.get("source_strength", 0.0),
-                        convergence=d.get("convergence", 0.0),
-                        is_structural_bridge=True,
-                    ))
+        total_unique_keys = len(key_freq)
+        if total_unique_keys > 0:
+            for node in eligible_nodes:
+                # このノードだけが持っている一意のキーの数を数える
+                exclusive_keys = sum(
+                    1 for k in node.trigger_pattern.get("exact_keys", [])
+                    if key_freq[_normalize(k)] == 1
+                )
+                coverage_drop = exclusive_keys / total_unique_keys
+                if coverage_drop >= cfg.bridge_coverage_drop_threshold:
+                    existing = next((b for b in bundles if b.node_ids == [node.id]), None)
+                    if existing:
+                        existing.locus_type = "bridge"
+                        existing.is_structural_bridge = True
+                    else:
+                        d = node_details.get(node.id, {})
+                        bundles.append(ConstraintBundle(
+                            node_ids=[node.id],
+                            locus_type="bridge",
+                            constraint_score=node_scores.get(node.id, 0.1),
+                            relevance=d.get("relevance", 0.0),
+                            freshness=d.get("freshness", 0.0),
+                            authority_weight=d.get("authority_weight", 0.0),
+                            source_strength=d.get("source_strength", 0.0),
+                            convergence=d.get("convergence", 0.0),
+                            is_structural_bridge=True,
+                        ))
 
-        # constraint_score 降順でソート
         bundles.sort(key=lambda b: b.constraint_score, reverse=True)
         return bundles
 
 
 # ---------------------------------------------------------------------------
-# RuptureProbe: 破断検査
+# RuptureProbe: 破断検査 (Perturbation Probe)
 # ---------------------------------------------------------------------------
 
 class RuptureProbe:
     """
     特定した ConstraintBundle が現在の構造を実際に支えているかを検査する。
 
-    BASE v2.0: 強い = 正しい、ではない。
-    「強く支えているか」の検査であり、破断すれば E として蓄積する。
+    BASE v2.0 公理:
+      「強い = 正しい」ではない。
+      破断検査とは「対象を揺らし、関係を外し、境界を広げても、なお維持されるか」の検査である。
 
-    破断操作（Phase 1 実装）：
-      1. 時間検査（freshness < threshold → break）
-      2. rejection 比率検査（差し戻しが多いなら break 候補）
-      3. それ以外は unresolved
-
-    verdict:
-      "survive"    → F の confidence boost に使用
-      "break"      → opposing_strength で E を重みづけ
-      "unresolved" → ξ へ残す
+    【判定規律 (B4/B5)】:
+      - break      : 明確な赤信号（時間減衰・反証拒絶）または摂動で競合・破綻が露出
+      - survive    : 摂動に耐え、かつ十分な承認実績または制度的権限によって維持された
+      - unresolved : 未検査、または摂動に対する耐性が未確認（安易に survive と呼ばない）
     """
 
     def __init__(self, config: Optional[ConstraintConfig] = None):
@@ -384,33 +474,34 @@ class RuptureProbe:
     def probe(
         self,
         bundle: ConstraintBundle,
-        mb_graph: object,     # MBGraph
+        mb_graph: object,     # MBGraph (更新前の frozen_mb であること)
         ctx: ConstraintContext,
     ) -> RuptureResult:
         """
         ConstraintBundle に対して破断検査を実施し RuptureResult を返す。
-        opposing_strength: 反証拘束の強さ（E の重みづけに使用）
+        opposing_strength: 反証拘束の強さ（add_heat の重みとして使用）
         """
         cfg = ctx.config if ctx.config is not None else self.config
         nid = bundle.primary_node_id()
         node = mb_graph.get(nid) if nid else None
 
-        # 1. 時間破断検査（freshness が極端に低い）← 最優先：他の拘束断面より前に判定
+        # -------------------------------------------------------------
+        # 1. 赤信号検査（時間減衰・反証拒絶による直接破断）
+        # -------------------------------------------------------------
         if bundle.freshness < cfg.rupture_freshness_threshold:
             return RuptureResult(
                 bundle=bundle,
                 verdict="break",
-                opposing_strength=1.0 + (1.0 - bundle.freshness),  # 古いほど opposing が強い
+                opposing_strength=1.0 + (1.0 - bundle.freshness),
                 rupture_reason=f"freshness 低下による破断 (freshness={bundle.freshness:.3f} < {cfg.rupture_freshness_threshold})",
             )
 
-        # 2. rejection 比率による破断検査
         if node is not None:
             total = node.success_count + node.failure_count + node.rejection_count
             if total > 0:
                 rejection_ratio = node.rejection_count / total
                 if rejection_ratio >= cfg.rupture_rejection_ratio_threshold:
-                    opposing = 1.0 + rejection_ratio  # 差し戻し比率が高いほど opposing が強い
+                    opposing = 1.0 + rejection_ratio
                     return RuptureResult(
                         bundle=bundle,
                         verdict="break",
@@ -418,20 +509,63 @@ class RuptureProbe:
                         rupture_reason=f"rejection 比率超過による破断 (ratio={rejection_ratio:.2f} >= {cfg.rupture_rejection_ratio_threshold})",
                     )
 
-        # 3. 構造的橋でかつ freshness / source が弱い場合 → unresolved
-        #    （freshness 検査を通過した場合のみ評価される）
+        # 構造的橋だがソースが極端に弱い場合（単一障害点かつ根拠薄弱）
         if bundle.is_structural_bridge and bundle.source_strength < 0.3:
             return RuptureResult(
                 bundle=bundle,
                 verdict="unresolved",
                 opposing_strength=0.5,
-                rupture_reason="構造的橋だがソース拘束が弱い（ξ として残存）",
+                rupture_reason="構造的橋だがソース拘束が弱い（未回収関係 ξ として保持）",
             )
 
-        # 4. 通過（survive）
+        # -------------------------------------------------------------
+        # 2. 摂動検査 (Perturbation: 境界拡張による潜在競合の炙り出し)
+        # -------------------------------------------------------------
+        # ドメイン境界 B をワイルドカードに拡張して、同一クエリに対して
+        # 他ドメインにより強い・異なる結論を持つ競合拘束が存在しないかを検査
+        if node is not None and ctx.active_domain and ctx.active_domain not in ("*", "__any__", "any"):
+            all_nodes = mb_graph.list_nodes()
+            for other in all_nodes:
+                if other.id == node.id or other.domain == node.domain:
+                    continue
+                # 他ドメインで同じキーを持っているか
+                common_keys = set(k.lower() for k in node.trigger_pattern.get("exact_keys", [])) & \
+                              set(k.lower() for k in other.trigger_pattern.get("exact_keys", []))
+                if common_keys:
+                    # 異なるアクションを提案しているなら競合破断
+                    if other.action_template.get("type") != node.action_template.get("type") or \
+                       other.action_template.get("payload") != node.action_template.get("payload"):
+                        if other.confidence >= node.confidence:
+                            return RuptureResult(
+                                bundle=bundle,
+                                verdict="break",
+                                opposing_strength=1.5,
+                                rupture_reason=f"境界拡張摂動により他ドメイン({other.domain})の競合拘束({other.id})が露出",
+                            )
+
+        # -------------------------------------------------------------
+        # 3. 生存判定 (Survive)
+        # -------------------------------------------------------------
+        # 摂動に耐え、十分な承認実績または制度的権限を持ち、現在の問いに適合している場合のみ survive
+        has_proven_track_record = (
+            (node is not None and node.approval_count >= cfg.min_survive_approvals) or
+            bundle.authority_weight >= 0.8
+        )
+        if has_proven_track_record and bundle.relevance >= cfg.min_survive_relevance:
+            return RuptureResult(
+                bundle=bundle,
+                verdict="survive",
+                opposing_strength=0.0,
+                rupture_reason="",
+            )
+
+        # -------------------------------------------------------------
+        # 4. デフォルト: 未検査・耐性未確認 (Unresolved)
+        # -------------------------------------------------------------
+        # 安易に survive と呼ばず、未回収関係 ξ として扱う
         return RuptureResult(
             bundle=bundle,
-            verdict="survive",
-            opposing_strength=0.0,  # 衝突なし
-            rupture_reason="",
+            verdict="unresolved",
+            opposing_strength=0.5,
+            rupture_reason="十分な承認実績・摂動耐性の未確認による保留（ξ として残存）",
         )

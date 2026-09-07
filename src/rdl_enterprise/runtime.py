@@ -24,6 +24,7 @@ from .canary import CanaryManager, CanaryDeployment, CanaryStatus, CanaryComplet
 from .promotion_gate import ProposalState, PromotionPolicy, PromotionGate
 from .constraint import (
     ConstraintConfig, ConstraintContext, RelationConstraintLocator, RuptureProbe,
+    compute_efp_prime_constraint, compute_opposing_conflict_strength,
 )
 
 @dataclass
@@ -344,35 +345,23 @@ class EnterpriseRuntime:
             target_graph = self.mb_graph
             target_cascade = self.cascade
 
+        # T0 代謝規律：
+        # 1. 拘束検査・破断判定・H 蓄積は、更新前の完全凍結グラフ (frozen_mb) を対象として行う！
+        # 2. その後、成功確認後にのみ新ルールの沈澱 (crystallize_rule) や live グラフの実績更新を行う。
+        frozen_ctx = getattr(snapshot, "frozen_context", None)
+        eval_graph = getattr(frozen_ctx, "frozen_mb", None) if frozen_ctx else target_graph
+        eval_matched_node = eval_graph.get(pred.matched_node_id) if pred.matched_node_id else None
+        # live 更新用ノード (target_graph 側)
         matched_node = target_graph.get(pred.matched_node_id) if pred.matched_node_id else None
 
-        promoted_to_mb = False
-        # 学習ガバナンス：成功確認後にのみ M_B へ昇格（沈澱）
-        # ※ ただし Canary 期間中は候補 M_B' の Freeze 原則 (Identity Drift 防止) のため、
-        #    Canary 経由での候補直接学習・結晶化はスキップする
-        if not snapshot.is_canary and snapshot.status == CaseStatus.SUCCESS and snapshot.candidate_knowledge and not snapshot.is_authoritative:
-            target_cascade.crystallize_rule(
-                snapshot.efp,
-                snapshot.candidate_knowledge,
-                snapshot.efp.category or "general",
-                approved=True,
-            )
-            promoted_to_mb = True
-
-        # 熱 H の蓄積 (Version-aware: カナリアの熱は本番熱状態を汚染させない)
         target_nid = pred.matched_node_id or "__unmatched__"
-        mb_ver = getattr(target_graph, "version", "prod")
+        mb_ver = getattr(eval_graph, "version", getattr(target_graph, "version", "prod"))
 
-        # RuptureProbe: マッチしたノードの拘束が現在の EFP に対して破断しているか判定し、
-        # opposing_strength を算出して add_heat の重みとして使用する。
-        # (BASE v2.0 §4.2: 強い拘束と衝突した E は大きく保持する)
-        opposing_strength = 1.0
-        if matched_node is not None:
+        # RuptureProbe & 対向拘束強度 (C_old × C_prime) の算出 (BASE v2.0 §4.2)
+        c_old = 0.5
+        rupture_opposing = 1.0
+        if eval_matched_node is not None:
             try:
-                # FrozenInterpretationContext から凍結された評価条件を取得する
-                # dispatch 時に凍結した ConstraintConfig・評価時刻を使うことで、
-                # F（dispatch 時）と opposing_strength 評価（feedback 時）の条件が一致する
-                frozen_ctx = getattr(snapshot, "frozen_context", None)
                 frozen_constraint_cfg = (
                     getattr(frozen_ctx, "constraint_config", None) if frozen_ctx else None
                 )
@@ -390,16 +379,25 @@ class EnterpriseRuntime:
                     config=constraint_cfg,  # 凍結された設定を使用
                 )
                 locator = RelationConstraintLocator(constraint_cfg)
-                bundles = locator.locate(target_graph, ctx)
-                bundle = next((b for b in bundles if matched_node.id in b.node_ids), None)
+                # 局所評価で旧ノードの拘束束 C_old を取得
+                bundle = locator.locate_bundle_for_node(eval_graph, eval_matched_node, ctx)
                 if bundle is not None:
+                    c_old = bundle.constraint_score
                     probe = RuptureProbe(constraint_cfg)
-                    rupture = probe.probe(bundle, target_graph, ctx)
+                    # 凍結グラフ eval_graph 上で破断検査を実行
+                    rupture = probe.probe(bundle, eval_graph, ctx)
                     if rupture.verdict == "break":
-                        opposing_strength = rupture.opposing_strength
+                        rupture_opposing = rupture.opposing_strength
             except Exception:
-                pass  # RuptureProbe の失敗は熱蓄積をブロックしない
+                pass
 
+        # 後続 EFP' 側の拘束 C_prime を抽出
+        c_prime = compute_efp_prime_constraint(feedback, snapshot)
+        has_conflict = bool(e_pred > 0 or e_input > 0 or feedback.human_rejected or rupture_opposing > 1.0)
+        # C_old (既存拘束) と C_prime (後続拘束) の衝突から実効対向拘束強度を算出
+        opposing_strength = max(rupture_opposing, compute_opposing_conflict_strength(c_old, c_prime, has_conflict))
+
+        # 熱 H の蓄積 (Version-aware: カナリアの熱は本番熱状態を汚染させない)
         self.h_state.add_heat(
             target_nid,
             pred_err=e_pred,
@@ -416,6 +414,18 @@ class EnterpriseRuntime:
             mb_version=mb_ver,
             is_canary=snapshot.is_canary,
         )
+
+        # 学習ガバナンス：拘束検査および H 蓄積の完了後、成功確認案件のみ M_B へ昇格（沈澱）
+        # ※ Canary 期間中は候補 M_B' の Freeze 原則 (Identity Drift 防止) のため直接結晶化はスキップ
+        promoted_to_mb = False
+        if not snapshot.is_canary and snapshot.status == CaseStatus.SUCCESS and snapshot.candidate_knowledge and not snapshot.is_authoritative:
+            target_cascade.crystallize_rule(
+                snapshot.efp,
+                snapshot.candidate_knowledge,
+                snapshot.efp.category or "general",
+                approved=True,
+            )
+            promoted_to_mb = True
 
         # 閾値判定および局所更新の分岐：
         canary_rolled_back = False
