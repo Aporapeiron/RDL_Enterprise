@@ -126,7 +126,7 @@ class InterpCascade:
             content="過去事例・ルールが見つかりません。先輩社員へ確認が必要です。",
             confidence=0.1,
             matched_node_id=None,
-            cost_tier=0,
+            cost_tier=3,
             domain=efp.category or "unknown",
             expected_outcome="escalate",
         )

@@ -11,6 +11,8 @@ if sys.stdout.encoding != "utf-8":
 from rdl_enterprise.mb_graph import MBGraph
 from rdl_enterprise.snapshot import BusinessInput, FeedbackResult
 from rdl_enterprise.authority import AuthorityContext
+from rdl_enterprise.durability import DurabilityHarness, RegressionHistoryChecker, AuthorityBoundaryChecker, PerturbationStressChecker
+from rdl_enterprise.social_adapter import SocialFixtureAdapter
 from rdl_enterprise.runtime import EnterpriseRuntime
 
 def print_header(title: str):
@@ -27,7 +29,20 @@ def main():
 
     seed_path = os.path.join(os.path.dirname(__file__), "data", "seed_it_support.json")
     graph = MBGraph.load_json(seed_path)
-    runtime = EnterpriseRuntime(mb_graph=graph, theta_0=2.0, gamma=0.1)
+    # DurabilityHarness の構築（ソーシャル入力由来の摂動fixtureを注入）
+    social_fixtures = SocialFixtureAdapter.load_from_json("data/social_fixtures_sample.json")
+    durability_harness = DurabilityHarness(checkers=[
+        RegressionHistoryChecker(),
+        AuthorityBoundaryChecker(),
+        PerturbationStressChecker(perturbation_fixtures=social_fixtures),
+    ])
+
+    runtime = EnterpriseRuntime(
+        mb_graph=graph,
+        theta_0=2.0,
+        gamma=0.1,
+        durability_harness=durability_harness,
+    )
 
     print(f"初期ノード数: {len(graph.nodes)} 件")
     print(f"初期平均κ: {graph.average_kappa():.3f}, 初期総慣性: {graph.total_inertia():.3f}")
@@ -151,7 +166,8 @@ def main():
         print(f"・ステータス: {prop.status} (自動昇格は行わず承認待ち)")
         print(f"・耐久検査総合スコア: {prop.durability_test_result['overall_score']:.2f}")
         for rep in prop.durability_test_result['reports']:
-            print(f"  - {rep['checker']}: {'合格' if rep['passed'] else '不合格'} (スコア: {rep['score']:.2f})")
+            tested_info = f" (テスト件数: {rep['details'].get('tested', 0)}件)" if 'tested' in rep.get('details', {}) else ""
+            print(f"  - {rep['checker']}: {'合格' if rep['passed'] else '不合格'} (スコア: {rep['score']:.2f}){tested_info}")
 
         print("\n>> 情シス業務責任者（田中マネージャー）が変更内容と耐久結果を確認し、正式承認を実行！")
         admin_authority = AuthorityContext(actor_id="tanaka_mgr", role="manager", scope="workflow")
