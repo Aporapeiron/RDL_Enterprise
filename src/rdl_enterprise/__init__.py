@@ -35,6 +35,11 @@ from .promotion_gate import (
     EvidenceRequirement,
     PromotionGate,
 )
+from .canary import (
+    CanaryStatus,
+    CanaryDeployment,
+    CanaryManager,
+)
 from .runtime import (
     EnterpriseRuntime,
     TicketExecutionResult,
@@ -73,6 +78,9 @@ __all__ = [
     "PromotionPolicy",
     "EvidenceRequirement",
     "PromotionGate",
+    "CanaryStatus",
+    "CanaryDeployment",
+    "CanaryManager",
     "EnterpriseRuntime",
     "TicketExecutionResult",
     "TicketDispatchResult",

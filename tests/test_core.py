@@ -249,7 +249,13 @@ class TestRDLCore(unittest.TestCase):
         self.assertEqual(runtime.mb_graph.get("node_wf").action_template["payload"], "http://old-url.corp")
 
         # 権限者（Manager）による正式承認！
-        mgr = AuthorityContext(actor_id="mgr_wf", role="manager", scope="workflow")
+        mgr = AuthorityContext(
+            actor_id="mgr_wf",
+            role="manager",
+            scope="workflow",
+            actor_type="human",
+            authenticated_by="idp_sso",
+        )
         success = runtime.promote_candidate_mb(prop_id, authority=mgr)
         self.assertTrue(success)
 

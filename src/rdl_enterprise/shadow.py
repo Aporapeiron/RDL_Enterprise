@@ -9,6 +9,7 @@ RDL認識論の原則:
 - 観測事例が不足している場合は passed=True ではなく evaluation_status="insufficient_evidence" とする。
 """
 
+import re
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -16,6 +17,35 @@ from datetime import datetime
 from .mb_graph import MBGraph
 from .cascade import InterpCascade
 from .snapshot import BusinessInput, InterpretationPrediction, FeedbackResult, CaseStatus
+
+
+def normalize_query_intent(query: str) -> str:
+    """
+    クエリテキストから記号、句読点、過剰な空白を除去し、
+    コアとなるインテント（意図）を抽出する
+    """
+    if not query:
+        return ""
+    text = query.strip().lower()
+    # 記号・句読点（?!。、！？、全角半角記号等）を除去して空白1文字に正規化
+    text = re.sub(r'[\?？\!！\.\,\。\、\…\~\〜\_\-\:\;\/\(\)\[\]「」『』\s]+', ' ', text).strip()
+    return text
+
+
+def extract_scenario_signature(triplet: "ShadowResolutionTriplet") -> str:
+    """
+    単なる文面の違いではなく、どの有限境界Bで、どのノードが当たり、
+    どのような結果モード（改善・退行・不変・コスト変化）を生じたかという
+    『破断面シグネチャ』を算出する
+    """
+    efp = triplet.prediction_pair.efp
+    category = efp.category or "general"
+    core_intent = normalize_query_intent(efp.query_text)
+    prod_node = triplet.prediction_pair.prod_pred.matched_node_id or "__none__"
+    shadow_node = triplet.prediction_pair.shadow_pred.matched_node_id or "__none__"
+    tier_delta = triplet.prediction_pair.tier_delta
+    mode = "improved" if triplet.is_improved else ("regressed" if triplet.is_regressed else "unchanged")
+    return f"{category}::{core_intent}::{prod_node}->{shadow_node}::{tier_delta}::{mode}"
 
 
 @dataclass
@@ -86,7 +116,8 @@ class ShadowReport:
     regression_rate: float                   # 改悪率 [0.0, 1.0]
     evaluation_status: str                   # "passed" | "failed" | "insufficient_evidence"
     passed: bool                             # 承認可能か (evaluation_status == "passed")
-    unique_queries_count: int = 0            # 重複を除いたユニーククエリ数 (多様性)
+    unique_queries_count: int = 0            # 重複・記号差分を除いたユニークインテント数
+    unique_patterns_count: int = 0           # 破断面シグネチャ数 (境界・ノード・結果モード)
     covered_categories: List[str] = field(default_factory=list) # カバーされた業務カテゴリ
     diversity_score: float = 0.0             # 多様性比率 (unique_queries_count / resolved_triplets_count)
     triplet_details: List[Dict[str, Any]] = field(default_factory=list)
@@ -193,13 +224,18 @@ class ShadowEvaluator:
         """集計比較レポートを生成 (証拠不十分 insufficient_evidence を厳格に判定)"""
         total = len(self.resolved_triplets)
 
-        # クエリ多様性とカテゴリ網羅の集計 (正規化: トリム & 小文字)
-        unique_queries = set(
-            t.prediction_pair.efp.query_text.strip().lower()
+        # 意図・破断面多様性とカテゴリ網羅の集計 (記号除去正規化 & 破断面シグネチャ)
+        unique_intents = set(
+            normalize_query_intent(t.prediction_pair.efp.query_text)
             for t in self.resolved_triplets
             if t.prediction_pair.efp and t.prediction_pair.efp.query_text
         )
-        unique_queries_count = len(unique_queries)
+        unique_patterns = set(
+            extract_scenario_signature(t)
+            for t in self.resolved_triplets
+        )
+        unique_queries_count = len(unique_intents)
+        unique_patterns_count = len(unique_patterns)
         covered_categories = sorted(list(set(
             t.prediction_pair.efp.category
             for t in self.resolved_triplets
@@ -219,11 +255,12 @@ class ShadowEvaluator:
                 tier_improved_count=0,
                 avg_confidence_delta=0.0,
                 regression_rate=0.0,
-                unique_queries_count=unique_queries_count,
-                covered_categories=covered_categories,
-                diversity_score=diversity_score,
                 evaluation_status="insufficient_evidence",
                 passed=False,
+                unique_queries_count=unique_queries_count,
+                unique_patterns_count=unique_patterns_count,
+                covered_categories=covered_categories,
+                diversity_score=diversity_score,
             )
 
         improved = sum(1 for t in self.resolved_triplets if t.is_improved)
@@ -241,6 +278,8 @@ class ShadowEvaluator:
                 "ticket_id": t.ticket_id,
                 "category": t.prediction_pair.efp.category,
                 "query": t.prediction_pair.efp.query_text,
+                "intent": normalize_query_intent(t.prediction_pair.efp.query_text),
+                "scenario_signature": extract_scenario_signature(t),
                 "prod_tier": t.prediction_pair.prod_pred.cost_tier,
                 "shadow_tier": t.prediction_pair.shadow_pred.cost_tier,
                 "prod_observed_error": t.prod_observed_error,
@@ -261,10 +300,11 @@ class ShadowEvaluator:
             tier_improved_count=tier_improved,
             avg_confidence_delta=avg_conf,
             regression_rate=reg_rate,
-            unique_queries_count=unique_queries_count,
-            covered_categories=covered_categories,
-            diversity_score=diversity_score,
             evaluation_status=eval_status,
             passed=is_passed,
+            unique_queries_count=unique_queries_count,
+            unique_patterns_count=unique_patterns_count,
+            covered_categories=covered_categories,
+            diversity_score=diversity_score,
             triplet_details=details,
         )

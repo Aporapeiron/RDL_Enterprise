@@ -207,7 +207,13 @@ def main():
             print(f"  - 改悪率: {shadow_rep.regression_rate*100:.1f}% -> 承認基準クリア: {shadow_rep.passed}")
 
         print("\n>> 情シス業務責任者（田中マネージャー）が耐久ハーネスとシャドウ反実仮想評価を確認し、正式承認を実行！")
-        admin_authority = AuthorityContext(actor_id="tanaka_mgr", role="manager", scope="workflow")
+        admin_authority = AuthorityContext(
+            actor_id="tanaka_mgr",
+            role="manager",
+            scope="workflow",
+            actor_type="human",
+            authenticated_by="idp_sso",
+        )
         success = runtime.promote_candidate_mb(latest_prop_id, authority=admin_authority)
         print(f"・本番置換(Leap): {'成功' if success else '失敗'} (承認者: {prop.approved_by})")
 

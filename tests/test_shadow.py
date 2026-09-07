@@ -139,7 +139,13 @@ class TestShadowExecution(unittest.TestCase):
         self.assertEqual(report.improved_count, 1)
 
         # 正式承認・本番置換 (Leap)
-        admin = AuthorityContext(actor_id="admin_01", role="manager", scope="workflow")
+        admin = AuthorityContext(
+            actor_id="admin_01",
+            role="manager",
+            scope="workflow",
+            actor_type="human",
+            authenticated_by="idp_sso",
+        )
         runtime.promote_candidate_mb(prop_id, authority=admin)
         self.assertIsNone(runtime.active_shadow_evaluator)
         self.assertEqual(runtime.mb_graph.get("node_wf").action_template["payload"], "https://new-saas.corp")
@@ -174,6 +180,36 @@ class TestShadowExecution(unittest.TestCase):
         self.assertEqual(report.covered_categories, ["finance", "workflow"])
         # 多様性スコア = 2 / 3
         self.assertAlmostEqual(report.diversity_score, 2 / 3, places=2)
+
+    def test_symbol_noise_does_not_inflate_diversity_score(self):
+        """記号や句読点の差異（?、!、空白等）で多様性スコアが水増しされないことを検証"""
+        evaluator = ShadowEvaluator(
+            proposal_id="prop_noise_01",
+            prod_mb=self.prod_graph,
+            candidate_mb=self.candidate_graph,
+            minimum_resolved_cases=3,
+        )
+
+        # 表面上の文字列は異なるが、意図は完全に同一の3件
+        efp1 = BusinessInput("T1", "U1", "workflow", "稟議申請の方法")
+        efp2 = BusinessInput("T2", "U2", "workflow", "稟議申請の方法？")
+        efp3 = BusinessInput("T3", "U3", "workflow", " 稟議申請の方法！！！ ")
+
+        evaluator.evaluate_input(efp1)
+        evaluator.evaluate_input(efp2)
+        evaluator.evaluate_input(efp3)
+
+        evaluator.record_feedback("T1", FeedbackResult(user_resolved=True))
+        evaluator.record_feedback("T2", FeedbackResult(user_resolved=True))
+        evaluator.record_feedback("T3", FeedbackResult(user_resolved=True))
+
+        report = evaluator.generate_report()
+        self.assertEqual(report.resolved_triplets_count, 3)
+        # 記号ノイズが除去され、ユニークインテントは 1 種類！
+        self.assertEqual(report.unique_queries_count, 1)
+        self.assertEqual(report.unique_patterns_count, 1)
+        # 多様性スコアは 1/3 (0.33)
+        self.assertAlmostEqual(report.diversity_score, 1 / 3, places=2)
 
 
 if __name__ == "__main__":

@@ -17,6 +17,7 @@ from .human import HumanQuery
 from .authority import AuthorityContext
 from .durability import DurabilityHarness
 from .shadow import ShadowEvaluator, ShadowReport
+from .canary import CanaryManager, CanaryDeployment, CanaryStatus
 from .promotion_gate import ProposalState, PromotionPolicy, PromotionGate
 
 @dataclass
@@ -31,6 +32,7 @@ class TicketDispatchResult:
     cost_tier: int
     status: CaseStatus = CaseStatus.PENDING
     has_candidate_knowledge: bool = False
+    is_canary: bool = False
 
 
 @dataclass
@@ -45,6 +47,8 @@ class TicketResolutionResult:
     transition_to_m_delta: bool
     promoted_to_mb: bool = False
     reorganization_proposal_id: Optional[str] = None
+    canary_rolled_back: bool = False
+    canary_rollback_reason: Optional[str] = None
 
 
 @dataclass
@@ -119,6 +123,9 @@ class EnterpriseRuntime:
         # シャドウ並行推論エンジン (本番 M_B vs 候補 M_B')
         self.active_shadow_evaluator: Optional[ShadowEvaluator] = None
 
+        # カナリア展開・監視マネージャー (Leap後の段階的配分と自動ロールバック)
+        self.canary_manager = CanaryManager()
+
         # 運用メトリクス
         self.processed_tickets_count = 0
         self.auto_resolved_count = 0
@@ -138,8 +145,17 @@ class EnterpriseRuntime:
         """
         self.processed_tickets_count += 1
 
+        # カナリアルーティング判定 (有効な場合、新 M_B' へ振り分け)
+        is_canary = False
+        active_cascade = self.cascade
+        active_graph = self.mb_graph
+        if self.canary_manager.should_route_to_canary(efp):
+            is_canary = True
+            active_graph = self.canary_manager.active_deployment.canary_mb
+            active_cascade = InterpCascade(active_graph, llm_bridge=self.cascade.llm_bridge)
+
         # 1. 多層カスケード推論 (EFP -> F)
-        pred = self.cascade.interpret(efp)
+        pred = active_cascade.interpret(efp)
         self.cost_tier_counts[pred.cost_tier] = self.cost_tier_counts.get(pred.cost_tier, 0) + 1
 
         # シャドウ並行推論 (有効な場合、本番実績予測 pred を渡し、候補 M_B' でも並行推論して差分を記録)
@@ -156,11 +172,12 @@ class EnterpriseRuntime:
             f_pred=pred,
             candidate_knowledge=human_override_answer,
             is_authoritative=is_authoritative,
+            is_canary=is_canary,
         )
         self.pending_snapshots[efp.ticket_id] = snapshot
 
         # 3. 人間問い合わせ (HITL) ゲート判定
-        matched_node = self.mb_graph.get(pred.matched_node_id) if pred.matched_node_id else None
+        matched_node = active_graph.get(pred.matched_node_id) if pred.matched_node_id else None
         hitl_eval = self.human.evaluate(efp, pred, matched_node)
         hitl_required = hitl_eval["must_ask"]
         hitl_reason = hitl_eval["reason"]
@@ -189,6 +206,7 @@ class EnterpriseRuntime:
             cost_tier=pred.cost_tier,
             status=CaseStatus.PENDING,
             has_candidate_knowledge=bool(human_override_answer and not is_authoritative),
+            is_canary=is_canary,
         )
 
     def resolve_ticket_feedback(
@@ -275,6 +293,32 @@ class EnterpriseRuntime:
             if snapshot.status == CaseStatus.SUCCESS and not snapshot.efp_prime.human_approved:
                 self.auto_resolved_count += 1
 
+        # カナリア監視と自動ロールバック判定
+        canary_rolled_back = False
+        canary_rollback_reason = None
+        if snapshot.is_canary and self.canary_manager.active_deployment:
+            is_rb, rb_reason = self.canary_manager.record_feedback(
+                ticket_id=ticket_id,
+                is_canary=True,
+                e_pred=e_pred,
+                e_input=e_input,
+                rejected=feedback.human_rejected,
+            )
+            if is_rb:
+                canary_rolled_back = True
+                canary_rollback_reason = rb_reason
+                # 旧本番の復元とキャッシュクリア
+                last_dep = self.canary_manager.deployment_history[-1]
+                self.mb_graph = last_dep.prod_mb_backup
+                self.cascade.mb_graph = self.mb_graph
+                self.cascade.level0_cache.clear()
+                # 該当プロポーザルを REGRESSED 状態へ
+                if last_dep.proposal_id in self.pending_reorganizations:
+                    prop = self.pending_reorganizations.pop(last_dep.proposal_id)
+                    prop.status = ProposalState.REGRESSED
+                    prop.reasons.append(f"カナリア自動ロールバック: {rb_reason}")
+                    self.reorganization_history.append(prop)
+
         return TicketResolutionResult(
             ticket_id=ticket_id,
             status=snapshot.status,
@@ -285,6 +329,8 @@ class EnterpriseRuntime:
             transition_to_m_delta=transition_m_delta,
             promoted_to_mb=promoted_to_mb,
             reorganization_proposal_id=proposal_id,
+            canary_rolled_back=canary_rolled_back,
+            canary_rollback_reason=canary_rollback_reason,
         )
 
     def _trigger_m_delta_proposal(
@@ -346,6 +392,10 @@ class EnterpriseRuntime:
         proposal_id: str,
         authority: AuthorityContext,
         is_automated: bool = False,
+        use_canary: bool = False,
+        canary_ratio: float = 0.1,
+        theta_canary: float = 1.5,
+        max_canary_failures: int = 1,
     ) -> bool:
         """
         PromotionGate（準備性検証）と権限者（AuthorityContext）の二重ゲートを通過した場合のみ、
@@ -399,7 +449,24 @@ class EnterpriseRuntime:
             self.reorganization_history.append(proposal)
             return False
 
-        # 二重ゲート通過：本番 M_B の置換（Leap）
+        # 二重ゲート通過！
+        if use_canary:
+            # カナリア展開を開始し、旧本番を維持したままトラフィックの一部を新 M_B' へ振り分ける
+            self.canary_manager.start_canary(
+                proposal_id=proposal_id,
+                current_prod_mb=self.mb_graph,
+                candidate_mb=proposal.candidate_mb,
+                target_domain=target_domain,
+                initial_ratio=canary_ratio,
+                theta_canary=theta_canary,
+                max_allowed_failures=max_canary_failures,
+            )
+            # シャドウを終了
+            if self.active_shadow_evaluator and self.active_shadow_evaluator.proposal_id == proposal_id:
+                self.active_shadow_evaluator = None
+            return True
+
+        # 一括置換 (Leap)
         self.pending_reorganizations.pop(proposal_id)
         self.mb_graph = proposal.candidate_mb
         self.cascade.mb_graph = self.mb_graph
@@ -416,6 +483,57 @@ class EnterpriseRuntime:
         # 昇格したプロポーザルがシャドウ実行中だった場合、シャドウを終了
         if self.active_shadow_evaluator and self.active_shadow_evaluator.proposal_id == proposal_id:
             self.active_shadow_evaluator = None
+
+        return True
+
+    def step_up_canary(self, new_ratio: float) -> bool:
+        """カナリア配分比率を拡大 (例: 0.1 -> 0.5 -> 1.0)"""
+        return self.canary_manager.step_up_traffic(new_ratio)
+
+    def complete_canary_rollout(self) -> bool:
+        """カナリア展開を完了し、新 M_B' を本番として確定コミット"""
+        if not self.canary_manager.active_deployment:
+            return False
+
+        prop_id = self.canary_manager.active_deployment.proposal_id
+        new_mb = self.canary_manager.complete_rollout()
+        if not new_mb:
+            return False
+
+        # 本番 M_B の完全置換
+        self.mb_graph = new_mb
+        self.cascade.mb_graph = self.mb_graph
+        self.cascade.level0_cache.clear()
+
+        if prop_id in self.pending_reorganizations:
+            proposal = self.pending_reorganizations.pop(prop_id)
+            proposal.status = ProposalState.PROMOTED
+            proposal.promoted_at = datetime.utcnow().isoformat()
+            self.reorganization_history.append(proposal)
+            self.h_state.apply_remaining_heat_after_leap(proposal.hot_node_id, remaining_ratio=0.2)
+
+        return True
+
+    def rollback_active_canary(self, reason: str = "手動指示によるロールバック") -> bool:
+        """アクティブなカナリア展開を中断し、旧本番 M_B へ即時復元"""
+        if not self.canary_manager.active_deployment:
+            return False
+
+        prop_id = self.canary_manager.active_deployment.proposal_id
+        restored_mb = self.canary_manager.trigger_rollback(reason)
+        if not restored_mb:
+            return False
+
+        # 旧本番の復元
+        self.mb_graph = restored_mb
+        self.cascade.mb_graph = self.mb_graph
+        self.cascade.level0_cache.clear()
+
+        if prop_id in self.pending_reorganizations:
+            proposal = self.pending_reorganizations.pop(prop_id)
+            proposal.status = ProposalState.REGRESSED
+            proposal.reasons.append(f"カナリアロールバック: {reason}")
+            self.reorganization_history.append(proposal)
 
         return True
 

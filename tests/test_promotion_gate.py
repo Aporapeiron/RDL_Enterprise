@@ -217,7 +217,19 @@ class TestPromotionGate(unittest.TestCase):
             authenticated_by="api_key",
         )
         success_unverified = runtime.promote_candidate_mb("prop_spoof_01", authority=unverified_human, is_automated=False)
-        self.assertFalse(success_unverified)
+        # ケースB2: 引数省略時のデフォルト（actor_type="unknown", authenticated_by=None）も安全に拒絶される！
+        prop.status = ProposalState.APPROVAL_READY
+        runtime.pending_reorganizations["prop_spoof_01"] = prop
+        default_unproved = AuthorityContext(
+            actor_id="lazy_admin",
+            role="admin",
+            scope="all",
+        )
+        self.assertEqual(default_unproved.actor_type, "unknown")
+        self.assertIsNone(default_unproved.authenticated_by)
+        self.assertFalse(default_unproved.is_human_authenticated())
+        success_default = runtime.promote_candidate_mb("prop_spoof_01", authority=default_unproved, is_automated=False)
+        self.assertFalse(success_default)
         self.assertEqual(prop.status, ProposalState.REJECTED)
 
         # ケースC: 正真正銘の認証済み人間 (IdP SSO / MFA) -> 昇格成功

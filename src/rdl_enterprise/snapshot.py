@@ -55,11 +55,13 @@ class CaseSnapshot:
         f_pred: InterpretationPrediction,
         candidate_knowledge: Optional[str] = None,
         is_authoritative: bool = False,
+        is_canary: bool = False,
     ):
         self.efp = efp
         self.f_pred = f_pred
         self.candidate_knowledge = candidate_knowledge
         self.is_authoritative = is_authoritative
+        self.is_canary = is_canary
         self.status = CaseStatus.PENDING
         self.efp_prime: Optional[FeedbackResult] = None
         self.e_prediction: Optional[float] = None

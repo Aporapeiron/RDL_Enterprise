@@ -11,8 +11,8 @@ class AuthorityContext:
     actor_id: str
     role: str                       # "admin" | "manager" | "senior" | "operator"
     scope: str = "all"              # 対象業務ドメイン (例: "all", "network", "workflow")
-    actor_type: str = "human"       # "human" | "service" | "agent"
-    authenticated_by: Optional[str] = "idp_sso"  # "idp_sso" | "mfa" | "console" | "passkey" | "api_key" | "delegated_agent"
+    actor_type: str = "unknown"     # "unknown" | "human" | "service" | "agent"
+    authenticated_by: Optional[str] = None  # None | "idp_sso" | "mfa" | "console" | "passkey" | "api_key" | "delegated_agent"
     source: str = "official_system" # "official_system" | "slack" | "direct_order"
     timestamp: str = field(default_factory=lambda: datetime.utcnow().isoformat())
 
