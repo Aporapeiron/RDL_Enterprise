@@ -123,7 +123,7 @@ class PerturbationStressChecker:
             dummy_efp = BusinessInput(
                 ticket_id=f"STRESS-{fix_id}",
                 user_id="stress_tester",
-                category=domain if domain != "any" else "general",
+                category=domain if domain not in ("any", "*", "__any__") else None,
                 query_text=query,
             )
 

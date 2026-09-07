@@ -22,9 +22,10 @@ class InterpCascade:
         target_domain = efp.category or "any"
 
         # 有限境界 B による推論空間の拘束:
-        # category が指定されている場合（any/general以外）、該当ドメインのノードのみを候補とする
+        # 明示的なワイルドカード (None, "*", "__any__", "any") のみ全域走査を許容し、
+        # "general" を含む通常ドメインは厳格に一致するノードのみを候補とする
         def is_domain_eligible(node_domain: str, category: Optional[str]) -> bool:
-            if not category or category in ("any", "general"):
+            if not category or category in ("*", "__any__", "any"):
                 return True
             return node_domain == category
 

@@ -16,6 +16,18 @@ from .durability import (
     DurabilityHarness,
     RegressionHistoryChecker,
     AuthorityBoundaryChecker,
+    PerturbationStressChecker,
+)
+from .social_adapter import (
+    SocialRawInput,
+    SocialFixture,
+    SocialFixtureAdapter,
+)
+from .shadow import (
+    ShadowPredictionPair,
+    ShadowResolutionTriplet,
+    ShadowReport,
+    ShadowEvaluator,
 )
 from .runtime import (
     EnterpriseRuntime,
@@ -43,6 +55,14 @@ __all__ = [
     "DurabilityHarness",
     "RegressionHistoryChecker",
     "AuthorityBoundaryChecker",
+    "PerturbationStressChecker",
+    "SocialRawInput",
+    "SocialFixture",
+    "SocialFixtureAdapter",
+    "ShadowPredictionPair",
+    "ShadowResolutionTriplet",
+    "ShadowReport",
+    "ShadowEvaluator",
     "EnterpriseRuntime",
     "TicketExecutionResult",
     "TicketDispatchResult",

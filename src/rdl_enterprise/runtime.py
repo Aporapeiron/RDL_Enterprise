@@ -16,6 +16,7 @@ from .cascade import InterpCascade
 from .human import HumanQuery
 from .authority import AuthorityContext
 from .durability import DurabilityHarness
+from .shadow import ShadowEvaluator, ShadowReport
 
 @dataclass
 class TicketDispatchResult:
@@ -109,6 +110,9 @@ class EnterpriseRuntime:
         self.pending_reorganizations: Dict[str, ReorganizationProposal] = {}
         self.reorganization_history: List[ReorganizationProposal] = []
 
+        # シャドウ並行推論エンジン (本番 M_B vs 候補 M_B')
+        self.active_shadow_evaluator: Optional[ShadowEvaluator] = None
+
         # 運用メトリクス
         self.processed_tickets_count = 0
         self.auto_resolved_count = 0
@@ -131,6 +135,10 @@ class EnterpriseRuntime:
         # 1. 多層カスケード推論 (EFP -> F)
         pred = self.cascade.interpret(efp)
         self.cost_tier_counts[pred.cost_tier] = self.cost_tier_counts.get(pred.cost_tier, 0) + 1
+
+        # シャドウ並行推論 (有効な場合、候補 M_B' でも並行推論して差分を記録)
+        if self.active_shadow_evaluator:
+            self.active_shadow_evaluator.evaluate_input(efp)
 
         is_authoritative = False
         if authority and authority.is_authorized_for(efp.category or "general"):
@@ -193,6 +201,10 @@ class EnterpriseRuntime:
         snapshot = self.pending_snapshots.pop(ticket_id)
         e_pred, e_input = snapshot.record_feedback(feedback)
         self.resolved_snapshots.append(snapshot)
+
+        # シャドウ三者比較の記録 (有効な場合)
+        if self.active_shadow_evaluator:
+            self.active_shadow_evaluator.record_feedback(ticket_id, feedback)
 
         pred = snapshot.f_pred
         matched_node = self.mb_graph.get(pred.matched_node_id) if pred.matched_node_id else None
@@ -341,7 +353,41 @@ class EnterpriseRuntime:
         proposal.promoted_at = datetime.utcnow().isoformat()
         proposal.approved_by = f"{authority.role}:{authority.actor_id}"
         self.reorganization_history.append(proposal)
+
+        # 昇格したプロポーザルがシャドウ実行中だった場合、シャドウを終了
+        if self.active_shadow_evaluator and self.active_shadow_evaluator.proposal_id == proposal_id:
+            self.active_shadow_evaluator = None
+
         return True
+
+    def enable_shadow_mode(self, proposal_id: str, max_allowed_regression_rate: float = 0.05) -> bool:
+        """
+        再編候補 M_B' をシャドウ推論エンジンにセットし、本番並行評価を開始する
+        """
+        if proposal_id not in self.pending_reorganizations:
+            return False
+        proposal = self.pending_reorganizations[proposal_id]
+        self.active_shadow_evaluator = ShadowEvaluator(
+            proposal_id=proposal_id,
+            prod_mb=self.mb_graph,
+            candidate_mb=proposal.candidate_mb,
+            max_allowed_regression_rate=max_allowed_regression_rate,
+        )
+        return True
+
+    def disable_shadow_mode(self) -> Optional[ShadowReport]:
+        """シャドウ並行評価を停止し、最終レポートを返す"""
+        if not self.active_shadow_evaluator:
+            return None
+        report = self.active_shadow_evaluator.generate_report()
+        self.active_shadow_evaluator = None
+        return report
+
+    def get_shadow_report(self) -> Optional[ShadowReport]:
+        """現在のシャドウ評価レポートを取得"""
+        if not self.active_shadow_evaluator:
+            return None
+        return self.active_shadow_evaluator.generate_report()
 
     def expire_pending_tickets(self, ticket_ids: Optional[List[str]] = None) -> List[TicketResolutionResult]:
         """PENDING 案件のタイムアウト処理"""

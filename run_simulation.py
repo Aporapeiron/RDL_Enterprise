@@ -160,7 +160,7 @@ def main():
     if runtime.pending_reorganizations:
         latest_prop_id = list(runtime.pending_reorganizations.keys())[-1]
         prop = runtime.pending_reorganizations[latest_prop_id]
-        print(f"\n[再編相 M_Δ ガバナンス審査]")
+        print(f"\n[再編相 M_Δ ガバナンス審査 & 耐久ハーネス検証]")
         print(f"・プロポーザルID: {prop.proposal_id}")
         print(f"・対象ノード: {prop.hot_node_id}")
         print(f"・ステータス: {prop.status} (自動昇格は行わず承認待ち)")
@@ -169,7 +169,42 @@ def main():
             tested_info = f" (テスト件数: {rep['details'].get('tested', 0)}件)" if 'tested' in rep.get('details', {}) else ""
             print(f"  - {rep['checker']}: {'合格' if rep['passed'] else '不合格'} (スコア: {rep['score']:.2f}){tested_info}")
 
-        print("\n>> 情シス業務責任者（田中マネージャー）が変更内容と耐久結果を確認し、正式承認を実行！")
+        # -------------------------------------------------------------
+        # シャドウ並行運用フェーズ (Shadow Execution & 三者比較)
+        # -------------------------------------------------------------
+        print(f"\n[シャドウ並行推論の開始 (Shadow Execution)]")
+        runtime.enable_shadow_mode(latest_prop_id)
+        print(">> 本番を旧M_Bで維持したまま、バックグラウンドで新M_B'の並行推論と三者比較を開始")
+
+        # シャドウ実行中の実案件流入
+        efp_shadow = BusinessInput(
+            ticket_id="TICK-WF-SHADOW",
+            user_id="employee_shadow_test",
+            category="workflow",
+            query_text="備品購入申請の方法を教えてください",
+        )
+        runtime.dispatch_ticket(efp_shadow)
+
+        # 事後フィードバック受領による三者比較 (旧予測 vs 新予測 vs 実結果)
+        runtime.resolve_ticket_feedback(
+            "TICK-WF-SHADOW",
+            FeedbackResult(
+                user_resolved=False,
+                human_rejected=True,
+                feedback_comment="旧URLはアクセスできません！",
+                new_knowledge_provided="新SaaSポータル(https://saas-wf.corp.com)より申請してください。",
+            ),
+        )
+
+        shadow_rep = runtime.get_shadow_report()
+        if shadow_rep:
+            print(f"・シャドウ評価レポート:")
+            print(f"  - 比較件数: {shadow_rep.resolved_triplets_count}件")
+            print(f"  - 精度改善件数: {shadow_rep.improved_count}件 (改悪件数: {shadow_rep.regressed_count}件)")
+            print(f"  - コスト短縮件数: {shadow_rep.tier_improved_count}件")
+            print(f"  - 改悪率: {shadow_rep.regression_rate*100:.1f}% -> 承認基準クリア: {shadow_rep.passed}")
+
+        print("\n>> 情シス業務責任者（田中マネージャー）が耐久ハーネスとシャドウ三者比較を確認し、正式承認を実行！")
         admin_authority = AuthorityContext(actor_id="tanaka_mgr", role="manager", scope="workflow")
         success = runtime.promote_candidate_mb(latest_prop_id, authority=admin_authority)
         print(f"・本番置換(Leap): {'成功' if success else '失敗'} (承認者: {prop.approved_by})")
