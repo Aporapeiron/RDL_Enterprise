@@ -216,8 +216,15 @@ class TestRDLCore(unittest.TestCase):
         )
         graph.add_or_update(node)
 
-        # 自動昇格はOFFにして手動承認を検証
-        runtime = EnterpriseRuntime(mb_graph=graph, theta_0=1.0, auto_promote_reorganizations=False)
+        # 耐久検査合格で直接承認可能な単体テスト用ポリシー (require_shadow=False)
+        from rdl_enterprise.promotion_gate import PromotionPolicy
+        direct_policy = PromotionPolicy(require_durability=True, require_shadow=False, require_human_approval=True)
+        runtime = EnterpriseRuntime(
+            mb_graph=graph,
+            theta_0=1.0,
+            auto_promote_reorganizations=False,
+            default_promotion_policy=direct_policy,
+        )
 
         efp = BusinessInput("T_WF_01", "U005", "workflow", "稟議申請のURLは？")
 
@@ -253,6 +260,9 @@ class TestRDLCore(unittest.TestCase):
     def test_delegated_authority_and_scope_limitation(self):
         """自己例外化禁止：委任権限なしでの自動昇格拒絶とスコープ限定の検証"""
         from rdl_enterprise.authority import AuthorityContext
+        from rdl_enterprise.promotion_gate import PromotionPolicy
+
+        auto_policy = PromotionPolicy(require_durability=True, require_shadow=False, require_human_approval=False)
         graph = MBGraph()
         graph.add_or_update(MBNode(
             id="node_wf2",
@@ -263,7 +273,12 @@ class TestRDLCore(unittest.TestCase):
         ))
 
         # 1. auto_promote=True だが auto_promote_authority=None の場合 -> 自動昇格せず保留
-        runtime_no_auth = EnterpriseRuntime(mb_graph=graph, theta_0=1.0, auto_promote_reorganizations=True)
+        runtime_no_auth = EnterpriseRuntime(
+            mb_graph=graph,
+            theta_0=1.0,
+            auto_promote_reorganizations=True,
+            default_promotion_policy=auto_policy,
+        )
         efp = BusinessInput("T_01", "U1", "workflow", "稟議申請")
         runtime_no_auth.handle_ticket(
             efp,
@@ -280,6 +295,7 @@ class TestRDLCore(unittest.TestCase):
             theta_0=1.0,
             auto_promote_reorganizations=True,
             auto_promote_authority=sales_auth,
+            default_promotion_policy=auto_policy,
         )
         runtime_wrong_scope.handle_ticket(
             efp,
@@ -297,6 +313,7 @@ class TestRDLCore(unittest.TestCase):
             theta_0=1.0,
             auto_promote_reorganizations=True,
             auto_promote_authority=wf_auth,
+            default_promotion_policy=auto_policy,
         )
         runtime_valid_auth.handle_ticket(
             efp,

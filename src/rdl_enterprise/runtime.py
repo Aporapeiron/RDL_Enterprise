@@ -17,6 +17,7 @@ from .human import HumanQuery
 from .authority import AuthorityContext
 from .durability import DurabilityHarness
 from .shadow import ShadowEvaluator, ShadowReport
+from .promotion_gate import ProposalState, PromotionPolicy, PromotionGate
 
 @dataclass
 class TicketDispatchResult:
@@ -68,12 +69,15 @@ class TicketExecutionResult:
 
 @dataclass
 class ReorganizationProposal:
-    """再編相 M_Δ で起草された候補 M_B' とその耐久検査結果"""
+    """再編相 M_Δ で起草された候補 M_B' とその耐久検査結果・昇格状態機械"""
     proposal_id: str
     hot_node_id: str
     candidate_mb: MBGraph
     durability_test_result: Dict[str, Any]
-    status: str = "awaiting_approval"  # "awaiting_approval" | "promoted" | "rejected"
+    policy: PromotionPolicy = field(default_factory=PromotionPolicy)
+    shadow_report: Optional[ShadowReport] = None
+    status: ProposalState = ProposalState.DRAFT
+    reasons: List[str] = field(default_factory=list)
     created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
     promoted_at: Optional[str] = None
     approved_by: Optional[str] = None
@@ -93,6 +97,7 @@ class EnterpriseRuntime:
         durability_harness: Optional[DurabilityHarness] = None,
         auto_promote_reorganizations: bool = False,  # 破断検査合格時の自動昇格フラグ (デフォルトは厳格にFalse)
         auto_promote_authority: Optional[AuthorityContext] = None,  # 事前委任された権限コンテキスト (限定スコープ用)
+        default_promotion_policy: Optional[PromotionPolicy] = None,  # カスタム昇格ポリシー (未指定時はドメイン標準)
     ):
         self.mb_graph = mb_graph or MBGraph()
         self.h_state = HState(theta_0=theta_0, gamma=gamma)
@@ -101,6 +106,7 @@ class EnterpriseRuntime:
         self.durability_harness = durability_harness or DurabilityHarness()
         self.auto_promote_reorganizations = auto_promote_reorganizations
         self.auto_promote_authority = auto_promote_authority
+        self.default_promotion_policy = default_promotion_policy
 
         # 非同期案件スナップショット管理
         self.pending_snapshots: Dict[str, CaseSnapshot] = {}
@@ -248,15 +254,15 @@ class EnterpriseRuntime:
             proposal = self._trigger_m_delta_proposal(hot_node, snapshot.efp, feedback)
             proposal_id = proposal.proposal_id
 
-            # 自動昇格設定かつ全テスト合格の場合（委任された正式権限コンテキストが存在する場合のみ実行）
+            # 自動昇格設定かつ委任権限が存在する場合（PromotionGate で検証）
             if (
                 self.auto_promote_reorganizations
                 and self.auto_promote_authority is not None
-                and proposal.durability_test_result.get("all_passed")
             ):
                 self.promote_candidate_mb(
                     proposal_id,
                     authority=self.auto_promote_authority,
+                    is_automated=True,
                 )
         else:
             # 通常運転：局所更新 (dM_B/dt)
@@ -311,45 +317,89 @@ class EnterpriseRuntime:
         # 3. 破断検査（Durability Test）の実行
         test_result = self.durability_harness.run_all(candidate_mb, self.resolved_snapshots)
 
+        # 4. リスクベースの昇格ポリシー決定と初期ゲート判定
+        target_domain = node.domain if node else "general"
+        policy = self.default_promotion_policy or PromotionPolicy.default_for_domain(target_domain)
+
+        gate_res = PromotionGate.evaluate_readiness(
+            current_state=ProposalState.DRAFT,
+            durability_result=test_result,
+            shadow_report=None,
+            policy=policy,
+        )
+
         proposal_id = f"prop_{len(self.reorganization_history) + len(self.pending_reorganizations) + 1:03d}"
         proposal = ReorganizationProposal(
             proposal_id=proposal_id,
             hot_node_id=hot_node_id,
             candidate_mb=candidate_mb,
             durability_test_result=test_result,
-            status="awaiting_approval",
+            policy=policy,
+            status=gate_res.next_state,
+            reasons=gate_res.reasons,
         )
         self.pending_reorganizations[proposal_id] = proposal
         return proposal
 
-    def promote_candidate_mb(self, proposal_id: str, authority: AuthorityContext) -> bool:
+    def promote_candidate_mb(
+        self,
+        proposal_id: str,
+        authority: AuthorityContext,
+        is_automated: bool = False,
+    ) -> bool:
         """
-        権限者による正式承認を経て、候補 M_B' を本番へスワップ（Leap完了）
+        PromotionGate（準備性検証）と権限者（AuthorityContext）の二重ゲートを通過した場合のみ、
+        候補 M_B' を本番へスワップ（Leap完了）する。
         再編後は H_remaining を引き継ぎ冷却する。
         """
         if proposal_id not in self.pending_reorganizations:
             return False
 
-        proposal = self.pending_reorganizations.pop(proposal_id)
+        proposal = self.pending_reorganizations[proposal_id]
         hot_node = self.mb_graph.get(proposal.hot_node_id)
         target_domain = hot_node.domain if hot_node else "all"
 
-        # 権限チェック
-        if not authority.is_authorized_for(target_domain):
-            proposal.status = "rejected"
+        # 最新のシャドウレポートを反映
+        if self.active_shadow_evaluator and self.active_shadow_evaluator.proposal_id == proposal_id:
+            proposal.shadow_report = self.active_shadow_evaluator.generate_report()
+
+        # ゲート1：昇格準備性 (Readiness) の検証 (Durability / Shadow / Evidence)
+        gate_res = PromotionGate.evaluate_readiness(
+            current_state=proposal.status,
+            durability_result=proposal.durability_test_result,
+            shadow_report=proposal.shadow_report,
+            policy=proposal.policy,
+        )
+        proposal.status = gate_res.next_state
+        proposal.reasons = gate_res.reasons
+
+        if not gate_res.can_promote:
+            # 準備未達のため昇格拒絶
+            return False
+
+        # ゲート2：権限者 (Authority) および自動昇格ポリシーの検証
+        if not PromotionGate.verify_authority_for_promotion(
+            authority=authority,
+            target_domain=target_domain,
+            policy=proposal.policy,
+            is_automated=is_automated,
+        ):
+            proposal.status = ProposalState.REJECTED
+            proposal.reasons.append(f"権限不適合または自動昇格制限に抵触: actor={authority.actor_id}, role={authority.role}")
+            self.pending_reorganizations.pop(proposal_id)
             self.reorganization_history.append(proposal)
             return False
 
-        # 本番 M_B の置換（Leap）
+        # 二重ゲート通過：本番 M_B の置換（Leap）
+        self.pending_reorganizations.pop(proposal_id)
         self.mb_graph = proposal.candidate_mb
         self.cascade.mb_graph = self.mb_graph
-        # キャッシュのクリア（新構造へ適応）
         self.cascade.level0_cache.clear()
 
         # 残存熱 H_remaining の算出・引き継ぎ (冷却)
         self.h_state.apply_remaining_heat_after_leap(proposal.hot_node_id, remaining_ratio=0.2)
 
-        proposal.status = "promoted"
+        proposal.status = ProposalState.PROMOTED
         proposal.promoted_at = datetime.utcnow().isoformat()
         proposal.approved_by = f"{authority.role}:{authority.actor_id}"
         self.reorganization_history.append(proposal)

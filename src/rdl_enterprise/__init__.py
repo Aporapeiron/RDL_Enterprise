@@ -29,6 +29,11 @@ from .shadow import (
     ShadowReport,
     ShadowEvaluator,
 )
+from .promotion_gate import (
+    ProposalState,
+    PromotionPolicy,
+    PromotionGate,
+)
 from .runtime import (
     EnterpriseRuntime,
     TicketExecutionResult,
@@ -63,6 +68,9 @@ __all__ = [
     "ShadowResolutionTriplet",
     "ShadowReport",
     "ShadowEvaluator",
+    "ProposalState",
+    "PromotionPolicy",
+    "PromotionGate",
     "EnterpriseRuntime",
     "TicketExecutionResult",
     "TicketDispatchResult",
