@@ -50,7 +50,7 @@ class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
         self.assertEqual(res1.status, CaseStatus.PENDING)
 
         # この時点では live runtime の level0_cache にはまだ沈澱していない (未確認の判断は恒久化しない)
-        norm_key = ("workflow", runtime.cascade._normalize("稟議申請の方法"))
+        norm_key = ("v1.0", "workflow", runtime.cascade._normalize("稟議申請の方法"))
         self.assertNotIn(norm_key, runtime.cascade.level0_cache)
 
         # 2. 成功フィードバックを受領
@@ -98,7 +98,7 @@ class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
         受入条件 3: 失敗 (FAILURE) や 差し戻し (REJECTED) や タイムアウト (UNKNOWN) は決して Tier 0 に沈澱しない
         """
         runtime = EnterpriseRuntime(mb_graph=self.prod_graph)
-        norm_key = ("workflow", runtime.cascade._normalize("稟議申請の方法"))
+        norm_key = ("v1.0", "workflow", runtime.cascade._normalize("稟議申請の方法"))
 
         # ケースA: ユーザー未解決 (user_resolved=False -> FAILURE)
         efp_fail = BusinessInput(ticket_id="T_F01", user_id="U1", category="workflow", query_text="稟議申請の方法")
@@ -154,7 +154,7 @@ class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
         self.assertEqual(fb_res.status, CaseStatus.SUCCESS)
 
         # 3. 本番の cascade.level0_cache は一切汚染されていないこと！
-        norm_key = ("workflow", runtime.cascade._normalize("稟議申請の方法"))
+        norm_key = ("v1.0", "workflow", runtime.cascade._normalize("稟議申請の方法"))
         self.assertNotIn(norm_key, runtime.cascade.level0_cache)
 
     def test_version_bump_or_rollback_invalidates_level0_cache(self):
@@ -168,7 +168,7 @@ class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
         runtime.dispatch_ticket(efp1)
         runtime.resolve_ticket_feedback("T01", FeedbackResult(user_resolved=True))
 
-        norm_key = ("workflow", runtime.cascade._normalize("稟議申請の方法"))
+        norm_key = ("v1.0", "workflow", runtime.cascade._normalize("稟議申請の方法"))
         self.assertIn(norm_key, runtime.cascade.level0_cache)
 
         # 次回ディスパッチが Tier 0 であることを確認
@@ -254,7 +254,7 @@ class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
         self.assertIn("sedimentation:experience", exp_nodes[0].source_lineage)
 
     def test_version_bound_cache_identity(self):
-        """受入条件 8 (P2): Level 0 キャッシュのバージョン構造拘束"""
+        """受入条件 8 (P2/P0): Level 0 キャッシュの厳格なバージョン構造拘束"""
         runtime = EnterpriseRuntime(mb_graph=self.prod_graph)
         efp = BusinessInput("T_VER_01", "U1", "workflow", "稟議申請の方法")
         runtime.dispatch_ticket(efp)
@@ -264,12 +264,39 @@ class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
         ver_key = ("v1.0", "workflow", norm_q)
         self.assertIn(ver_key, runtime.cascade.level0_cache)
 
+        # 旧フォーマットの2タプルが仮にキャッシュ内に存在していても、
+        # 異なるバージョン v99.0 では厳格にヒットしないこと（フォールバック禁止）
         other_graph = MBGraph(version="v99.0")
         other_cascade = runtime.cascade
         other_cascade.mb_graph = other_graph
-        other_cascade.level0_cache.pop(("workflow", norm_q), None)
+        other_cascade.level0_cache[("workflow", norm_q)] = "stale_node"
         other_pred = other_cascade.interpret(efp)
         self.assertNotEqual(other_pred.cost_tier, 0)
+
+    def test_unauthorized_policy_injection_fails_closed(self):
+        """受入条件 9 (P2): 未認可アクターによる方針注入のフェイルクローズ遮断"""
+        cascade = self.prod_graph and EnterpriseRuntime(mb_graph=self.prod_graph).cascade
+        efp = BusinessInput("T_UNAUTH_01", "U1", "workflow", "UNAUTHORIZED_QUERY")
+
+        # スコープ不一致のマネージャー
+        wrong_scope_mgr = AuthorityContext(actor_id="mgr_net", role="manager", scope="network")
+        with self.assertRaises(PermissionError):
+            cascade.inject_authoritative_rule(
+                efp=efp,
+                policy_text="UNAUTHORIZED_RULE",
+                category="workflow",
+                authority=wrong_scope_mgr,
+            )
+
+        # 権限外ロール（オペレーター）
+        operator = AuthorityContext(actor_id="op_01", role="operator", scope="all")
+        with self.assertRaises(PermissionError):
+            cascade.inject_authoritative_rule(
+                efp=efp,
+                policy_text="UNAUTHORIZED_RULE",
+                category="workflow",
+                authority=operator,
+            )
 
 
 if __name__ == "__main__":

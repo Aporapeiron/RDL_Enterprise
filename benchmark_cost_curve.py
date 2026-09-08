@@ -13,6 +13,15 @@ if sys.stdout.encoding != "utf-8":
     except Exception:
         pass
 
+"""
+RDL Enterprise 合成トークン等価シミュレーションベンチマーク (Synthetic Token-Equivalent Benchmark)
+※ 実API課金実績ではなく、推論Tierごとの標準的トークン消費モデルに基づく理論値比較シミュレーション。
+  - Tier 0 (Level 0 キャッシュ): 0 tokens (完全局所応答)
+  - Tier 1 (Level 1 確定ルール): 0 tokens (正規表現・完全一致)
+  - Tier 2 (Level 2 類似検索): 300 tokens 等価 (局所軽量推論)
+  - Tier 3 (Level 3 外部LLM): 1800 tokens 等価 (フルプロンプト推論)
+"""
+
 from rdl_enterprise.mb_graph import MBGraph, MBNode
 from rdl_enterprise.snapshot import BusinessInput, FeedbackResult
 from rdl_enterprise.runtime import EnterpriseRuntime
@@ -20,13 +29,14 @@ from rdl_enterprise.runtime import EnterpriseRuntime
 TIER_COST_MAP = {
     0: 0,       # Local memory hit
     1: 0,       # Local rule match
-    2: 300,     # Semantic search / embedding lookup
-    3: 1800,    # Heavy LLM inference
+    2: 300,     # Semantic search / local matching equivalent
+    3: 1800,    # Heavy external LLM inference equivalent
 }
 
 def run_benchmark():
     print("=" * 70)
     print("  RDL Enterprise Cost-Curve Comparative Benchmark")
+    print("  [Synthetic Token-Equivalent Simulation Benchmark]")
     print("  (Pure LLM vs Standard RAG vs RDL Enterprise Closed Loop)")
     print("=" * 70)
 

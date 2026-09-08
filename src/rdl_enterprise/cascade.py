@@ -3,6 +3,7 @@ import re
 from typing import Optional, List, Dict, Any, Tuple
 from .mb_graph import MBGraph, MBNode
 from .snapshot import BusinessInput, InterpretationPrediction
+from .authority import AuthorityContext
 from .constraint import (
     ConstraintConfig, ConstraintContext, RelationConstraintLocator, RuptureProbe,
 )
@@ -26,7 +27,7 @@ class InterpCascade:
         mb_graph: MBGraph,
         llm_bridge: Optional[Any] = None,
         config: Optional[CascadeConfig] = None,
-        initial_cache: Optional[Dict[Tuple[str, str], str]] = None,
+        initial_cache: Optional[Dict[Tuple, str]] = None,
         constraint_config: Optional[ConstraintConfig] = None,
         constraint_evaluation_time: Optional[Any] = None,  # datetime（FrozenInterpretationContext から伝播）
         interpretation_context_hash: Optional[str] = None, # 完全凍結コンテキストハッシュ (BASE v2.0 §4.2)
@@ -34,8 +35,16 @@ class InterpCascade:
         self.mb_graph = mb_graph
         self.llm_bridge = llm_bridge
         self.config = config or CascadeConfig()
-        # Level 0 キャッシュ: (domain, norm_query) -> node_id
-        self.level0_cache: Dict[Tuple[str, str], str] = dict(initial_cache) if initial_cache else {}
+        # Level 0 キャッシュ: (mb_version, domain, norm_query) -> node_id
+        current_ver = getattr(self.mb_graph, "version", "unknown")
+        norm_initial_cache: Dict[Tuple[str, str, str], str] = {}
+        if initial_cache:
+            for k, v in initial_cache.items():
+                if len(k) == 2:
+                    norm_initial_cache[(current_ver, k[0], k[1])] = v
+                elif len(k) == 3:
+                    norm_initial_cache[k] = v
+        self.level0_cache: Dict[Tuple[str, str, str], str] = norm_initial_cache
         # 関係拘束評価器（カスタム ConstraintConfig を保持）
         self.constraint_locator = RelationConstraintLocator(constraint_config or ConstraintConfig())
         # 凍結された関係拘束評価時刻（None の場合は _constraint_boost() が now() にフォールバック）
@@ -44,13 +53,18 @@ class InterpCascade:
         self.interpretation_context_hash = interpretation_context_hash
         self.context_scope = "frozen" if interpretation_context_hash else "unfrozen"
 
-    def export_cache(self) -> Dict[Tuple[str, str], str]:
+    def export_cache(self) -> Dict[Tuple[str, str, str], str]:
         """現在保持している Level 0 キャッシュの不変スナップショットを複製出力"""
         return dict(self.level0_cache)
 
-    def import_cache(self, cache: Dict[Tuple[str, str], str]):
-        """外部キャッシュスナップショットを取り込み"""
-        self.level0_cache.update(cache)
+    def import_cache(self, cache: Dict[Tuple, str]):
+        """外部キャッシュスナップショットを取り込み（2タプルキーは現在バージョンで正規化）"""
+        current_ver = getattr(self.mb_graph, "version", "unknown")
+        for k, v in cache.items():
+            if len(k) == 2:
+                self.level0_cache[(current_ver, k[0], k[1])] = v
+            elif len(k) == 3:
+                self.level0_cache[k] = v
 
     def _normalize(self, text: str) -> str:
         return re.sub(r"\s+", "", text.lower())
@@ -264,13 +278,8 @@ class InterpCascade:
         # -------------------------------------------------------------
         current_mb_ver = getattr(self.mb_graph, "version", "unknown")
         cache_key_ver = (current_mb_ver, target_domain, norm_query)
-        cache_key_compat = (target_domain, norm_query)
 
-        hit_nid = None
-        if cache_key_ver in self.level0_cache:
-            hit_nid = self.level0_cache[cache_key_ver]
-        elif cache_key_compat in self.level0_cache:
-            hit_nid = self.level0_cache[cache_key_compat]
+        hit_nid = self.level0_cache.get(cache_key_ver)
 
         if hit_nid is not None:
             if hit_nid not in exclude_set:
@@ -288,7 +297,6 @@ class InterpCascade:
             pattern = node.trigger_pattern
             for key in pattern.get("exact_keys", []):
                 if self._normalize(key) == norm_query or key.lower() in efp.query_text.lower():
-                    self.level0_cache[cache_key_compat] = node.id
                     self.level0_cache[cache_key_ver] = node.id
                     boost = 0.0 if skip_constraint_boost else self._constraint_boost(node, efp)
                     base_c = node.confidence + boost
@@ -298,7 +306,6 @@ class InterpCascade:
             if rule_expr:
                 try:
                     if re.search(rule_expr, efp.query_text, re.IGNORECASE):
-                        self.level0_cache[cache_key_compat] = node.id
                         self.level0_cache[cache_key_ver] = node.id
                         boost = 0.0 if skip_constraint_boost else self._constraint_boost(node, efp)
                         base_c = node.confidence + boost
@@ -570,12 +577,11 @@ class InterpCascade:
     def sediment_level0(self, domain: str, query_text: str, node_id: str, mb_version: Optional[str] = None):
         """
         成功確認後に確定した判断を Level 0 キャッシュへ沈澱 (BASE v2.0 代謝閉ループ)
-        M_B バージョン同一性に構造拘束されたキーと互換キーの双方を記録。
+        M_B バージョン同一性に構造拘束されたキー (mb_version, domain, norm_query) にのみ厳格記録。
         """
         ver = mb_version or getattr(self.mb_graph, "version", "unknown")
         dom = domain or "general"
         norm_q = self._normalize(query_text)
-        self.level0_cache[(dom, norm_q)] = node_id
         self.level0_cache[(ver, dom, norm_q)] = node_id
 
     def crystallize_rule(
@@ -618,13 +624,19 @@ class InterpCascade:
         efp: BusinessInput,
         policy_text: str,
         category: str,
-        authority_actor: str,
-        authority_role: str = "manager",
+        authority: AuthorityContext,
     ) -> MBNode:
         """
         認可された権限主体による明示的な方針・規則のコミット (Authoritative Policy Injection)。
         真理性保証ではなく権限統治 (Governance Commitment) に基づくノード策定。
+        caller trust や自己例外化を排除し、必ず AuthorityContext.is_authorized_for() を検証する。
         """
+        if not authority.is_authorized_for(category):
+            raise PermissionError(
+                f"Actor '{authority.actor_id}' with role '{authority.role}' and scope '{authority.scope}' "
+                f"is not authorized for category '{category}'"
+            )
+
         new_id = f"node_policy_{len(self.mb_graph.nodes) + 1:03d}"
         new_node = MBNode(
             id=new_id,
@@ -641,8 +653,8 @@ class InterpCascade:
             confidence=0.9,
             success_count=0,
             approval_count=1,
-            source_id=authority_actor,
-            source_lineage=f"authority:{authority_role}:{authority_actor}",
+            source_id=authority.actor_id,
+            source_lineage=f"authority:{authority.role}:{authority.actor_id}",
         )
         self.mb_graph.add_or_update(new_node)
         # 権限者による即時方針策定を Level 0 キャッシュへ登録

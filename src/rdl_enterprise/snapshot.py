@@ -439,7 +439,7 @@ class FrozenInterpretationContext:
     frozen_mb: Any                                        # MBGraph (Deep Freeze済み)
     target_domain: Optional[str] = None
     llm_bridge: Optional[Any] = None
-    initial_level0_cache: Dict[Tuple[str, str], str] = field(default_factory=dict)
+    initial_level0_cache: Dict[Tuple, str] = field(default_factory=dict)
     cascade_config: Optional[Any] = None                  # CascadeConfig
     llm_identity: Optional[LLMBridgeIdentity] = None
     # 関係拘束評価設定（凍結：F と F' の constraint_score が同一条件で算出されることを保証）
@@ -490,8 +490,8 @@ class FrozenInterpretationContext:
                 eval_time_str = self.constraint_evaluation_time.strftime("%Y-%m-%dT%H:%M:%S")
             except Exception:
                 eval_time_str = str(self.constraint_evaluation_time)
-        # キャッシュのソート済みシリアライズ
-        sorted_cache = sorted([f"{k[0]}:{k[1]}->{v}" for k, v in self.initial_level0_cache.items()])
+        # キャッシュのソート済みシリアライズ（2タプルまたは3タプルキーに頑健に対応）
+        sorted_cache = sorted([f"{':'.join(str(x) for x in k)}->{v}" for k, v in self.initial_level0_cache.items()])
         payload = {
             "mb_version": self.mb_version,
             "mb_content_hash": self.mb_content_hash,

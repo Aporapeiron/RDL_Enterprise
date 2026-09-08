@@ -47,7 +47,7 @@ graph TD
     subgraph Inference[InterpCascade 推論多層スロット]
         L0[Tier 0: Level 0 バージョン束縛キャッシュ]
         L1[Tier 1: Level 1 構造化確定ルール]
-        L2[Tier 2: Level 2 局所埋め込み類似検索]
+        L2[Tier 2: Level 2 局所文字N-gram類似検索 (bi-gram Jaccard)]
         L3[Tier 3: Level 3 外部LLM推論器]
     end
 
@@ -82,7 +82,15 @@ graph TD
 
 ### 3.1 凍結解釈文脈（FrozenInterpretationContext）と ReplayToken
 推論時の境界 $B$ と $M_B$ の状態を改ざん不能な確定スナップショットとして固定する。
-* **`context_hash` ($C_0$)**: 推論時の `(mb_version, domain, active_constraints_hash, authority_context)` の決定論的ハッシュ。
+* **`context_hash` ($C_0$)**: 推論時の解釈前提条件を決定論的に固定する暗号論的ハッシュ (SHA-256)。以下の8フィールドから構成される:
+  1. `mb_version`: $M_B$ のバージョン識別子
+  2. `mb_content_hash`: $M_B$ グラフ内容の暗号論的ハッシュ
+  3. `target_domain`: 案件の対象ドメイン・業務境界 $B$
+  4. `cascade_config`: 推論カスケード動作設定
+  5. `llm_identity`: 外部推論器の固有アイデンティティ
+  6. `cache`: Level 0 キャッシュの決定論的ソート済みシリアライズ
+  7. `constraint_config`: 関係拘束評価パラメーター設定
+  8. `constraint_evaluation_time`: dispatch 時に凍結された関係拘束評価時刻 (ISO-8601)
 * **`ReplayToken` ($K$)**: 案件ID、タイムスタンプ、入力特徴、および $C_0$ から導出される一意トークン。事後フィードバック時やシャドウ並行推論時の反実仮想比較（Counterfactual Comparison）における基準線となる。
 
 ### 3.2 動的アクティブ制約部分グラフ（Active Constraint Subgraph）
@@ -117,28 +125,29 @@ graph TD
 
 ## 4. 計算力学モデル（T0 Primitive 実装）
 
-### 4.1 整合慣性質量 $\|M_B\|$ と自己修正可能性 $\kappa$
-各ノード $n$ の慣性質量 $\|n\|$ および自己修正可能性 $\kappa(n)$ は、経験の蓄積（成功 $S$, 承認 $A$, 失敗 $F$, 却下 $R$）により更新される。
+### 4.1 関係拘束抵抗断面 $I(M_B)$ と自己修正可能性 $\kappa$
+各ノード $n$ の更新抵抗断面（慣性質量） $I(n)$ および自己修正可能性 $\kappa(n)$ は、経験の蓄積（成功 $S$, 承認 $A$, 失敗 $F$, 却下 $R$）により更新される（BASE v2.0 §4.2 / SPEC v2.0 §6.2）。
 
 $$
-\|n\| = \max\left(0.1, 1.0 + \alpha (S + 2A) - \beta (F + 2R)\right)
+I(n) = \max\left(0.0, \text{confidence} \times (1.0 + 0.3 S + 0.5 A - 0.5 F - 0.8 R)\right)
 $$
 
 $$
-\kappa(n) = \frac{1.0}{1.0 + \lambda \|n\|}
+\kappa(n) = \exp\left(-\frac{I(n)}{M_0}\right) \quad (M_0 = 3.0)
 $$
 
-* 経験を重ねて安定したノードは $\|n\|$ が増大し、$\kappa \to 0$（硬化・低コスト即答）。
-* 失敗や差し戻しが重なると $\|n\|$ が減衰し、$\kappa$ が上昇（軟化・再編容易化）。
+* 経験を重ねて安定したノードは $I(n)$ が増大し、$\kappa \to 0$（硬化・低コスト即答）。
+* 失敗や差し戻しが重なると $I(n)$ が減衰し、$\kappa$ が上昇（軟化・再編容易化）。
+* ※ $I(n)$ は「更新抵抗断面」であり、確信度ブーストには関係拘束スコア $C_{rel}$ を使用する。
 
 ### 4.2 熱 $H$ の多層追跡と動的有効閾値 $\theta_{eff}$
-熱 $H$ は単一スカラーではなく、予測不整合熱 $H_{pred}$、権限逸脱熱 $H_{auth}$、不確実性タイムアウト熱 $H_{timeout}$ の合成ベクトルとして追跡される。
+熱 $H$ は予測誤差成分と入力補助成分の合成ベクトル `HeatVector(prediction, input_err)` として追跡される。
 
 $$
-H_{total} = w_{pred} H_{pred} + w_{auth} H_{auth} + w_{time} H_{timeout}
+H_{total} = w_{pred} \cdot H_{pred} + w_{input} \cdot H_{input} \quad (w_{pred} = 1.0, w_{input} = 0.4)
 $$
 
-未回収関係（観測された外部ノイズ・文脈不確実性）$\xi_{obs}$ に応じて、有効閾値 $\theta_{eff}$ は動的に引き下げられる。
+強い関係拘束と衝突した不整合は大きく保持され（$H \leftarrow H + E \times C_{opposing}$）、未回収関係（観測された外部ノイズ・文脈不確実性）$\xi_{obs}$ に応じて、有効閾値 $\theta_{eff}$ は動的に引き下げられる。
 
 $$
 \theta_{eff} = \theta_0 - g(\xi_{obs})
@@ -159,7 +168,8 @@ $H_{total} \ge \theta_{eff}$ に達した瞬間、巡航相（Cruise）から再
 | **Test 5** | 耐久ハーネス検証 | 回帰検査・権限境界検査・摂動ストレステストを通過した候補のみが昇格対象となること。 |
 | **Test 6** | Canary タイムアウト熱隔離 | Canary スナップショットのタイムアウト発生時、本番 `HState` の熱および $\theta_{eff}$ が一切影響を受けず、Canary 側のみ発熱・ロールバック判定されること。 |
 | **Test 7** | 権威方針と経験沈澱の分離 | `origin="authority"` で注入されたノードは `authority_level="policy"` および固有 Lineage を保持し、経験沈澱ノードと混同されないこと。 |
-| **Test 8** | バージョン束縛キャッシュ | グラフバージョン更新後、旧バージョンのキャッシュキーが無効化され、新バージョン側の推論が正しく実行されること。 |
+| **Test 8** | バージョン束縛キャッシュ | グラフバージョン更新後、旧バージョンのキャッシュキーが無効化され、旧compatキーが存在していても新バージョン側で誤適用されず厳格に推論が再実行されること。 |
+| **Test 9** | 未認可方針注入の遮断 | 権限範囲外のアクターによる `inject_authoritative_rule()` の呼び出しが `PermissionError` で即座にフェイルクローズ遮断されること。 |
 
 ---
 

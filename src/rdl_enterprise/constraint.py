@@ -393,6 +393,7 @@ def _compute_authority_weight(authority_level: str) -> float:
     """authority_level を数値に変換"""
     return {
         "human_only": 1.0,
+        "policy": 0.9,
         "require_approval": 0.8,
         "auto": 0.4,
     }.get(authority_level, 0.4)
@@ -702,7 +703,7 @@ class RelationConstraintLocator:
         score = _compute_constraint_score(rel, fresh, auth, src, conv, cfg)
 
         locus_type = "strong"
-        if node.authority_level in ("require_approval", "human_only"):
+        if node.authority_level in ("require_approval", "human_only", "policy"):
             locus_type = "authority"
         elif src > 0.7:
             locus_type = "source"
@@ -995,7 +996,7 @@ class RelationConstraintLocator:
             d = node_details.get(node.id, {})
             locus_type = "strong"
 
-            if node.authority_level in ("require_approval", "human_only"):
+            if node.authority_level in ("require_approval", "human_only", "policy"):
                 locus_type = "authority"
             elif d.get("source_strength", 0) > 0.7:
                 locus_type = "source"
