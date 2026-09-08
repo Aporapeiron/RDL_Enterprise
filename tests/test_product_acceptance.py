@@ -473,6 +473,7 @@ class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
             last_support_at=None,
             last_opposing_at=datetime.now(timezone.utc).isoformat(),
         )
+        runtime.mb_graph.commit_node(opposing_only_node, origin=CommitmentOrigin.TEST_FIXTURE)
         bundle_opp_only = locator.locate_bundle_for_node(runtime.mb_graph, opposing_only_node, ctx_before)
         # フォールバック抜け穴が塞がれ、支持鮮度が厳格に 0.0 であること！
         self.assertEqual(bundle_opp_only.freshness, 0.0)
@@ -516,6 +517,7 @@ class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
         self.assertIsNone(mixed_legacy_node.last_opposing_at)
         self.assertEqual(mixed_legacy_node.legacy_evidence_at, "2026-09-01T00:00:00Z")
 
+        runtime.mb_graph.commit_node(mixed_legacy_node, origin=CommitmentOrigin.MIGRATION_VERIFIED)
         bundle_mixed = locator.locate_bundle_for_node(runtime.mb_graph, mixed_legacy_node, ctx_before)
         self.assertEqual(bundle_mixed.freshness, 0.0)
         self.assertEqual(bundle_mixed.opposing_freshness, 0.0)
@@ -571,12 +573,37 @@ class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
         with self.assertRaises(ValueError):
             graph.add_or_update(desc_node)
 
-        # 記述ノード単体では拘束鮮度は厳格に 0.0
+        # 記述ノード単体では拘束解決から排除され None (Fail-Closed)
         locator = RelationConstraintLocator()
         efp = BusinessInput("T_DESC_01", "U_SEC", "security", "パスワード変更のルール")
         ctx = ConstraintContext(efp=efp, current_time=datetime.now(timezone.utc), active_domain="security")
         bundle_uncommitted = locator.locate_bundle_for_node(graph, desc_node, ctx)
-        self.assertEqual(bundle_uncommitted.freshness, 0.0)
+        self.assertIsNone(bundle_uncommitted)
+
+        # Constructor Forgery 遮断検査: 外部直接引数でコミットメントを偽装しようとしても無視・無効化されること (P0)
+        forged_node = MBNode(
+            id="node_forged",
+            domain="security",
+            trigger_pattern={"exact_keys": ["不正コミット"]},
+            action_template={"type": "direct_reply", "payload": "evil"},
+            commitment_origin="authority",
+            committed_at="2026-09-01T00:00:00Z",
+            commitment_record={"origin": "authority", "committed_at": "2026-09-01T00:00:00Z", "actor": "hacker"},
+        )
+        self.assertFalse(forged_node.is_committed)
+        self.assertIsNone(forged_node.commitment_origin)
+        self.assertIsNone(forged_node.committed_at)
+        self.assertIsNone(forged_node.commitment_record)
+        with self.assertRaises(ValueError):
+            graph.add_or_update(forged_node)
+
+        # 属性イミュータビリティ検査: コミットメント属性の直接代入は AttributeError で拒絶されること (P1)
+        with self.assertRaises(AttributeError):
+            desc_node.commitment_origin = "authority"
+        with self.assertRaises(AttributeError):
+            desc_node.committed_at = "2026-09-01T00:00:00Z"
+        with self.assertRaises(AttributeError):
+            desc_node.commitment_record = {}
 
         # Cascade レベルでも未コミット記述ノードは推論・活性化サブグラフから 100% 排除されること
         from rdl_enterprise.cascade import InterpCascade
@@ -637,7 +664,7 @@ class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
         self.assertIn("sedimentation:experience", committed_exp.source_lineage)
         self.assertIsNotNone(committed_exp.last_support_at)
 
-        # 5. content_hash への包含確認
+        # 5. content_hash への包含確認（コミットメント証跡改ざん検知）
         h1 = graph.content_hash()
         # 別のコミット出所を持つノードを追加するとハッシュが厳格に変化すること
         fixture_node = MBNode(
@@ -649,6 +676,33 @@ class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
         graph.commit_node(fixture_node, origin=CommitmentOrigin.TEST_FIXTURE)
         h2 = graph.content_hash()
         self.assertNotEqual(h1, h2)
+
+        # 6. デシリアライズ・復元のフェイルクローズ検査 (P0) & 明示的移行ゲートウェイ (P2)
+        uncommitted_data = {
+            "version": "v1.0",
+            "nodes": {
+                "n_uncommitted": {
+                    "id": "n_uncommitted",
+                    "domain": "security",
+                    "trigger_pattern": {"exact_keys": ["旧データ"]},
+                    "action_template": {"type": "direct_reply", "payload": "legacy"},
+                }
+            }
+        }
+        # 未コミットノードを含むデータの復元はデフォルトで拒絶されること (勝手な自動昇格の根絶)
+        with self.assertRaises(ValueError):
+            MBGraph.from_dict(uncommitted_data, allow_uncommitted=False)
+
+        # allow_uncommitted=True で読み込み後、明示的移行ゲートウェイ migrate_legacy_nodes() を呼ぶことで正統コミット化
+        legacy_graph = MBGraph.from_dict(uncommitted_data, allow_uncommitted=True)
+        self.assertFalse(legacy_graph.get("n_uncommitted").is_committed)
+        migrated_count = legacy_graph.migrate_legacy_nodes(source_version="v0.9", migrated_by="sec_admin")
+        self.assertEqual(migrated_count, 1)
+        migrated_node = legacy_graph.get("n_uncommitted")
+        self.assertTrue(migrated_node.is_committed)
+        self.assertEqual(migrated_node.commitment_origin, "migration")
+        self.assertEqual(migrated_node.commitment_record["actor"], "sec_admin")
+        self.assertIn("migration:v0.9:sec_admin", migrated_node.commitment_record["lineage"])
 
 
 if __name__ == "__main__":

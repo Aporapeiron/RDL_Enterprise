@@ -23,6 +23,29 @@ class CommitmentOrigin(str, Enum):
     MIGRATION_VERIFIED = "migration"      # 来歴検証済み移行
     TEST_FIXTURE = "test_fixture"         # テスト用明示コミット
 
+
+@dataclass(frozen=True)
+class CommitmentRecord:
+    """
+    不変コミットメント証跡レコード (BASE v2.0 §4.2: 不変性・改ざん防止)
+    ノードがいつ、誰によって、どのような出所・系譜で M_B にコミットされたかを完全記録。
+    """
+    origin: str
+    committed_at: str
+    actor: str
+    evidence_at: Optional[str] = None
+    lineage: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "origin": self.origin,
+            "committed_at": self.committed_at,
+            "actor": self.actor,
+            "evidence_at": self.evidence_at,
+            "lineage": self.lineage,
+        }
+
+
 class ReadOnlyDict(dict):
     """凍結ノード内部の辞書不変性を担保する読み取り専用辞書"""
     def __copy__(self):
@@ -132,9 +155,6 @@ class MBNode:
     last_opposing_at: Optional[str] = None
     last_observed_at: Optional[str] = None
     legacy_evidence_at: Optional[str] = None
-    commitment_origin: Optional[str] = None
-    committed_at: Optional[str] = None
-    commitment_record: Optional[Dict[str, Any]] = None
 
     def __init__(
         self,
@@ -163,6 +183,7 @@ class MBNode:
         commitment_origin: Optional[str] = None,
         committed_at: Optional[str] = None,
         commitment_record: Optional[Dict[str, Any]] = None,
+        _internal_commitment: Optional[CommitmentRecord] = None,
     ):
         self.is_frozen = False
         self.id = id
@@ -179,8 +200,18 @@ class MBNode:
         self.source_id = source_id
         self.source_lineage = source_lineage
         self.node_relations = node_relations if node_relations is not None else {}
-        self.commitment_origin = commitment_origin
-        self.commitment_record = commitment_record
+
+        # 【Commitment Authenticity (BASE v2.0 §4.2: Description != Commitment)】
+        # 外部からの直接引数 (commitment_origin, committed_at, commitment_record) による
+        # コミットメント状態の自己生成・捏造（Constructor Forgery）を厳格に遮断。
+        # 正当な CommitmentRecord インスタンスを伴う内部呼び出し (_internal_commitment)
+        # または MBGraph.commit_node() のみを正規ルートとして承認する。
+        if isinstance(_internal_commitment, CommitmentRecord):
+            self._commitment_record: Optional[CommitmentRecord] = _internal_commitment
+        elif _internal_commitment is not None:
+            raise TypeError("内部コミットメントには CommitmentRecord インスタンスが必要です")
+        else:
+            self._commitment_record = None
 
         def _to_iso(val: Any) -> Optional[str]:
             if val is None:
@@ -194,7 +225,6 @@ class MBNode:
         self.last_opposing_at = _to_iso(last_opposing_at)
         self.last_observed_at = _to_iso(last_observed_at)
         self.legacy_evidence_at = _to_iso(legacy_evidence_at)
-        self.committed_at = _to_iso(committed_at)
 
         # レガシー移行処理 (B5: 極性の無断捏造禁止・混在履歴の完全フェイルクローズ)
         # last_updated または last_evidence_at が渡され、かつ last_support_at が未指定の場合:
@@ -214,20 +244,35 @@ class MBNode:
                 pass
             self.legacy_evidence_at = legacy_val
 
-        # 【Description != Commitment (BASE v2.0 §4.2)】
-        # ノードの単なるオブジェクト生成（記述）をもって正の支持証拠（last_support_at）を自己生成・捏造することを禁止。
-        # 正式なコミットメント（commit_node / crystallize / inject / seed）を経るまで last_support_at は None のままとする。
-
         if is_frozen:
             self.is_frozen = True
+
+    @property
+    def commitment_origin(self) -> Optional[str]:
+        """コミットメントの出所（読み取り専用）"""
+        return self._commitment_record.origin if self._commitment_record else None
+
+    @property
+    def committed_at(self) -> Optional[str]:
+        """コミット時刻（読み取り専用）"""
+        return self._commitment_record.committed_at if self._commitment_record else None
+
+    @property
+    def commitment_record(self) -> Optional[Dict[str, Any]]:
+        """構造化コミットメント証跡レコード（読み取り専用辞書表現）"""
+        return self._commitment_record.to_dict() if self._commitment_record else None
 
     @property
     def is_committed(self) -> bool:
         """
         ノードが M_B に正式コミットされているかを判定。
-        (CommitmentOrigin および committed_at が必須)
+        (CommitmentRecord が保持され、origin および committed_at が必須)
         """
-        return self.commitment_origin is not None and self.committed_at is not None
+        return (
+            self._commitment_record is not None
+            and self._commitment_record.origin is not None
+            and self._commitment_record.committed_at is not None
+        )
 
     @property
     def last_evidence_at(self) -> Optional[str]:
@@ -262,12 +307,25 @@ class MBNode:
     def __setattr__(self, name: str, value: Any):
         if getattr(self, "is_frozen", False) and name != "is_frozen":
             raise RuntimeError(f"MBNode(id={getattr(self, 'id', '')}) は凍結(frozen)されています。属性 '{name}' の変更は禁止されています。")
+        if name in ("commitment_origin", "committed_at", "commitment_record"):
+            raise AttributeError(f"属性 '{name}' は読み取り専用です。コミットメントの変更は commit_node() を経由してください。")
         super().__setattr__(name, value)
 
     def __delattr__(self, name: str):
         if getattr(self, "is_frozen", False):
             raise RuntimeError(f"MBNode(id={getattr(self, 'id', '')}) は凍結(frozen)されています。属性 '{name}' の削除は禁止されています。")
         super().__delattr__(name)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """ノードの完全な辞書表現（シリアライズ・永続化用）"""
+        d = asdict(self)
+        if self.commitment_origin is not None:
+            d["commitment_origin"] = self.commitment_origin
+        if self.committed_at is not None:
+            d["committed_at"] = self.committed_at
+        if self.commitment_record is not None:
+            d["commitment_record"] = self.commitment_record
+        return d
 
     def freeze(self):
         """ノードを凍結（Deep Freeze: 属性代入および内部辞書・リストの変更を封殺）"""
@@ -423,6 +481,8 @@ class MBGraph:
                 n_dict["commitment_origin"] = node.commitment_origin
             if getattr(node, "committed_at", None) is not None:
                 n_dict["committed_at"] = node.committed_at
+            if getattr(node, "commitment_record", None) is not None:
+                n_dict["commitment_record"] = dict(sorted(node.commitment_record.items()))
             if getattr(node, "source_id", None) is not None:
                 n_dict["source_id"] = node.source_id
             if getattr(node, "source_lineage", None) is not None:
@@ -500,24 +560,31 @@ class MBGraph:
             promoter = actor or "shadow_leap"
             node.source_lineage = node.source_lineage or f"promotion:{promoter}"
 
-        node.commitment_origin = origin_str
-        node.committed_at = now_commit_iso
-
         # 3. 支持証拠時刻とコミット時刻の分離
-        # evidence_time が指定されていればそれを採用、なければコミット時刻を支持証拠時刻の初期値とする
+        # evidence_time が指定されていればそれを採用
+        # 以下の場合は支持証拠を捏造しない (Fail-Closed):
+        # - 反証のみノード (last_opposing_at があり last_support_at が None)
+        # - レガシー移行 (origin == MIGRATION_VERIFIED かつ last_support_at が None)
+        # - 曖昧なレガシー証拠 (legacy_evidence_at があり last_support_at が None)
         if evidence_time is not None:
             node.last_support_at = evidence_time.isoformat()
-        elif node.last_support_at is None:
+        elif (
+            node.last_support_at is None
+            and node.last_opposing_at is None
+            and node.legacy_evidence_at is None
+            and origin != CommitmentOrigin.MIGRATION_VERIFIED
+        ):
             node.last_support_at = now_commit_iso
 
-        # 4. コミットメント証跡レコードの付与
-        node.commitment_record = {
-            "origin": origin_str,
-            "committed_at": now_commit_iso,
-            "actor": actor or getattr(authority_context, "actor_id", None) or "system",
-            "evidence_at": node.last_support_at,
-            "lineage": node.source_lineage,
-        }
+        # 4. 不変コミットメント証跡レコードの確立 (P1: CommitmentRecord)
+        rec = CommitmentRecord(
+            origin=origin_str,
+            committed_at=now_commit_iso,
+            actor=actor or getattr(authority_context, "actor_id", None) or "system",
+            evidence_at=node.last_support_at,
+            lineage=node.source_lineage,
+        )
+        node._commitment_record = rec
 
         self.add_or_update(node)
         return node
@@ -617,11 +684,17 @@ class MBGraph:
             "version": self.version,
             "is_frozen": self.is_frozen,
             "content_hash": self.content_hash(),
-            "nodes": {nid: asdict(node) for nid, node in self.nodes.items()}
+            "nodes": {nid: node.to_dict() for nid, node in self.nodes.items()}
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "MBGraph":
+    def from_dict(cls, data: Dict[str, Any], allow_uncommitted: bool = False) -> "MBGraph":
+        """
+        辞書データから MBGraph を復元。
+        (BASE v2.0 §4.2: 暗黙的コミット昇格の全廃・フェイルクローズ)
+        allow_uncommitted=False (デフォルト) の場合、未コミットのノードが存在すれば
+        add_or_update() で ValueError を送出して安全に遮断する。
+        """
         graph = cls(
             m0=data.get("m0", 3.0),
             version=data.get("version", "v1.0"),
@@ -630,20 +703,86 @@ class MBGraph:
         for nid, ndict in data.get("nodes", {}).items():
             node_dict = dict(ndict)
             node_frozen = node_dict.pop("is_frozen", False)
-            node = MBNode(**node_dict)
-            if not node.is_committed:
-                # 既存JSON・シードデータ・レガシーデータの復元: コミット来歴を補完
-                orig = CommitmentOrigin.AUTHORITATIVE_SEED if node.authority_level == "policy" else CommitmentOrigin.MIGRATION_VERIFIED
-                node.commitment_origin = orig.value
-                node.committed_at = node.created_at or datetime.utcnow().isoformat()
-                if node.last_support_at is None and (node.success_count > 0 or node.approval_count > 0 or node.authority_level == "policy"):
-                    node.last_support_at = node.committed_at
+
+            # 構造化コミットメント証跡の復元
+            rec_dict = node_dict.pop("commitment_record", None)
+            rec = None
+            if rec_dict and isinstance(rec_dict, dict):
+                rec = CommitmentRecord(
+                    origin=rec_dict.get("origin", "unknown"),
+                    committed_at=rec_dict.get("committed_at", datetime.utcnow().isoformat()),
+                    actor=rec_dict.get("actor", "system"),
+                    evidence_at=rec_dict.get("evidence_at"),
+                    lineage=rec_dict.get("lineage"),
+                )
+            elif node_dict.get("commitment_origin") and node_dict.get("committed_at"):
+                rec = CommitmentRecord(
+                    origin=node_dict["commitment_origin"],
+                    committed_at=node_dict["committed_at"],
+                    actor=node_dict.get("source_id") or "system",
+                    evidence_at=node_dict.get("last_support_at"),
+                    lineage=node_dict.get("source_lineage"),
+                )
+
+            node = MBNode(**node_dict, _internal_commitment=rec)
             if node_frozen:
                 node.freeze()
-            graph.add_or_update(node)
+
+            if allow_uncommitted and not node.is_committed:
+                graph.nodes[node.id] = node
+                graph._index_node(node)
+            else:
+                graph.add_or_update(node)
+
         if data.get("is_frozen", False):
             graph.freeze()
         return graph
+
+    def migrate_legacy_nodes(
+        self,
+        source_version: str,
+        migrated_by: str,
+        source_hash: Optional[str] = None,
+    ) -> int:
+        """
+        レガシー・未コミットノードを正統なコミットメントとして昇格・移行する明示的ゲートウェイ (P2)。
+        (BASE v2.0 §4.2: 暗黙的昇格の全廃、明示的来歴・検証責任者の記録義務付け)
+
+        すべての未コミットノードに対し:
+        - origin: CommitmentOrigin.MIGRATION_VERIFIED
+        - actor: migrated_by
+        - lineage: f"migration:{source_version}:{migrated_by}" (+ hash if provided)
+        - committed_at: 現在時刻
+        - 支持証拠時刻: 極性ルールに従い設定
+        """
+        if self.is_frozen:
+            raise RuntimeError(f"MBGraph (version={self.version}) は凍結(frozen)されています。移行は禁止されています。")
+
+        migrated_count = 0
+        now_iso = datetime.utcnow().isoformat()
+        lineage = f"migration:{source_version}:{migrated_by}"
+        if source_hash:
+            lineage += f":{source_hash}"
+
+        uncommitted_nodes = [n for n in self.nodes.values() if not n.is_committed]
+        for node in uncommitted_nodes:
+            was_frozen = node.is_frozen
+            if was_frozen:
+                node.unfreeze()
+
+            rec = CommitmentRecord(
+                origin=CommitmentOrigin.MIGRATION_VERIFIED.value,
+                committed_at=now_iso,
+                actor=migrated_by,
+                evidence_at=node.last_support_at,
+                lineage=lineage,
+            )
+            node._commitment_record = rec
+            if was_frozen:
+                node.freeze()
+            migrated_count += 1
+
+        return migrated_count
 
     def save_json(self, filepath: str):
         with open(filepath, "w", encoding="utf-8") as f:

@@ -707,12 +707,17 @@ class RelationConstraintLocator:
         mb_graph: object,
         node: object,
         ctx: ConstraintContext,
-    ) -> ConstraintBundle:
+    ) -> Optional[ConstraintBundle]:
         """
         推論カスケードのホットパス用：
         すでにマッチした単一ノードに対して局所的に ConstraintBundle を評価構築する (O(keys))。
         全ノード走査を回避し、推論の軽快さを維持する。
+        【Fail-Closed Commitment Verification (BASE v2.0 §4.2)】:
+        単なる未コミット記述ノードは拘束束を形成できず、直ちに None を返却して排除する。
         """
+        if not getattr(node, "is_committed", True) or getattr(node, "commitment_origin", None) is None:
+            return None
+
         cfg = ctx.config if ctx.config is not None else self.config
         efp = ctx.efp
         query = efp.query_text

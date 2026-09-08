@@ -135,22 +135,28 @@ graph TD
   * Canary 熱が閾値 $\theta_{canary}$ を超過した場合、またはシャドウ反実仮想評価で改悪率が許容限界を超えた場合、即座に本番バージョンへ安全にロールバックされる。
 
 ### 3.6 認知的ライフサイクルの分離（Description $\to$ Commitment $\to$ Active Constraint）
-* **オブジェクト生成と支持証拠の厳格分離（BASE v2.0 §4.2）**:
+* **オブジェクト生成と支持証拠の厳格分離（BASE v2.0 §4.2: Description ≠ Commitment）**:
   * 単なる Python クラス `MBNode(...)` のインスタンス化（関係の記述・仮説定義）をもって、正の支持証拠 `last_support_at` や `freshness` を自己生成・捏造することを禁止。
-  * 生成直後の未コミットノードは `last_support_at = None`, `last_evidence_at = None`, `commitment_origin = None`, `committed_at = None` であり、拘束鮮度は厳格に `0.0`。
+  * **Constructor Forgery の完全排除 (P0)**: 公開コンストラクタ引数 `commitment_origin`, `committed_at`, `commitment_record` による自己昇格・コミットメント偽造を完全に遮断。外部引数は無効化され、正当な `CommitmentRecord` を伴う内部生成または `commit_node()` を経由しない限り `is_committed = False` となる。
+  * コミットメント関連属性（`commitment_origin`, `committed_at`, `commitment_record`）は読み取り専用プロパティとして公開され、直接代入は `AttributeError` で拒絶される（不変性の保証）。
 * **正規コミットメントゲートウェイ（`MBGraph.commit_node()`）**:
   * 記述を $M_B$ の正統な構成要素として昇格・定着させる唯一の手段として `commit_node(node, origin, actor, authority_context, commit_time, evidence_time)` を規定。
   * `CommitmentOrigin`（`AUTHORITY`, `VERIFIED_EXPERIENCE`, `AUTHORITATIVE_SEED`, `PROMOTION`, `MIGRATION_VERIFIED`, `TEST_FIXTURE`）の明示指定を義務付け（デフォルト引数なし・未知の値は `ValueError` で即時拒絶）。
   * `origin=CommitmentOrigin.AUTHORITY` の場合は `AuthorityContext.is_authorized_for(domain)` が呼び出し可能かつ厳格に `True` を返すことを検証し、権限不足やドメイン管轄外の場合は `PermissionError` で即座にフェイルクローズ遮断。
   * **支持証拠時刻とコミット時刻の明確な分離**:
     * 証拠観測時刻 `last_support_at`（過去の検証・起案時刻 `evidence_time`）と、境界 $M_B$ への拘束定着時刻 `committed_at`（コミット時刻 `commit_time`）を分離記録。
-    * ノードには構造化された監査情報 `commitment_record = {"origin": ..., "committed_at": ..., "committed_by": ...}` を付与。
+    * 反証のみノード（`last_opposing_at` 保持かつ `last_support_at is None`）およびレガシー曖昧ノード（`legacy_evidence_at` 保持）に対しては、コミット時であっても支持証拠を捏造しない（極性隔離の徹底）。
+  * **不変コミットメント証跡レコード（`CommitmentRecord`）(P1)**:
+    * コミットメント情報は `@dataclass(frozen=True) class CommitmentRecord(origin, committed_at, actor, evidence_at, lineage)` として不変保持。
 * **未コミットノードのフェイルクローズ完全排除（多層防御）**:
   * `MBGraph.add_or_update(node)` は `node.is_committed` を厳格検証し、未コミットの記述オブジェクトの直接注入を `ValueError` で拒絶。
   * `InterpCascade`（推論カスケード）は未コミットノードを `eligible_nodes` および Level 0 キャッシュ参照から 100% 排除（未コミット記述のみでは即時 Tier 3 `ask_human` に安全フォールバック）。
-  * `RelationConstraintLocator` は未コミットノードを支持拘束サブグラフから完全に排除。
-* **暗号論的同一性への反映**:
-  * `content_hash` は各ノードの `commitment_origin` および `committed_at` を正準化辞書に包含し、コミット出所および定着時刻の改ざんを完全に検知する。
+  * `RelationConstraintLocator` は未コミットノードに対する主束縛解決を拒絶し、`locate_bundle_for_node()` は `None` を返却。
+* **デシリアライズ自動昇格の根絶と明示的移行ゲートウェイ (P0, P2)**:
+  * `MBGraph.from_dict()` はコミットメント未保持のノードを自動昇格（`AUTHORITATIVE_SEED` や `MIGRATION_VERIFIED` の捏造）せず、デフォルト（`allow_uncommitted=False`）では `add_or_update()` のフェイルクローズにより `ValueError` で安全に拒絶。
+  * レガシーデータの昇格は明示的移行メソッド `MBGraph.migrate_legacy_nodes(source_version, migrated_by, source_hash)` を唯一のゲートウェイとし、検証責任者アクターと移行来歴を `lineage` に明示記録。
+* **暗号論的同一性への反映 (P1)**:
+  * `content_hash` は各ノードの正準化辞書に `commitment_origin`, `committed_at`, およびソートされた `commitment_record` を完全包含し、コミット出所および証跡の改ざんを暗号論的に完全検知する。
 
 ---
 
@@ -205,7 +211,7 @@ $H_{total} \ge \theta_{eff}$ に達した瞬間、巡航相（Cruise）から再
 | **Test 11** | キャッシュ移行の起源明示 | 旧形式キャッシュのインポート時に `source_mb_version` の明示を義務付け、現行バージョンへの不当な自己昇格が防止されること。 |
 | **Test 12** | 意味的鮮度と残差の分離 | タイムアウト案件（UNKNOWN）において、ノードの `last_evidence_at` および `content_hash` が保存され、不当な鮮度リフレッシュが発生しないこと。 |
 | **Test 13** | 証拠極性分離と反証シグナル | 失敗・差し戻し発生時に `last_opposing_at` が更新され、`last_support_at` は保存されて支持鮮度の上昇が防止されること。支持鮮度は `last_support_at` のみから算出され対向のみノードで 0.0 となること、レガシーセッターへの代入が `AttributeError` となること、実績ゼロのレガシーノードで極性捏造を行わないこと、歴史的反証シグナルが破断検査に反映され $C'$ と分離されること。 |
-| **Test 14** | 認知的ライフサイクル分離 | 純粋な `MBNode(...)` 記述生成では支持証拠を持たず（`last_support_at is None`, `freshness = 0.0`）、正規ゲートウェイ `commit_node()` を通過して初めて正統なコミット出所と支持証拠打刻が付与されること。権威コミット時の認可不在・権限外は `PermissionError` となること。 |
+| **Test 14** | 認知的ライフサイクル分離 | 純粋な `MBNode(...)` 記述生成では支持証拠を持たず、コンストラクタでのコミットメント自己捏造（Constructor Forgery）が遮断されること。コミットメント属性の直接代入が `AttributeError` で拒絶されること。正規ゲートウェイ `commit_node()` を通過して初めて正統な出所・支持証拠打刻・不変 `CommitmentRecord` が付与されること。未コミットノードを含むデシリアライズがフェイルクローズ拒絶され、明示的移行 `migrate_legacy_nodes()` 経由でのみ昇格できること。 |
 
 ---
 

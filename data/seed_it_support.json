@@ -5,7 +5,12 @@
       "id": "node_pwd_reset",
       "domain": "account",
       "trigger_pattern": {
-        "exact_keys": ["パスワードリセット", "パスワードを忘れた", "パスワード再発行", "パスワード初期化"],
+        "exact_keys": [
+          "パスワードリセット",
+          "パスワードを忘れた",
+          "パスワード再発行",
+          "パスワード初期化"
+        ],
         "rule_expr": "(パスワード|password).*(リセット|忘れ|初期化|再発行)"
       },
       "action_template": {
@@ -20,13 +25,27 @@
       "rejection_count": 0,
       "created_at": "2026-09-07T00:00:00Z",
       "last_updated": "2026-09-07T00:00:00Z",
-      "last_support_at": "2026-09-07T00:00:00Z"
+      "last_support_at": "2026-09-07T00:00:00Z",
+      "commitment_origin": "seed",
+      "committed_at": "2026-09-07T00:00:00Z",
+      "commitment_record": {
+        "origin": "seed",
+        "committed_at": "2026-09-07T00:00:00Z",
+        "actor": "system:seed",
+        "evidence_at": "2026-09-07T00:00:00Z",
+        "lineage": "seed:authoritative"
+      }
     },
     "node_wifi_setup": {
       "id": "node_wifi_setup",
       "domain": "network",
       "trigger_pattern": {
-        "exact_keys": ["wifi接続", "wi-fi設定", "社内wifi", "無線lan"],
+        "exact_keys": [
+          "wifi接続",
+          "wi-fi設定",
+          "社内wifi",
+          "無線lan"
+        ],
         "rule_expr": "(wifi|wi-fi|無線lan).*(繋がらない|接続|設定)"
       },
       "action_template": {
@@ -41,13 +60,26 @@
       "rejection_count": 0,
       "created_at": "2026-09-07T00:00:00Z",
       "last_updated": "2026-09-07T00:00:00Z",
-      "last_support_at": "2026-09-07T00:00:00Z"
+      "last_support_at": "2026-09-07T00:00:00Z",
+      "commitment_origin": "seed",
+      "committed_at": "2026-09-07T00:00:00Z",
+      "commitment_record": {
+        "origin": "seed",
+        "committed_at": "2026-09-07T00:00:00Z",
+        "actor": "system:seed",
+        "evidence_at": "2026-09-07T00:00:00Z",
+        "lineage": "seed:authoritative"
+      }
     },
     "node_vpn_general": {
       "id": "node_vpn_general",
       "domain": "network",
       "trigger_pattern": {
-        "exact_keys": ["vpn接続エラー", "vpnが繋がらない", "vpn障害"],
+        "exact_keys": [
+          "vpn接続エラー",
+          "vpnが繋がらない",
+          "vpn障害"
+        ],
         "rule_expr": "vpn.*(エラー|繋がらない|切れる)"
       },
       "action_template": {
@@ -62,13 +94,26 @@
       "rejection_count": 0,
       "created_at": "2026-09-07T00:00:00Z",
       "last_updated": "2026-09-07T00:00:00Z",
-      "last_support_at": "2026-09-07T00:00:00Z"
+      "last_support_at": "2026-09-07T00:00:00Z",
+      "commitment_origin": "seed",
+      "committed_at": "2026-09-07T00:00:00Z",
+      "commitment_record": {
+        "origin": "seed",
+        "committed_at": "2026-09-07T00:00:00Z",
+        "actor": "system:seed",
+        "evidence_at": "2026-09-07T00:00:00Z",
+        "lineage": "seed:authoritative"
+      }
     },
     "node_admin_privilege": {
       "id": "node_admin_privilege",
       "domain": "security",
       "trigger_pattern": {
-        "exact_keys": ["管理者権限", "root権限", "admin権限申請"],
+        "exact_keys": [
+          "管理者権限",
+          "root権限",
+          "admin権限申請"
+        ],
         "rule_expr": "(管理者権限|admin|特権).*(申請|付与|欲しい)"
       },
       "action_template": {
@@ -83,13 +128,26 @@
       "rejection_count": 0,
       "created_at": "2026-09-07T00:00:00Z",
       "last_updated": "2026-09-07T00:00:00Z",
-      "last_support_at": "2026-09-07T00:00:00Z"
+      "last_support_at": "2026-09-07T00:00:00Z",
+      "commitment_origin": "seed",
+      "committed_at": "2026-09-07T00:00:00Z",
+      "commitment_record": {
+        "origin": "seed",
+        "committed_at": "2026-09-07T00:00:00Z",
+        "actor": "system:seed",
+        "evidence_at": "2026-09-07T00:00:00Z",
+        "lineage": "seed:authoritative"
+      }
     },
     "node_workflow_app": {
       "id": "node_workflow_app",
       "domain": "workflow",
       "trigger_pattern": {
-        "exact_keys": ["稟議申請", "備品購入申請", "社内申請"],
+        "exact_keys": [
+          "稟議申請",
+          "備品購入申請",
+          "社内申請"
+        ],
         "rule_expr": "(稟議|経費|備品).*(申請|方法)"
       },
       "action_template": {
@@ -104,7 +162,16 @@
       "rejection_count": 0,
       "created_at": "2026-09-07T00:00:00Z",
       "last_updated": "2026-09-07T00:00:00Z",
-      "last_support_at": "2026-09-07T00:00:00Z"
+      "last_support_at": "2026-09-07T00:00:00Z",
+      "commitment_origin": "seed",
+      "committed_at": "2026-09-07T00:00:00Z",
+      "commitment_record": {
+        "origin": "seed",
+        "committed_at": "2026-09-07T00:00:00Z",
+        "actor": "system:seed",
+        "evidence_at": "2026-09-07T00:00:00Z",
+        "lineage": "seed:authoritative"
+      }
     }
   }
 }
