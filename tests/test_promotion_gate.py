@@ -1,5 +1,5 @@
 import unittest
-from rdl_enterprise.mb_graph import MBGraph, MBNode
+from rdl_enterprise.mb_graph import MBGraph, MBNode, CommitmentOrigin
 from rdl_enterprise.authority import AuthorityContext
 from rdl_enterprise.snapshot import BusinessInput, FeedbackResult
 from rdl_enterprise.shadow import ShadowReport
@@ -17,7 +17,7 @@ class TestPromotionGate(unittest.TestCase):
             action_template={"type": "direct_reply", "payload": "http://old.corp"},
             confidence=0.8,
         )
-        self.graph.add_or_update(self.node)
+        self.graph.commit_node(self.node, origin=CommitmentOrigin.TEST_FIXTURE)
 
     def test_promotion_rejected_when_durability_failed_even_with_admin_approval(self):
         """ガバナンス分離: 管理者(Admin)の承認があっても、Durability不合格なら昇格拒絶される"""
@@ -86,13 +86,13 @@ class TestPromotionGate(unittest.TestCase):
 
         # 1. 候補 M_B' 起草
         candidate = MBGraph()
-        candidate.add_or_update(MBNode(
+        candidate.commit_node(MBNode(
             id="node_wf",
             domain="workflow",
             trigger_pattern={"exact_keys": ["稟議申請"]},
             action_template={"type": "direct_reply", "payload": "http://new-saas.corp"},
             confidence=0.9,
-        ))
+        ), origin=CommitmentOrigin.TEST_FIXTURE)
 
         passed_shadow = ShadowReport(
             proposal_id="prop_lifecycle_01",
@@ -138,13 +138,13 @@ class TestPromotionGate(unittest.TestCase):
     def test_high_risk_policy_blocks_auto_promotion_even_with_delegated_authority(self):
         """高リスクドメイン(security等)では、委任権限があっても自動昇格が拒絶される"""
         sec_graph = MBGraph()
-        sec_graph.add_or_update(MBNode(
+        sec_graph.commit_node(MBNode(
             id="node_root",
             domain="security",
             trigger_pattern={"exact_keys": ["特権申請"]},
             action_template={"type": "human_escalation", "payload": "要承認"},
             authority_level="human_only",
-        ))
+        ), origin=CommitmentOrigin.TEST_FIXTURE)
 
         # security ドメインは default_for_domain で risk_level="high", require_human_approval=True
         sec_auth = AuthorityContext(

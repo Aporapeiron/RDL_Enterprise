@@ -1,5 +1,5 @@
 import unittest
-from rdl_enterprise.mb_graph import MBGraph, MBNode
+from rdl_enterprise.mb_graph import MBGraph, MBNode, CommitmentOrigin
 from rdl_enterprise.snapshot import BusinessInput, FeedbackResult
 from rdl_enterprise.shadow import ShadowEvaluator
 from rdl_enterprise.runtime import EnterpriseRuntime
@@ -10,23 +10,23 @@ class TestShadowExecution(unittest.TestCase):
     def setUp(self):
         # 現行本番 M_B (旧URL)
         self.prod_graph = MBGraph()
-        self.prod_graph.add_or_update(MBNode(
+        self.prod_graph.commit_node(MBNode(
             id="node_wf",
             domain="workflow",
             trigger_pattern={"exact_keys": ["稟議申請"]},
             action_template={"type": "direct_reply", "payload": "http://old-legacy.corp"},
             confidence=0.8,
-        ))
+        ), origin=CommitmentOrigin.TEST_FIXTURE)
 
         # 候補 M_B' (新SaaS URL)
         self.candidate_graph = MBGraph()
-        self.candidate_graph.add_or_update(MBNode(
+        self.candidate_graph.commit_node(MBNode(
             id="node_wf",
             domain="workflow",
             trigger_pattern={"exact_keys": ["稟議申請"]},
             action_template={"type": "direct_reply", "payload": "https://new-saas.corp"},
             confidence=0.85,
-        ))
+        ), origin=CommitmentOrigin.TEST_FIXTURE)
 
     def test_shadow_prediction_and_counterfactual_triplet(self):
         """本番予測(実績)と候補推論(シャドウ)、および実結果フィードバック時の反実仮想三者比較を検証"""

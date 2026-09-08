@@ -251,9 +251,19 @@ class InterpCascade:
                 return True
             return node_domain == category
 
+        def is_node_eligible(n: MBNode) -> bool:
+            # 【Active Constraint 原則 (BASE v2.0 §4.2: Description != Commitment != Active Constraint)】
+            # 正式コミットメント (committed_at, commitment_origin) を持たない未コミットの記述ノードは
+            # 推論・活性化拘束部分グラフ選定に 100% 参加させない (Defense-in-Depth)
+            if not getattr(n, "is_committed", True):
+                return False
+            if getattr(n, "commitment_origin", None) is None:
+                return False
+            return is_domain_eligible(n.domain, efp.category) and (n.id not in exclude_set)
+
         eligible_nodes = [
             node for node in self.mb_graph.list_nodes()
-            if is_domain_eligible(node.domain, efp.category) and (node.id not in exclude_set)
+            if is_node_eligible(node)
         ]
         available_locus_ids = [n.id for n in eligible_nodes]
 
@@ -300,7 +310,7 @@ class InterpCascade:
         if hit_nid is not None:
             if hit_nid not in exclude_set:
                 node = self.mb_graph.get(hit_nid)
-                if node and is_domain_eligible(node.domain, efp.category):
+                if node and is_node_eligible(node):
                     boost = 0.0 if skip_constraint_boost else self._constraint_boost(node, efp)
                     base_c = node.confidence + self.config.cost_tier0_confidence_boost + boost
                     return _build_prediction(node, base_c, cost_tier=0)

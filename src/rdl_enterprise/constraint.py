@@ -663,6 +663,10 @@ def is_support_node_eligible(
     (2) rejection_ratio: rupture_rejection_ratio_threshold 以上なら除外（拒絶多数ノードは支えられない）
     (3) relevance: 問いへの適合度が極小（< 0.3）なら除外（無関係ノードは支えられない）
     """
+    # 未コミットの記述ノードは支援ノードとして束に参加できない
+    if not getattr(support_node, "is_committed", True) or getattr(support_node, "commitment_origin", None) is None:
+        return False
+
     s_rel = _compute_relevance(query, support_node.trigger_pattern)
     if s_rel < 0.3:
         return False

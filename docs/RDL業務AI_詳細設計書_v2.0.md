@@ -137,14 +137,20 @@ graph TD
 ### 3.6 認知的ライフサイクルの分離（Description $\to$ Commitment $\to$ Active Constraint）
 * **オブジェクト生成と支持証拠の厳格分離（BASE v2.0 §4.2）**:
   * 単なる Python クラス `MBNode(...)` のインスタンス化（関係の記述・仮説定義）をもって、正の支持証拠 `last_support_at` や `freshness` を自己生成・捏造することを禁止。
-  * 生成直後の未コミットノードは `last_support_at = None`, `last_evidence_at = None`, `commitment_origin = None` であり、拘束鮮度は厳格に `0.0`。
+  * 生成直後の未コミットノードは `last_support_at = None`, `last_evidence_at = None`, `commitment_origin = None`, `committed_at = None` であり、拘束鮮度は厳格に `0.0`。
 * **正規コミットメントゲートウェイ（`MBGraph.commit_node()`）**:
-  * 記述を $M_B$ の正統な構成要素として昇格・定着させる唯一の手段として `commit_node(node, origin, actor, authority_context, commit_time)` を規定。
-  * `CommitmentOrigin`（`AUTHORITY`, `VERIFIED_EXPERIENCE`, `AUTHORITATIVE_SEED`, `PROMOTION`, `MIGRATION_VERIFIED`, `TEST_FIXTURE`）を義務付け。
-  * `origin="authority"` の場合は `AuthorityContext.is_authorized_for(domain)` を検証し、権限不足やドメイン管轄外の場合は `PermissionError` で即座にフェイルクローズ遮断。
-  * コミットを通過した瞬間に初めて正統な支持証拠打刻（`last_support_at = now`）が行われ、活性化拘束サブグラフ選定および推論への参画が認められる。
+  * 記述を $M_B$ の正統な構成要素として昇格・定着させる唯一の手段として `commit_node(node, origin, actor, authority_context, commit_time, evidence_time)` を規定。
+  * `CommitmentOrigin`（`AUTHORITY`, `VERIFIED_EXPERIENCE`, `AUTHORITATIVE_SEED`, `PROMOTION`, `MIGRATION_VERIFIED`, `TEST_FIXTURE`）の明示指定を義務付け（デフォルト引数なし・未知の値は `ValueError` で即時拒絶）。
+  * `origin=CommitmentOrigin.AUTHORITY` の場合は `AuthorityContext.is_authorized_for(domain)` が呼び出し可能かつ厳格に `True` を返すことを検証し、権限不足やドメイン管轄外の場合は `PermissionError` で即座にフェイルクローズ遮断。
+  * **支持証拠時刻とコミット時刻の明確な分離**:
+    * 証拠観測時刻 `last_support_at`（過去の検証・起案時刻 `evidence_time`）と、境界 $M_B$ への拘束定着時刻 `committed_at`（コミット時刻 `commit_time`）を分離記録。
+    * ノードには構造化された監査情報 `commitment_record = {"origin": ..., "committed_at": ..., "committed_by": ...}` を付与。
+* **未コミットノードのフェイルクローズ完全排除（多層防御）**:
+  * `MBGraph.add_or_update(node)` は `node.is_committed` を厳格検証し、未コミットの記述オブジェクトの直接注入を `ValueError` で拒絶。
+  * `InterpCascade`（推論カスケード）は未コミットノードを `eligible_nodes` および Level 0 キャッシュ参照から 100% 排除（未コミット記述のみでは即時 Tier 3 `ask_human` に安全フォールバック）。
+  * `RelationConstraintLocator` は未コミットノードを支持拘束サブグラフから完全に排除。
 * **暗号論的同一性への反映**:
-  * `content_hash` は各ノードの `commitment_origin` を正準化辞書に包含し、コミット出所の改ざんを完全に検知する。
+  * `content_hash` は各ノードの `commitment_origin` および `committed_at` を正準化辞書に包含し、コミット出所および定着時刻の改ざんを完全に検知する。
 
 ---
 

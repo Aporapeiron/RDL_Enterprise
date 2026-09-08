@@ -5,7 +5,7 @@ import os
 # src パス追加
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
-from rdl_enterprise.mb_graph import MBNode, MBGraph
+from rdl_enterprise.mb_graph import MBNode, MBGraph, CommitmentOrigin
 from rdl_enterprise.h_state import HState
 from rdl_enterprise.snapshot import BusinessInput, FeedbackResult
 from rdl_enterprise.cascade import InterpCascade
@@ -104,7 +104,7 @@ class TestRDLCore(unittest.TestCase):
             action_template={"type": "direct_reply", "payload": "VPN再起動してください"},
             confidence=0.6,
         )
-        graph.add_or_update(node)
+        graph.commit_node(node, origin=CommitmentOrigin.TEST_FIXTURE)
         runtime = EnterpriseRuntime(mb_graph=graph)
 
         efp = BusinessInput("T010", "U010", "network", "VPN接続ができません")
@@ -196,7 +196,7 @@ class TestRDLCore(unittest.TestCase):
             action_template={"type": "direct_reply", "payload": "OK"},
             authority_level="auto",  # 脆弱！
         )
-        graph.add_or_update(bad_node)
+        graph.commit_node(bad_node, origin=CommitmentOrigin.TEST_FIXTURE)
 
         harness = DurabilityHarness()
         res = harness.run_all(graph, history=[])
@@ -214,7 +214,7 @@ class TestRDLCore(unittest.TestCase):
             action_template={"type": "direct_reply", "payload": "http://old-url.corp"},
             confidence=0.8,
         )
-        graph.add_or_update(node)
+        graph.commit_node(node, origin=CommitmentOrigin.TEST_FIXTURE)
 
         # 耐久検査合格で直接承認可能な単体テスト用ポリシー (require_shadow=False)
         from rdl_enterprise.promotion_gate import PromotionPolicy
@@ -270,13 +270,13 @@ class TestRDLCore(unittest.TestCase):
 
         auto_policy = PromotionPolicy(require_durability=True, require_shadow=False, require_human_approval=False)
         graph = MBGraph()
-        graph.add_or_update(MBNode(
+        graph.commit_node(MBNode(
             id="node_wf2",
             domain="workflow",
             trigger_pattern={"exact_keys": ["稟議申請"]},
             action_template={"type": "direct_reply", "payload": "http://old.corp"},
             confidence=0.8,
-        ))
+        ), origin=CommitmentOrigin.TEST_FIXTURE)
 
         # 1. auto_promote=True だが auto_promote_authority=None の場合 -> 自動昇格せず保留
         runtime_no_auth = EnterpriseRuntime(
@@ -345,7 +345,7 @@ class TestRDLCore(unittest.TestCase):
             action_template={"type": "direct_reply", "payload": "URL"},
             confidence=0.9,
         )
-        orig_graph.add_or_update(pwd_node)
+        orig_graph.commit_node(pwd_node, origin=CommitmentOrigin.TEST_FIXTURE)
 
         orig_cascade = InterpCascade(orig_graph)
         pred = orig_cascade.interpret(efp_pwd)
@@ -360,7 +360,7 @@ class TestRDLCore(unittest.TestCase):
             trigger_pattern={"exact_keys": ["別件"]},
             action_template={"type": "direct_reply", "payload": "URL"},
         )
-        broken_candidate.add_or_update(broken_node)
+        broken_candidate.commit_node(broken_node, origin=CommitmentOrigin.TEST_FIXTURE)
 
         checker = RegressionHistoryChecker()
         report = checker.test(broken_candidate, history=[snapshot])

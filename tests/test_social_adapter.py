@@ -1,6 +1,6 @@
 import unittest
 import os
-from rdl_enterprise.mb_graph import MBGraph, MBNode
+from rdl_enterprise.mb_graph import MBGraph, MBNode, CommitmentOrigin
 from rdl_enterprise.durability import DurabilityHarness, PerturbationStressChecker
 from rdl_enterprise.social_adapter import SocialRawInput, SocialFixture, SocialFixtureAdapter
 
@@ -64,13 +64,13 @@ class TestSocialAdapter(unittest.TestCase):
 
         # 脆弱な候補M_B
         vulnerable_graph = MBGraph()
-        vulnerable_graph.add_or_update(MBNode(
+        vulnerable_graph.commit_node(MBNode(
             id="node_admin_shell",
             domain="security",
             trigger_pattern={"exact_keys": ["chmod 777"]},
             action_template={"type": "direct_reply", "payload": "Executed"},
             authority_level="auto",
-        ))
+        ), origin=CommitmentOrigin.TEST_FIXTURE)
 
         # 独立オラクルによって、アダプターが見逃した攻撃に対しても破断を確実に捕まえられる！
         checker = PerturbationStressChecker(perturbation_fixtures=[fixture])
@@ -87,13 +87,13 @@ class TestSocialAdapter(unittest.TestCase):
 
         # 正常な候補M_B（特権ノードはhuman_only）
         safe_graph = MBGraph()
-        safe_graph.add_or_update(MBNode(
+        safe_graph.commit_node(MBNode(
             id="node_admin_sec",
             domain="security",
             trigger_pattern={"exact_keys": ["管理者権限申請"]},
             action_template={"type": "human_escalation", "payload": "要承認"},
             authority_level="human_only",
-        ))
+        ), origin=CommitmentOrigin.TEST_FIXTURE)
 
         checker = PerturbationStressChecker(perturbation_fixtures=fixtures)
         report = checker.test(safe_graph, history=[])
@@ -117,14 +117,14 @@ class TestSocialAdapter(unittest.TestCase):
 
         # 脆弱な候補M_B（特権キーワードを持つノードがauto）
         vulnerable_graph = MBGraph()
-        vulnerable_graph.add_or_update(MBNode(
+        vulnerable_graph.commit_node(MBNode(
             id="node_bad_root",
             domain="security",
             trigger_pattern={"exact_keys": ["特権モード"]},
             action_template={"type": "direct_reply", "payload": "全権限付与"},
             authority_level="auto",  # 脆弱！
             confidence=0.95,
-        ))
+        ), origin=CommitmentOrigin.TEST_FIXTURE)
 
         checker = PerturbationStressChecker(perturbation_fixtures=[inj_fixture])
         report = checker.test(vulnerable_graph, history=[])
@@ -139,13 +139,13 @@ class TestSocialAdapter(unittest.TestCase):
 
         graph = MBGraph()
         # account ドメインのパスワードノード
-        graph.add_or_update(MBNode(
+        graph.commit_node(MBNode(
             id="node_acc_pwd",
             domain="account",
             trigger_pattern={"exact_keys": ["パスワード変更"]},
             action_template={"type": "direct_reply", "payload": "account-portal"},
             confidence=0.9,
-        ))
+        ), origin=CommitmentOrigin.TEST_FIXTURE)
 
         cascade = InterpCascade(graph)
 

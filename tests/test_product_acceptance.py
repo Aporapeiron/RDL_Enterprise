@@ -4,7 +4,7 @@ import os
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
-from rdl_enterprise.mb_graph import MBGraph, MBNode
+from rdl_enterprise.mb_graph import MBGraph, MBNode, CommitmentOrigin
 from rdl_enterprise.snapshot import BusinessInput, FeedbackResult, CaseStatus
 from rdl_enterprise.authority import AuthorityContext
 from rdl_enterprise.promotion_gate import ProposalState, PromotionPolicy
@@ -19,22 +19,22 @@ class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
 
     def setUp(self):
         self.prod_graph = MBGraph(version="v1.0")
-        self.prod_graph.add_or_update(MBNode(
+        self.prod_graph.commit_node(MBNode(
             id="node_wf_ringi",
             domain="workflow",
             trigger_pattern={"exact_keys": ["稟議申請の方法"]},
             action_template={"type": "direct_reply", "payload": "社内ワークフローポータルから申請してください"},
             confidence=0.8,
-        ))
+        ), origin=CommitmentOrigin.TEST_FIXTURE)
 
         self.candidate_graph = MBGraph(version="v2.0-cand")
-        self.candidate_graph.add_or_update(MBNode(
+        self.candidate_graph.commit_node(MBNode(
             id="node_wf_ringi",
             domain="workflow",
             trigger_pattern={"exact_keys": ["稟議申請の方法"]},
             action_template={"type": "direct_reply", "payload": "新SaaSワークフローポータルから申請してください"},
             confidence=0.9,
-        ))
+        ), origin=CommitmentOrigin.TEST_FIXTURE)
 
     def test_metabolic_closed_loop_tier1_to_tier0(self):
         """
@@ -567,14 +567,24 @@ class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
         self.assertIsNone(desc_node.last_evidence_at)
         self.assertIsNone(desc_node.commitment_origin)
 
-        # 記述ノードをグラフに直接 add_or_update しても、支持証拠がないため拘束鮮度は厳格に 0.0
-        graph.add_or_update(desc_node)
+        # 記述ノードをグラフに直接 add_or_update することは ValueError で即座に拒絶されること (Fail-Closed)
+        with self.assertRaises(ValueError):
+            graph.add_or_update(desc_node)
+
+        # 記述ノード単体では拘束鮮度は厳格に 0.0
         locator = RelationConstraintLocator()
         efp = BusinessInput("T_DESC_01", "U_SEC", "security", "パスワード変更のルール")
         ctx = ConstraintContext(efp=efp, current_time=datetime.now(timezone.utc), active_domain="security")
-
         bundle_uncommitted = locator.locate_bundle_for_node(graph, desc_node, ctx)
         self.assertEqual(bundle_uncommitted.freshness, 0.0)
+
+        # Cascade レベルでも未コミット記述ノードは推論・活性化サブグラフから 100% 排除されること
+        from rdl_enterprise.cascade import InterpCascade
+        cascade = InterpCascade(graph)
+        pred_uncommitted = cascade.interpret(efp)
+        # マッチせずフォールバックへ進むこと
+        self.assertNotEqual(pred_uncommitted.matched_node_id, "node_desc_candidate")
+        self.assertEqual(pred_uncommitted.action_type, "ask_human")
 
         # 2. 権威コミット時の認可チェック (origin='authority')
         # (a) AuthorityContext なしのコミットは PermissionError
@@ -586,19 +596,33 @@ class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
         with self.assertRaises(PermissionError):
             graph.commit_node(desc_node, origin=CommitmentOrigin.AUTHORITY, authority_context=unauthorized_auth)
 
+        # (c) 未知の origin 文字列は ValueError で拒絶
+        with self.assertRaises(ValueError):
+            graph.commit_node(desc_node, origin="unknown_origin")
+
         # 3. 正当な権威コミット (security 管理者によるコミット: role in ('admin', 'manager'))
         authorized_auth = AuthorityContext(actor_id="ciso_admin", role="manager", scope="security")
-        committed_policy = graph.commit_node(desc_node, origin=CommitmentOrigin.AUTHORITY, authority_context=authorized_auth)
+        committed_policy = graph.commit_node(
+            desc_node,
+            origin=CommitmentOrigin.AUTHORITY,
+            authority_context=authorized_auth,
+        )
         self.assertEqual(committed_policy.commitment_origin, "authority")
         self.assertEqual(committed_policy.authority_level, "policy")
         self.assertEqual(committed_policy.source_id, "ciso_admin")
         self.assertIn("authority:manager:ciso_admin", committed_policy.source_lineage)
         self.assertIsNotNone(committed_policy.last_support_at)
         self.assertIsNotNone(committed_policy.last_evidence_at)
+        self.assertIsNotNone(committed_policy.committed_at)
+        self.assertIsNotNone(committed_policy.commitment_record)
+        self.assertEqual(committed_policy.commitment_record["origin"], "authority")
 
-        # コミット後は正統な支持証拠打刻により freshness が健全に回復
+        # コミット後は正統な支持証拠打刻により freshness が健全に回復し、推論で自律回答可能となる
         bundle_committed = locator.locate_bundle_for_node(graph, committed_policy, ctx)
         self.assertGreater(bundle_committed.freshness, 0.9)
+        pred_committed = cascade.interpret(efp)
+        self.assertEqual(pred_committed.matched_node_id, "node_desc_candidate")
+        self.assertEqual(pred_committed.cost_tier, 1)
 
         # 4. 経験沈澱コミット (origin='experience')
         exp_node = MBNode(

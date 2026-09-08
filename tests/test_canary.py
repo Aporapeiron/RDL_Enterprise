@@ -4,7 +4,7 @@ import os
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
-from rdl_enterprise.mb_graph import MBGraph, MBNode
+from rdl_enterprise.mb_graph import MBGraph, MBNode, CommitmentOrigin
 from rdl_enterprise.snapshot import BusinessInput, FeedbackResult
 from rdl_enterprise.authority import AuthorityContext
 from rdl_enterprise.promotion_gate import ProposalState, PromotionPolicy
@@ -18,23 +18,23 @@ class TestCanaryDeploymentAndRollback(unittest.TestCase):
     def setUp(self):
         # 旧本番 M_B
         self.prod_graph = MBGraph()
-        self.prod_graph.add_or_update(MBNode(
+        self.prod_graph.commit_node(MBNode(
             id="node_wf",
             domain="workflow",
             trigger_pattern={"exact_keys": ["稟議申請"]},
             action_template={"type": "direct_reply", "payload": "http://old-legacy.corp"},
             confidence=0.8,
-        ))
+        ), origin=CommitmentOrigin.TEST_FIXTURE)
 
         # 昇格候補 M_B'
         self.candidate_graph = MBGraph()
-        self.candidate_graph.add_or_update(MBNode(
+        self.candidate_graph.commit_node(MBNode(
             id="node_wf",
             domain="workflow",
             trigger_pattern={"exact_keys": ["稟議申請"]},
             action_template={"type": "direct_reply", "payload": "https://new-saas.corp"},
             confidence=0.9,
-        ))
+        ), origin=CommitmentOrigin.TEST_FIXTURE)
 
     def test_canary_routing_and_step_up_to_completion(self):
         """カナリア展開: 段階的配分拡大から全面展開完了 (Full Commit) までの正常系"""

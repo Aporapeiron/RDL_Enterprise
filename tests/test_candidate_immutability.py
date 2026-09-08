@@ -4,7 +4,7 @@ import os
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
-from rdl_enterprise.mb_graph import MBGraph, MBNode
+from rdl_enterprise.mb_graph import MBGraph, MBNode, CommitmentOrigin
 from rdl_enterprise.snapshot import (
     BusinessInput,
     FeedbackResult,
@@ -36,22 +36,22 @@ class TestCandidateImmutabilityAndBinding(unittest.TestCase):
 
     def setUp(self):
         self.prod_graph = MBGraph(version="v1.0")
-        self.prod_graph.add_or_update(MBNode(
+        self.prod_graph.commit_node(MBNode(
             id="node_wf",
             domain="workflow",
             trigger_pattern={"exact_keys": ["稟議申請"]},
             action_template={"type": "direct_reply", "payload": "http://old-legacy.corp"},
             confidence=0.8,
-        ))
+        ), origin=CommitmentOrigin.TEST_FIXTURE)
 
         self.candidate_graph = MBGraph(version="v2.0-cand-001")
-        self.candidate_graph.add_or_update(MBNode(
+        self.candidate_graph.commit_node(MBNode(
             id="node_wf",
             domain="workflow",
             trigger_pattern={"exact_keys": ["稟議申請"]},
             action_template={"type": "direct_reply", "payload": "https://new-saas.corp"},
             confidence=0.9,
-        ))
+        ), origin=CommitmentOrigin.TEST_FIXTURE)
 
     def test_candidate_freeze_prevents_direct_modification(self):
         """候補グラフの freeze() により、ノード追加・削除が RuntimeError で拒絶されること"""
@@ -60,12 +60,12 @@ class TestCandidateImmutabilityAndBinding(unittest.TestCase):
 
         # 変更試行はブロックされる
         with self.assertRaises(RuntimeError):
-            self.candidate_graph.add_or_update(MBNode(
+            self.candidate_graph.commit_node(MBNode(
                 id="illegal_node",
                 domain="workflow",
                 trigger_pattern={"exact_keys": ["不正追加"]},
                 action_template={"type": "direct_reply", "payload": "fail"},
-            ))
+            ), origin=CommitmentOrigin.TEST_FIXTURE)
 
         with self.assertRaises(RuntimeError):
             self.candidate_graph.remove("node_wf")
@@ -516,7 +516,7 @@ class TestCandidateImmutabilityAndBinding(unittest.TestCase):
     def test_runtime_wires_action_capability_from_mbnode_definition(self):
         """ActionCapability 作用定義貫通: MBNode の action_template 定義が Runtime を経て Ledger に正確に伝播すること"""
         graph = MBGraph(version="v1.0")
-        graph.add_or_update(MBNode(
+        graph.commit_node(MBNode(
             id="node_delete_db",
             domain="security",
             trigger_pattern={"exact_keys": ["DB全削除"]},
@@ -526,7 +526,7 @@ class TestCandidateImmutabilityAndBinding(unittest.TestCase):
                 "capability": "irreversible",  # ノード側で不可逆能力を明示
             },
             confidence=0.9,
-        ))
+        ), origin=CommitmentOrigin.TEST_FIXTURE)
         runtime = EnterpriseRuntime(mb_graph=graph, theta_0=2.0)
         efp = BusinessInput("T_SEC_IRREV", "U1", "security", "DB全削除を実行して")
         runtime.dispatch_ticket(efp)

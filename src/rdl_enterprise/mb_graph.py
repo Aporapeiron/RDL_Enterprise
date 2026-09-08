@@ -133,6 +133,8 @@ class MBNode:
     last_observed_at: Optional[str] = None
     legacy_evidence_at: Optional[str] = None
     commitment_origin: Optional[str] = None
+    committed_at: Optional[str] = None
+    commitment_record: Optional[Dict[str, Any]] = None
 
     def __init__(
         self,
@@ -159,6 +161,8 @@ class MBNode:
         last_evidence_at: Optional[str] = None,
         last_updated: Optional[str] = None,
         commitment_origin: Optional[str] = None,
+        committed_at: Optional[str] = None,
+        commitment_record: Optional[Dict[str, Any]] = None,
     ):
         self.is_frozen = False
         self.id = id
@@ -176,6 +180,7 @@ class MBNode:
         self.source_lineage = source_lineage
         self.node_relations = node_relations if node_relations is not None else {}
         self.commitment_origin = commitment_origin
+        self.commitment_record = commitment_record
 
         def _to_iso(val: Any) -> Optional[str]:
             if val is None:
@@ -189,6 +194,7 @@ class MBNode:
         self.last_opposing_at = _to_iso(last_opposing_at)
         self.last_observed_at = _to_iso(last_observed_at)
         self.legacy_evidence_at = _to_iso(legacy_evidence_at)
+        self.committed_at = _to_iso(committed_at)
 
         # レガシー移行処理 (B5: 極性の無断捏造禁止・混在履歴の完全フェイルクローズ)
         # last_updated または last_evidence_at が渡され、かつ last_support_at が未指定の場合:
@@ -214,6 +220,14 @@ class MBNode:
 
         if is_frozen:
             self.is_frozen = True
+
+    @property
+    def is_committed(self) -> bool:
+        """
+        ノードが M_B に正式コミットされているかを判定。
+        (CommitmentOrigin および committed_at が必須)
+        """
+        return self.commitment_origin is not None and self.committed_at is not None
 
     @property
     def last_evidence_at(self) -> Optional[str]:
@@ -407,6 +421,8 @@ class MBGraph:
             }
             if getattr(node, "commitment_origin", None) is not None:
                 n_dict["commitment_origin"] = node.commitment_origin
+            if getattr(node, "committed_at", None) is not None:
+                n_dict["committed_at"] = node.committed_at
             if getattr(node, "source_id", None) is not None:
                 n_dict["source_id"] = node.source_id
             if getattr(node, "source_lineage", None) is not None:
@@ -425,9 +441,10 @@ class MBGraph:
     def commit_node(
         self,
         node: MBNode,
-        origin: CommitmentOrigin = CommitmentOrigin.TEST_FIXTURE,
+        origin: CommitmentOrigin,
         actor: Optional[str] = None,
         authority_context: Optional[Any] = None,
+        evidence_time: Optional[datetime] = None,
         commit_time: Optional[datetime] = None,
     ) -> MBNode:
         """
@@ -435,23 +452,37 @@ class MBGraph:
         (BASE v2.0 §4.2: Description != Commitment != Active Constraint)
 
         - 単なる MBNode(...) 記述オブジェクトは支持証拠を持たない (last_support_at is None, freshness=0.0)。
-        - commit_node() を通過することで出所 (CommitmentOrigin) とコミット時刻 (last_support_at) が付与され、
-          初めて活性化拘束サブグラフ選定・推論の正統な構成要素となる。
-        - origin='authority' の場合は有効な AuthorityContext によるドメイン認可が必須 (Fail-Closed)。
+        - commit_node() を通過することで出所 (CommitmentOrigin) とコミット時刻 (committed_at)、
+          および支持証拠時刻 (last_support_at) が付与され、初めて M_B への格納と推論への参画が認められる。
+        - origin は CommitmentOrigin Enum の明示指定を義務付け（デフォルト引数の全廃）。未知値は ValueError。
+        - origin='authority' の場合は AuthorityContext の存在・callable検証・ドメイン認可 (== True) が必須 (Fail-Closed)。
+        - 支持証拠観測時刻 (evidence_time) と M_B コミット時刻 (commit_time) を明確に分離。
         """
         if self.is_frozen:
             raise RuntimeError(f"MBGraph (version={self.version}) は凍結(frozen)されています。ノード {node.id} のコミットは禁止されています。")
 
-        now_iso = (commit_time or datetime.utcnow()).isoformat()
-        origin_str = origin.value if isinstance(origin, CommitmentOrigin) else str(origin)
+        # 1. CommitmentOrigin の厳格正規化と検証
+        if not isinstance(origin, CommitmentOrigin):
+            try:
+                origin = CommitmentOrigin(origin)
+            except (ValueError, TypeError):
+                raise ValueError(
+                    f"無効な CommitmentOrigin: {origin}。CommitmentOrigin Enum のみを許可します。"
+                )
 
+        now_commit_iso = (commit_time or datetime.utcnow()).isoformat()
+        origin_str = origin.value
+
+        # 2. 出所別の正統性・来歴の確立
         if origin == CommitmentOrigin.AUTHORITY:
             if authority_context is None:
                 raise PermissionError("権威コミット (origin='authority') には AuthorityContext が必須です")
-            if hasattr(authority_context, "is_authorized_for") and not authority_context.is_authorized_for(node.domain):
+            is_auth_func = getattr(authority_context, "is_authorized_for", None)
+            if not callable(is_auth_func):
+                raise PermissionError("AuthorityContext は callable な 'is_authorized_for(domain)' を実装している必要があります")
+            if is_auth_func(node.domain) is not True:
                 raise PermissionError(
-                    f"Actor '{getattr(authority_context, 'actor_id', '')}' with role '{getattr(authority_context, 'role', '')}' "
-                    f"is not authorized for domain '{node.domain}'"
+                    f"Actor '{getattr(authority_context, 'actor_id', 'unknown')}' はドメイン '{node.domain}' に対する認可を持っていません"
                 )
             node.authority_level = "policy"
             role = getattr(authority_context, "role", "policy")
@@ -470,10 +501,23 @@ class MBGraph:
             node.source_lineage = node.source_lineage or f"promotion:{promoter}"
 
         node.commitment_origin = origin_str
+        node.committed_at = now_commit_iso
 
-        # コミット時に初めて正の支持証拠打刻が行われる (Description -> Commitment)
-        if node.last_support_at is None:
-            node.last_support_at = now_iso
+        # 3. 支持証拠時刻とコミット時刻の分離
+        # evidence_time が指定されていればそれを採用、なければコミット時刻を支持証拠時刻の初期値とする
+        if evidence_time is not None:
+            node.last_support_at = evidence_time.isoformat()
+        elif node.last_support_at is None:
+            node.last_support_at = now_commit_iso
+
+        # 4. コミットメント証跡レコードの付与
+        node.commitment_record = {
+            "origin": origin_str,
+            "committed_at": now_commit_iso,
+            "actor": actor or getattr(authority_context, "actor_id", None) or "system",
+            "evidence_at": node.last_support_at,
+            "lineage": node.source_lineage,
+        }
 
         self.add_or_update(node)
         return node
@@ -481,6 +525,12 @@ class MBGraph:
     def add_or_update(self, node: MBNode):
         if self.is_frozen:
             raise RuntimeError(f"MBGraph (version={self.version}) は凍結(frozen)されています。ノード {node.id} の変更・追加は禁止されています。")
+        if not node.is_committed:
+            raise ValueError(
+                f"未コミットの記述ノード (node_id={node.id}, commitment_origin={node.commitment_origin}, "
+                f"committed_at={node.committed_at}) を M_B に直接格納することは禁止されています。"
+                f"必ず MBGraph.commit_node(node, origin, ...) を経由してください。"
+            )
         if node.id in self.nodes:
             self._unindex_node(self.nodes[node.id])
         self.nodes[node.id] = node
@@ -581,6 +631,13 @@ class MBGraph:
             node_dict = dict(ndict)
             node_frozen = node_dict.pop("is_frozen", False)
             node = MBNode(**node_dict)
+            if not node.is_committed:
+                # 既存JSON・シードデータ・レガシーデータの復元: コミット来歴を補完
+                orig = CommitmentOrigin.AUTHORITATIVE_SEED if node.authority_level == "policy" else CommitmentOrigin.MIGRATION_VERIFIED
+                node.commitment_origin = orig.value
+                node.committed_at = node.created_at or datetime.utcnow().isoformat()
+                if node.last_support_at is None and (node.success_count > 0 or node.approval_count > 0 or node.authority_level == "policy"):
+                    node.last_support_at = node.committed_at
             if node_frozen:
                 node.freeze()
             graph.add_or_update(node)

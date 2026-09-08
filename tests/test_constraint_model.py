@@ -5,7 +5,7 @@ test_constraint_model.py ― Relational Constraint モデルのテスト
 import unittest
 from datetime import datetime, timezone, timedelta
 
-from rdl_enterprise.mb_graph import MBGraph, MBNode
+from rdl_enterprise.mb_graph import MBGraph, MBNode, CommitmentOrigin
 from rdl_enterprise.snapshot import BusinessInput
 from rdl_enterprise.constraint import (
     ConstraintConfig,
@@ -89,7 +89,7 @@ class TestRelationConstraintLocator(unittest.TestCase):
             failure_count=0,
             rejection_count=0,
         )
-        graph.commit_node(node)
+        graph.commit_node(node, origin=CommitmentOrigin.TEST_FIXTURE)
 
         efp = _make_efp("有給申請の方法を教えてください")
         ctx = _make_ctx(efp)
@@ -127,8 +127,8 @@ class TestRelationConstraintLocator(unittest.TestCase):
             failure_count=0,
             rejection_count=0,
         )
-        graph.commit_node(stale_node)
-        graph.commit_node(fresh_node)
+        graph.commit_node(stale_node, origin=CommitmentOrigin.TEST_FIXTURE)
+        graph.commit_node(fresh_node, origin=CommitmentOrigin.TEST_FIXTURE)
 
         efp = _make_efp("古いルールの確認")
         ctx = _make_ctx(efp)
@@ -161,8 +161,8 @@ class TestRelationConstraintLocator(unittest.TestCase):
             "other_node",
             exact_keys=["別クエリ"],
         )
-        graph.commit_node(bridge_node)
-        graph.commit_node(other_node)
+        graph.commit_node(bridge_node, origin=CommitmentOrigin.TEST_FIXTURE)
+        graph.commit_node(other_node, origin=CommitmentOrigin.TEST_FIXTURE)
 
         efp = _make_efp("専用クエリ_A")
         ctx = _make_ctx(efp)
@@ -190,7 +190,7 @@ class TestRuptureProbe(unittest.TestCase):
             exact_keys=["古いルール"],
             last_updated=old_date,
         )
-        graph.commit_node(node)
+        graph.commit_node(node, origin=CommitmentOrigin.TEST_FIXTURE)
 
         efp = _make_efp("古いルール")
         ctx = _make_ctx(efp)
@@ -216,7 +216,7 @@ class TestRuptureProbe(unittest.TestCase):
             success_count=10,
             approval_count=8,
         )
-        graph.commit_node(node)
+        graph.commit_node(node, origin=CommitmentOrigin.TEST_FIXTURE)
 
         efp = _make_efp("有効なルール")
         ctx = _make_ctx(efp)
@@ -281,7 +281,7 @@ class TestConstraintBoostInCascade(unittest.TestCase):
             success_count=5,
             approval_count=3,
         )
-        graph_fresh.commit_node(node_fresh)
+        graph_fresh.commit_node(node_fresh, origin=CommitmentOrigin.TEST_FIXTURE)
 
         # 古いグラフ（同じ inertia に見えても freshness が低い）
         graph_stale = MBGraph()
@@ -293,7 +293,7 @@ class TestConstraintBoostInCascade(unittest.TestCase):
             approval_count=80,
             last_updated=old_date,
         )
-        graph_stale.commit_node(node_stale)
+        graph_stale.commit_node(node_stale, origin=CommitmentOrigin.TEST_FIXTURE)
 
         efp = _make_efp("経費精算の手続き")
 
@@ -356,7 +356,7 @@ class TestFrozenContextConstraintIntegration(unittest.TestCase):
             success_count=10,
             approval_count=8,
         )
-        graph.commit_node(node)
+        graph.commit_node(node, origin=CommitmentOrigin.TEST_FIXTURE)
         efp = _make_efp("テスト用クエリ")
 
         # cap を極小 (0.02) に設定したカスタム config
@@ -438,7 +438,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
             success_count=1,
             approval_count=0,  # 未承認
         )
-        graph.commit_node(node)
+        graph.commit_node(node, origin=CommitmentOrigin.TEST_FIXTURE)
         efp = _make_efp("新しい社内手続")
         ctx = _make_ctx(efp)
 
@@ -480,8 +480,8 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
             confidence=0.9,
             approval_count=15,
         )
-        graph.commit_node(node_hr)
-        graph.commit_node(node_sec)
+        graph.commit_node(node_hr, origin=CommitmentOrigin.TEST_FIXTURE)
+        graph.commit_node(node_sec, origin=CommitmentOrigin.TEST_FIXTURE)
 
         efp = _make_efp("パスワード再発行", category="hr")
         ctx = _make_ctx(efp)
@@ -527,8 +527,8 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
             approval_count=20,
             last_updated=datetime.now(timezone.utc).isoformat(),
         )
-        graph.commit_node(node_a)
-        graph.commit_node(node_b)
+        graph.commit_node(node_a, origin=CommitmentOrigin.TEST_FIXTURE)
+        graph.commit_node(node_b, origin=CommitmentOrigin.TEST_FIXTURE)
 
         efp = _make_efp("APIキーの発行", category="hr")
         ctx = _make_ctx(efp)
@@ -602,7 +602,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
             success_count=5,
             approval_count=5,
         )
-        runtime.mb_graph.commit_node(node)
+        runtime.mb_graph.commit_node(node, origin=CommitmentOrigin.TEST_FIXTURE)
 
         efp = _make_efp("凍結検証用クエリ")
         dispatch_res = runtime.dispatch_ticket(efp)
@@ -666,7 +666,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
             confidence=0.8,
             approval_count=5,
         )
-        runtime.mb_graph.commit_node(node)
+        runtime.mb_graph.commit_node(node, origin=CommitmentOrigin.TEST_FIXTURE)
 
         # 1. チケットディスパッチ (時刻 t_dispatch で凍結)
         efp = _make_efp("時刻検証")
@@ -820,7 +820,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
 
     def test_multi_node_constraint_bundle(self):
         """関係の束 (ConstraintBundle): 同一ドメインの共起・支援ノードが束ねられること"""
-        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.mb_graph import MBGraph, MBNode, CommitmentOrigin
         from rdl_enterprise.constraint import RelationConstraintLocator, ConstraintContext
 
         graph = MBGraph()
@@ -829,10 +829,10 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
         n3 = MBNode(id="node_pay_3", domain="finance", trigger_pattern={"exact_keys": ["経費精算"]}, action_template={"type": "direct_reply", "payload": "C"})
         n4 = MBNode(id="node_hr_1", domain="hr", trigger_pattern={"exact_keys": ["有給休暇"]}, action_template={"type": "direct_reply", "payload": "D"})
 
-        graph.commit_node(n1)
-        graph.commit_node(n2)
-        graph.commit_node(n3)
-        graph.commit_node(n4)
+        graph.commit_node(n1, origin=CommitmentOrigin.TEST_FIXTURE)
+        graph.commit_node(n2, origin=CommitmentOrigin.TEST_FIXTURE)
+        graph.commit_node(n3, origin=CommitmentOrigin.TEST_FIXTURE)
+        graph.commit_node(n4, origin=CommitmentOrigin.TEST_FIXTURE)
 
         locator = RelationConstraintLocator()
         efp = _make_efp("請求書支払の手順")
@@ -849,14 +849,14 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
 
     def test_multi_node_bundle_no_irrelevant_action_type_inclusion(self):
         """同一 action_type を持つだけの無関係ノードが束に混入しないこと (bundling純化)"""
-        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.mb_graph import MBGraph, MBNode, CommitmentOrigin
         from rdl_enterprise.constraint import RelationConstraintLocator, ConstraintContext
 
         graph = MBGraph()
         n_main = MBNode(id="n_tax", domain="finance", trigger_pattern={"exact_keys": ["法人税"]}, action_template={"type": "direct_reply", "payload": "税率回答"})
         n_unrelated = MBNode(id="n_lunch", domain="finance", trigger_pattern={"exact_keys": ["社食代補助"]}, action_template={"type": "direct_reply", "payload": "補助回答"})
-        graph.commit_node(n_main)
-        graph.commit_node(n_unrelated)
+        graph.commit_node(n_main, origin=CommitmentOrigin.TEST_FIXTURE)
+        graph.commit_node(n_unrelated, origin=CommitmentOrigin.TEST_FIXTURE)
 
         locator = RelationConstraintLocator()
         efp = _make_efp("法人税の申告")
@@ -869,20 +869,20 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
 
     def test_bundle_constraint_score_synergy(self):
         """支援ノード群による相乗効果（synergy boost）が束の総合拘束スコアを高めること"""
-        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.mb_graph import MBGraph, MBNode, CommitmentOrigin
         from rdl_enterprise.constraint import RelationConstraintLocator, ConstraintContext
 
         # 孤立した単独ノードグラフ
         graph_solo = MBGraph()
         n_solo = MBNode(id="n_solo", domain="finance", trigger_pattern={"exact_keys": ["海外送金"]}, action_template={"type": "direct_reply", "payload": "A"}, confidence=0.7, approval_count=5)
-        graph_solo.commit_node(n_solo)
+        graph_solo.commit_node(n_solo, origin=CommitmentOrigin.TEST_FIXTURE)
 
         # 相互補強する支援ノードが存在するグラフ
         graph_bundle = MBGraph()
         n_base = MBNode(id="n_base", domain="finance", trigger_pattern={"exact_keys": ["海外送金"]}, action_template={"type": "direct_reply", "payload": "A"}, confidence=0.7, approval_count=5)
         n_supp = MBNode(id="n_supp", domain="finance", trigger_pattern={"exact_keys": ["海外送金", "SWIFTコード"]}, action_template={"type": "direct_reply", "payload": "A"}, confidence=0.7, approval_count=10)
-        graph_bundle.commit_node(n_base)
-        graph_bundle.commit_node(n_supp)
+        graph_bundle.commit_node(n_base, origin=CommitmentOrigin.TEST_FIXTURE)
+        graph_bundle.commit_node(n_supp, origin=CommitmentOrigin.TEST_FIXTURE)
 
         locator = RelationConstraintLocator()
         efp = _make_efp("海外送金の手数料")
@@ -896,15 +896,15 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
 
     def test_mb_graph_key_index_hot_path_fast_lookup(self):
         """MBGraph の _key_index による高速共起検索が正しく機能すること"""
-        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.mb_graph import MBGraph, MBNode, CommitmentOrigin
 
         graph = MBGraph()
         n1 = MBNode(id="n1", domain="tech", trigger_pattern={"exact_keys": ["git pull", "git merge"]}, action_template={"type": "direct_reply", "payload": "A"})
         n2 = MBNode(id="n2", domain="tech", trigger_pattern={"exact_keys": ["git push", "git pull"]}, action_template={"type": "direct_reply", "payload": "B"})
         n3 = MBNode(id="n3", domain="tech", trigger_pattern={"exact_keys": ["docker run"]}, action_template={"type": "direct_reply", "payload": "C"})
-        graph.commit_node(n1)
-        graph.commit_node(n2)
-        graph.commit_node(n3)
+        graph.commit_node(n1, origin=CommitmentOrigin.TEST_FIXTURE)
+        graph.commit_node(n2, origin=CommitmentOrigin.TEST_FIXTURE)
+        graph.commit_node(n3, origin=CommitmentOrigin.TEST_FIXTURE)
 
         related = graph.find_co_occurring_nodes(n1)
         related_ids = [r.id for r in related]
@@ -914,15 +914,15 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
 
     def test_bridge_node_detection_with_multi_node_bundles(self):
         """multi-node bundle が存在しても bridge ノードが重複生成されないこと"""
-        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.mb_graph import MBGraph, MBNode, CommitmentOrigin
         from rdl_enterprise.constraint import RelationConstraintLocator, ConstraintContext
 
         graph = MBGraph()
         # bridge ノードと共起ノード
         n_bridge = MBNode(id="n_bridge", domain="special", trigger_pattern={"exact_keys": ["極秘事項A", "極秘事項B"]}, action_template={"type": "direct_reply", "payload": "A"})
         n_supp = MBNode(id="n_supp", domain="special", trigger_pattern={"exact_keys": ["極秘事項A"]}, action_template={"type": "direct_reply", "payload": "A"})
-        graph.commit_node(n_bridge)
-        graph.commit_node(n_supp)
+        graph.commit_node(n_bridge, origin=CommitmentOrigin.TEST_FIXTURE)
+        graph.commit_node(n_supp, origin=CommitmentOrigin.TEST_FIXTURE)
 
         locator = RelationConstraintLocator()
         efp = _make_efp("極秘事項Aの閲覧")
@@ -983,7 +983,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
 
     def test_rupture_probe_bundle_level_resilience(self):
         """未承認の代表ノードでも、高承認の支援ノードが存在すれば束として survive すること"""
-        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.mb_graph import MBGraph, MBNode, CommitmentOrigin
         from rdl_enterprise.constraint import RelationConstraintLocator, RuptureProbe, ConstraintContext
 
         graph = MBGraph()
@@ -991,8 +991,8 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
         n_primary = MBNode(id="n_new_flow", domain="sales", trigger_pattern={"exact_keys": ["新規見積作成"]}, action_template={"type": "direct_reply", "payload": "見積書フォーマット"}, confidence=0.6, approval_count=0)
         # 支援ノードは高承認 (approval_count = 10)
         n_supp = MBNode(id="n_old_flow", domain="sales", trigger_pattern={"exact_keys": ["新規見積作成", "割引率"]}, action_template={"type": "direct_reply", "payload": "見積書フォーマット"}, confidence=0.8, approval_count=10)
-        graph.commit_node(n_primary)
-        graph.commit_node(n_supp)
+        graph.commit_node(n_primary, origin=CommitmentOrigin.TEST_FIXTURE)
+        graph.commit_node(n_supp, origin=CommitmentOrigin.TEST_FIXTURE)
 
         locator = RelationConstraintLocator()
         efp = _make_efp("新規見積作成の手順", category="sales")
@@ -1007,14 +1007,14 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
 
     def test_rupture_probe_bundle_internal_fissure_unresolved(self):
         """束の構成ノード間でアクションが対立している場合、内部亀裂として unresolved (ξ) になること"""
-        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.mb_graph import MBGraph, MBNode, CommitmentOrigin
         from rdl_enterprise.constraint import ConstraintBundle, RuptureProbe, ConstraintContext
 
         graph = MBGraph()
         n1 = MBNode(id="n1", domain="sales", trigger_pattern={"exact_keys": ["割引"]}, action_template={"type": "direct_reply", "payload": "即時承認"}, confidence=0.8, approval_count=5)
         n2 = MBNode(id="n2", domain="sales", trigger_pattern={"exact_keys": ["割引"]}, action_template={"type": "direct_reply", "payload": "部長決裁必須"}, confidence=0.8, approval_count=5)
-        graph.commit_node(n1)
-        graph.commit_node(n2)
+        graph.commit_node(n1, origin=CommitmentOrigin.TEST_FIXTURE)
+        graph.commit_node(n2, origin=CommitmentOrigin.TEST_FIXTURE)
 
         # n1 と n2 が相容れないアクションを持つにもかかわらず同束に存在する場合
         bundle = ConstraintBundle(
@@ -1040,11 +1040,11 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
 
     def test_supporting_nodes_selection_is_deterministic(self):
         """候補が多数ある場合でも、find_co_occurring_nodes が完全に決定的な順序で選出すること"""
-        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.mb_graph import MBGraph, MBNode, CommitmentOrigin
 
         graph = MBGraph()
         n_main = MBNode(id="n_main", domain="tech", trigger_pattern={"exact_keys": ["デプロイ"]}, action_template={"type": "direct_reply", "payload": "OK"})
-        graph.commit_node(n_main)
+        graph.commit_node(n_main, origin=CommitmentOrigin.TEST_FIXTURE)
 
         # 10個のノードを追加 (承認数やIDをバラバラに設定)
         for i in range(10):
@@ -1056,7 +1056,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
                 approval_count=i * 2,
                 confidence=0.5 + (i * 0.04),
             )
-            graph.commit_node(node)
+            graph.commit_node(node, origin=CommitmentOrigin.TEST_FIXTURE)
 
         # 複数回呼び出して完全に同一のID順列が返ることを確認
         res1 = [n.id for n in graph.find_co_occurring_nodes(n_main, limit=4)]
@@ -1068,7 +1068,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
     def test_stale_or_rejected_support_node_cannot_boost_survive(self):
         """陳腐化または大量拒絶された支援ノードは健全性検査で除外され、未承認ノードを survive させないこと"""
         from datetime import datetime, timezone, timedelta
-        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.mb_graph import MBGraph, MBNode, CommitmentOrigin
         from rdl_enterprise.constraint import RelationConstraintLocator, RuptureProbe, ConstraintContext
 
         now = datetime(2026, 9, 1, 12, 0, 0, tzinfo=timezone.utc)
@@ -1104,9 +1104,9 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
             rejection_count=80,
             last_support_at=now.isoformat(),
         )
-        graph.commit_node(n_primary)
-        graph.commit_node(n_stale)
-        graph.commit_node(n_rejected)
+        graph.commit_node(n_primary, origin=CommitmentOrigin.TEST_FIXTURE)
+        graph.commit_node(n_stale, origin=CommitmentOrigin.TEST_FIXTURE)
+        graph.commit_node(n_rejected, origin=CommitmentOrigin.TEST_FIXTURE)
 
         locator = RelationConstraintLocator()
         efp = _make_efp("サーバー再起動の手順", category="ops")
@@ -1121,7 +1121,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
 
     def test_support_lineage_duplicate_suppression(self):
         """同一 source_lineage からの複製ノードは synergy が抑制され、独立関係源のみが相乗効果を持つこと"""
-        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.mb_graph import MBGraph, MBNode, CommitmentOrigin
         from rdl_enterprise.constraint import RelationConstraintLocator, ConstraintContext
 
         # グラフA: 同一マニュアルから複製されたノード群
@@ -1129,18 +1129,18 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
         n_base_dup = MBNode(id="n_b1", domain="hr", trigger_pattern={"exact_keys": ["育休"]}, action_template={"type": "direct_reply", "payload": "A"}, confidence=0.7, approval_count=5, source_lineage="manual_hr_v1")
         n_s1_dup = MBNode(id="n_s1", domain="hr", trigger_pattern={"exact_keys": ["育休", "給付金"]}, action_template={"type": "direct_reply", "payload": "A"}, confidence=0.7, approval_count=5, source_lineage="manual_hr_v1")
         n_s2_dup = MBNode(id="n_s2", domain="hr", trigger_pattern={"exact_keys": ["育休", "申請書"]}, action_template={"type": "direct_reply", "payload": "A"}, confidence=0.7, approval_count=5, source_lineage="manual_hr_v1")
-        graph_dup.commit_node(n_base_dup)
-        graph_dup.commit_node(n_s1_dup)
-        graph_dup.commit_node(n_s2_dup)
+        graph_dup.commit_node(n_base_dup, origin=CommitmentOrigin.TEST_FIXTURE)
+        graph_dup.commit_node(n_s1_dup, origin=CommitmentOrigin.TEST_FIXTURE)
+        graph_dup.commit_node(n_s2_dup, origin=CommitmentOrigin.TEST_FIXTURE)
 
         # グラフB: 独立した関係源（法務決定、監査ログ）からのノード群
         graph_indep = MBGraph()
         n_base_ind = MBNode(id="n_b2", domain="hr", trigger_pattern={"exact_keys": ["育休"]}, action_template={"type": "direct_reply", "payload": "A"}, confidence=0.7, approval_count=5, source_lineage="manual_hr_v1")
         n_s1_ind = MBNode(id="n_s1_ind", domain="hr", trigger_pattern={"exact_keys": ["育休", "給付金"]}, action_template={"type": "direct_reply", "payload": "A"}, confidence=0.7, approval_count=5, source_lineage="audit_log_2026")
         n_s2_ind = MBNode(id="n_s2_ind", domain="hr", trigger_pattern={"exact_keys": ["育休", "申請書"]}, action_template={"type": "direct_reply", "payload": "A"}, confidence=0.7, approval_count=5, source_lineage="labor_law_amendment")
-        graph_indep.commit_node(n_base_ind)
-        graph_indep.commit_node(n_s1_ind)
-        graph_indep.commit_node(n_s2_ind)
+        graph_indep.commit_node(n_base_ind, origin=CommitmentOrigin.TEST_FIXTURE)
+        graph_indep.commit_node(n_s1_ind, origin=CommitmentOrigin.TEST_FIXTURE)
+        graph_indep.commit_node(n_s2_ind, origin=CommitmentOrigin.TEST_FIXTURE)
 
         locator = RelationConstraintLocator()
         efp = _make_efp("育休の申請手続き", category="hr")
@@ -1154,7 +1154,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
 
     def test_actual_bundle_removal_perturbation(self):
         """実効的バンドル除去切断摂動 (End-to-End完全無加工): 束を切断したときに潜在対向ノードが露出すれば break と判定されること"""
-        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.mb_graph import MBGraph, MBNode, CommitmentOrigin
         from rdl_enterprise.constraint import RelationConstraintLocator, RuptureProbe, ConstraintContext
 
         graph = MBGraph()
@@ -1176,8 +1176,8 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
             confidence=0.90,
             approval_count=20,
         )
-        graph.commit_node(n_normal)
-        graph.commit_node(n_compliance)
+        graph.commit_node(n_normal, origin=CommitmentOrigin.TEST_FIXTURE)
+        graph.commit_node(n_compliance, origin=CommitmentOrigin.TEST_FIXTURE)
 
         locator = RelationConstraintLocator()
         efp = _make_efp("送金振込", category="finance")
@@ -1198,7 +1198,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
 
     def test_rupture_effect_quantified_and_distinguished_from_break(self):
         """切ると変わる（拘束強度: rupture_effect）と切ると対向解釈が出る（競合: break）が直交して分離されること"""
-        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.mb_graph import MBGraph, MBNode, CommitmentOrigin
         from rdl_enterprise.constraint import RelationConstraintLocator, RuptureProbe, ConstraintContext
 
         graph = MBGraph()
@@ -1211,7 +1211,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
             confidence=0.85,
             approval_count=10,
         )
-        graph.commit_node(n_pillar)
+        graph.commit_node(n_pillar, origin=CommitmentOrigin.TEST_FIXTURE)
 
         locator = RelationConstraintLocator()
         efp = _make_efp("福利厚生申請", category="hr")
@@ -1229,7 +1229,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
     def test_unhealthy_or_conflicting_nodes_excluded_from_bundle_ids(self):
         """陳腐化・大量拒絶・アクション対立ノードが bundle.node_ids に最初から混入しないこと"""
         from datetime import datetime, timezone, timedelta
-        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.mb_graph import MBGraph, MBNode, CommitmentOrigin
         from rdl_enterprise.constraint import RelationConstraintLocator, ConstraintContext
 
         now = datetime(2026, 9, 1, 12, 0, 0, tzinfo=timezone.utc)
@@ -1244,11 +1244,11 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
         # 健全な支援ノード
         n_healthy = MBNode(id="n_healthy", domain="it", trigger_pattern={"exact_keys": ["パスワードリセット", "SSO"]}, action_template={"type": "direct_reply", "payload": "A"}, approval_count=5, last_updated=now.isoformat())
 
-        graph.commit_node(n_prim)
-        graph.commit_node(n_stale)
-        graph.commit_node(n_rej)
-        graph.commit_node(n_conflict)
-        graph.commit_node(n_healthy)
+        graph.commit_node(n_prim, origin=CommitmentOrigin.TEST_FIXTURE)
+        graph.commit_node(n_stale, origin=CommitmentOrigin.TEST_FIXTURE)
+        graph.commit_node(n_rej, origin=CommitmentOrigin.TEST_FIXTURE)
+        graph.commit_node(n_conflict, origin=CommitmentOrigin.TEST_FIXTURE)
+        graph.commit_node(n_healthy, origin=CommitmentOrigin.TEST_FIXTURE)
 
         locator = RelationConstraintLocator()
         efp = _make_efp("パスワードリセットのやり方", category="it")
@@ -1264,13 +1264,13 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
 
     def test_frozen_context_identical_cascade_used_in_probe(self):
         """RuptureProbe が ConstraintContext に渡された FrozenInterpretationContext の同一推論器を使用すること"""
-        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.mb_graph import MBGraph, MBNode, CommitmentOrigin
         from rdl_enterprise.constraint import RelationConstraintLocator, RuptureProbe, ConstraintContext
         from rdl_enterprise.snapshot import FrozenInterpretationContext
 
         graph = MBGraph()
         n = MBNode(id="n1", domain="sales", trigger_pattern={"exact_keys": ["見積"]}, action_template={"type": "direct_reply", "payload": "見積回答"}, confidence=0.7, approval_count=5)
-        graph.commit_node(n)
+        graph.commit_node(n, origin=CommitmentOrigin.TEST_FIXTURE)
 
         # 初期キャッシュに特定のエントリを持つ凍結コンテキスト
         frozen_ctx = FrozenInterpretationContext(
@@ -1363,13 +1363,13 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
 
     def test_isolated_dual_cascade_identical_c0_cut(self):
         """F_base と F_cut が独立した cascade インスタンスから同一 C0 で推論され、キャッシュ汚染が起きないこと"""
-        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.mb_graph import MBGraph, MBNode, CommitmentOrigin
         from rdl_enterprise.constraint import RelationConstraintLocator, RuptureProbe, ConstraintContext
         from rdl_enterprise.snapshot import FrozenInterpretationContext
 
         graph = MBGraph()
         n = MBNode(id="n1", domain="sales", trigger_pattern={"exact_keys": ["見積作成"]}, action_template={"type": "direct_reply", "payload": "見積回答"}, confidence=0.7, approval_count=5)
-        graph.commit_node(n)
+        graph.commit_node(n, origin=CommitmentOrigin.TEST_FIXTURE)
 
         # 初期キャッシュ C0 を持つ凍結コンテキスト
         frozen_ctx = FrozenInterpretationContext(
@@ -1396,7 +1396,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
     def test_rupture_effect_measured_across_all_verdicts(self):
         """鮮度低下や反証拒絶で break と判定される場合でも、rupture_effect が None や 0 ではなく実測されること"""
         from datetime import datetime, timezone, timedelta
-        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.mb_graph import MBGraph, MBNode, CommitmentOrigin
         from rdl_enterprise.constraint import RelationConstraintLocator, RuptureProbe, ConstraintContext
 
         now = datetime(2026, 9, 1, 12, 0, 0, tzinfo=timezone.utc)
@@ -1411,7 +1411,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
             approval_count=10,
             last_updated=(now - timedelta(days=365)).isoformat(),
         )
-        graph.commit_node(n_stale)
+        graph.commit_node(n_stale, origin=CommitmentOrigin.TEST_FIXTURE)
 
         efp = _make_efp("デプロイ手順", category="ops")
         ctx = ConstraintContext(efp=efp, current_time=now, active_domain="ops")
@@ -1461,7 +1461,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
 
     def test_node_explicit_contradict_relation_and_payload_polarity_excluded_from_support(self):
         """node_relations による明示的 contradict および payload 極性矛盾（肯定 vs 否定）が支援束から除外されること"""
-        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.mb_graph import MBGraph, MBNode, CommitmentOrigin
         from rdl_enterprise.constraint import RelationConstraintLocator, ConstraintContext
 
         graph = MBGraph()
@@ -1498,10 +1498,10 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
             action_template={"type": "direct_reply", "payload": "慶弔休暇申請が可能です。"},
             approval_count=5,
         )
-        graph.commit_node(n_main)
-        graph.commit_node(n_exp_contra)
-        graph.commit_node(n_polarity_contra)
-        graph.commit_node(n_exp_supp)
+        graph.commit_node(n_main, origin=CommitmentOrigin.TEST_FIXTURE)
+        graph.commit_node(n_exp_contra, origin=CommitmentOrigin.TEST_FIXTURE)
+        graph.commit_node(n_polarity_contra, origin=CommitmentOrigin.TEST_FIXTURE)
+        graph.commit_node(n_exp_supp, origin=CommitmentOrigin.TEST_FIXTURE)
 
         locator = RelationConstraintLocator()
         efp = _make_efp("特別休暇", category="hr")
@@ -1518,7 +1518,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
     def test_level2_respects_skip_constraint_boost(self):
         """Level 2 推論時に skip_constraint_boost=True で _constraint_boost がスキップされること (再帰防止)"""
         from rdl_enterprise.cascade import InterpCascade, CascadeConfig
-        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.mb_graph import MBGraph, MBNode, CommitmentOrigin
         from rdl_enterprise.snapshot import BusinessInput
 
         graph = MBGraph()
@@ -1531,7 +1531,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
             confidence=0.5,
             approval_count=10,
         )
-        graph.commit_node(node)
+        graph.commit_node(node, origin=CommitmentOrigin.TEST_FIXTURE)
 
         cascade = InterpCascade(graph, config=CascadeConfig(level2_threshold=0.3))
         efp = _make_efp("定期代精算の手順を教えて", category="finance")
@@ -1548,7 +1548,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
 
     def test_explicit_unknown_relation_excluded_from_bundle(self):
         """明示的に unknown と指定されたノードが支援束から除外されること (B4/B5: ξとして保持)"""
-        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.mb_graph import MBGraph, MBNode, CommitmentOrigin
         from rdl_enterprise.constraint import RelationConstraintLocator, ConstraintContext, _check_node_relation
 
         graph = MBGraph()
@@ -1567,8 +1567,8 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
             action_template={"type": "direct_reply", "payload": "値引き承認手順"},
             approval_count=10,
         )
-        graph.commit_node(n_main)
-        graph.commit_node(n_unknown_cand)
+        graph.commit_node(n_main, origin=CommitmentOrigin.TEST_FIXTURE)
+        graph.commit_node(n_unknown_cand, origin=CommitmentOrigin.TEST_FIXTURE)
 
         # _check_node_relation が "unknown" を返すこと
         self.assertEqual(_check_node_relation(n_main, n_unknown_cand), "unknown")
@@ -1584,7 +1584,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
     def test_level3_cut_requires_deterministic_replay(self):
         """Level 3 (LLM Bridge) において決定性保証がない場合は切断変化量を None (ξ) とすること"""
         from rdl_enterprise.cascade import InterpCascade, CascadeConfig
-        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.mb_graph import MBGraph, MBNode, CommitmentOrigin
         from rdl_enterprise.constraint import RuptureProbe, ConstraintBundle, ConstraintContext
         from rdl_enterprise.snapshot import FrozenInterpretationContext
 
@@ -1605,7 +1605,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
         graph = MBGraph()
         # 束ノードを登録 (完全一致キー)
         n_cut = MBNode(id="n_cut_me", domain="hr", trigger_pattern={"exact_keys": ["特殊照会"]}, action_template={"type": "direct_reply", "payload": "A"}, approval_count=5)
-        graph.commit_node(n_cut)
+        graph.commit_node(n_cut, origin=CommitmentOrigin.TEST_FIXTURE)
         graph.freeze()
 
         bridge_non_det = NonDeterministicMockBridge()
@@ -1642,7 +1642,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
 
     def test_rupture_probe_respects_explicit_support_despite_payload_diff(self):
         """明示的 support があれば payload 文字列が異なっていても内部亀裂にならず survive 判定へ進むこと"""
-        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.mb_graph import MBGraph, MBNode, CommitmentOrigin
         from rdl_enterprise.constraint import RelationConstraintLocator, RuptureProbe, ConstraintContext
 
         graph = MBGraph()
@@ -1666,8 +1666,8 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
             confidence=0.8,
             approval_count=10,
         )
-        graph.commit_node(n_a)
-        graph.commit_node(n_b)
+        graph.commit_node(n_a, origin=CommitmentOrigin.TEST_FIXTURE)
+        graph.commit_node(n_b, origin=CommitmentOrigin.TEST_FIXTURE)
 
         locator = RelationConstraintLocator()
         efp = _make_efp("特別休暇の申請", category="hr")
@@ -1683,7 +1683,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
 
     def test_inferred_support_has_reduced_synergy_and_cannot_solely_survive(self):
         """未指定で payload が異なる inferred_support は synergy が抑制され、単独で survive の根拠にならないこと"""
-        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.mb_graph import MBGraph, MBNode, CommitmentOrigin
         from rdl_enterprise.constraint import RelationConstraintLocator, RuptureProbe, ConstraintContext
 
         graph = MBGraph()
@@ -1703,8 +1703,8 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
             action_template={"type": "direct_reply", "payload": "交通費精算ガイド"},
             approval_count=10,
         )
-        graph.commit_node(n_main)
-        graph.commit_node(n_inferred)
+        graph.commit_node(n_main, origin=CommitmentOrigin.TEST_FIXTURE)
+        graph.commit_node(n_inferred, origin=CommitmentOrigin.TEST_FIXTURE)
 
         locator = RelationConstraintLocator()
         efp = _make_efp("経費申請", category="finance")
@@ -1723,7 +1723,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
     def test_llm_bridge_identity_includes_replay_snapshot_hash(self):
         """LLMBridgeIdentity に seed, deterministic_replay, replay_snapshot_hash が包含され、Probe の決定性監査に効くこと"""
         from rdl_enterprise.snapshot import LLMBridgeIdentity, FrozenInterpretationContext
-        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.mb_graph import MBGraph, MBNode, CommitmentOrigin
         from rdl_enterprise.constraint import RuptureProbe, ConstraintBundle, ConstraintContext
 
         class SnapshotReplayBridge:
@@ -1747,7 +1747,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
         # 凍結コンテキストのハッシュ検証
         graph = MBGraph()
         n = MBNode(id="n1", domain="it", trigger_pattern={"exact_keys": ["PC手配"]}, action_template={"type": "direct_reply", "payload": "手配手順"})
-        graph.commit_node(n)
+        graph.commit_node(n, origin=CommitmentOrigin.TEST_FIXTURE)
         graph.freeze()
 
         frozen_ctx = FrozenInterpretationContext(
@@ -1769,7 +1769,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
 
     def test_inferred_support_separated_in_bundle_does_not_break_healthy_bundle(self):
         """健全な代表ノードがある場合、inferred_support が存在しても内部亀裂で道連れにならず survive すること"""
-        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.mb_graph import MBGraph, MBNode, CommitmentOrigin
         from rdl_enterprise.constraint import RelationConstraintLocator, RuptureProbe, ConstraintContext
 
         graph = MBGraph()
@@ -1789,8 +1789,8 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
             action_template={"type": "direct_reply", "payload": "振込支払の手順です"},
             approval_count=5,
         )
-        graph.commit_node(n_main)
-        graph.commit_node(n_aux)
+        graph.commit_node(n_main, origin=CommitmentOrigin.TEST_FIXTURE)
+        graph.commit_node(n_aux, origin=CommitmentOrigin.TEST_FIXTURE)
 
         locator = RelationConstraintLocator()
         efp = _make_efp("請求書支払", category="finance")
@@ -1808,7 +1808,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
 
     def test_level3_rejects_plain_seed_without_replay_contract(self):
         """単なる seed/temperature=0 のみで can_replay も snapshot もない推論器は、決定性保証なしとして rupture_effect=None とすること"""
-        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.mb_graph import MBGraph, MBNode, CommitmentOrigin
         from rdl_enterprise.constraint import RuptureProbe, ConstraintBundle, ConstraintContext
         from rdl_enterprise.snapshot import FrozenInterpretationContext
 
@@ -1823,7 +1823,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
 
         graph = MBGraph()
         n = MBNode(id="n1", domain="cs", trigger_pattern={"exact_keys": ["契約解除"]}, action_template={"type": "direct_reply", "payload": "解約手順"})
-        graph.commit_node(n)
+        graph.commit_node(n, origin=CommitmentOrigin.TEST_FIXTURE)
         graph.freeze()
 
         bridge = PlainSeedBridge()
@@ -1844,7 +1844,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
 
     def test_level3_accepts_can_replay_contract(self):
         """can_replay() -> True メソッド契約を持つ推論器は決定性ありと認定され、rupture_effect が実測されること"""
-        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.mb_graph import MBGraph, MBNode, CommitmentOrigin
         from rdl_enterprise.constraint import RuptureProbe, ConstraintBundle, ConstraintContext
         from rdl_enterprise.snapshot import FrozenInterpretationContext
 
@@ -1858,7 +1858,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
 
         graph = MBGraph()
         n = MBNode(id="n1", domain="cs", trigger_pattern={"exact_keys": ["契約解除"]}, action_template={"type": "direct_reply", "payload": "解約手順"})
-        graph.commit_node(n)
+        graph.commit_node(n, origin=CommitmentOrigin.TEST_FIXTURE)
         graph.freeze()
 
         bridge = ReplayableBridge()
@@ -1878,7 +1878,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
 
     def test_level3_rejects_drifting_bridge_despite_can_replay_true(self):
         """can_replay()=True と公言しながら出力が揺らぐ bridge は、実際の Replay 不一致により rupture_effect=None となること"""
-        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.mb_graph import MBGraph, MBNode, CommitmentOrigin
         from rdl_enterprise.constraint import RuptureProbe, ConstraintBundle, ConstraintContext
         from rdl_enterprise.snapshot import FrozenInterpretationContext
 
@@ -1895,7 +1895,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
         graph = MBGraph()
         # 束ノード (切断対象外の未知クエリで Level 3 へフォールスルー)
         n = MBNode(id="n_other", domain="legal", trigger_pattern={"exact_keys": ["既知"]}, action_template={"type": "direct_reply", "payload": "既知回答"})
-        graph.commit_node(n)
+        graph.commit_node(n, origin=CommitmentOrigin.TEST_FIXTURE)
         graph.freeze()
 
         bridge = DriftingReplayBridge()
@@ -1918,7 +1918,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
     def test_level3_uses_resolve_replay_when_available(self):
         """bridge が resolve_replay() を提供する場合、カスケードおよび Probe で優先実行されて決定性が実証されること"""
         from rdl_enterprise.cascade import InterpCascade, CascadeConfig
-        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.mb_graph import MBGraph, MBNode, CommitmentOrigin
         from rdl_enterprise.constraint import RuptureProbe, ConstraintBundle, ConstraintContext
         from rdl_enterprise.snapshot import FrozenInterpretationContext
 
@@ -1957,7 +1957,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
             confidence=0.8,
             approval_count=10,
         )
-        graph.commit_node(node_x)
+        graph.commit_node(node_x, origin=CommitmentOrigin.TEST_FIXTURE)
         bundle = ConstraintBundle(
             node_ids=["n_x"],
             locus_type="strong",
@@ -1972,7 +1972,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
     def test_level1_regex_rule_case_insensitive(self):
         """Level 1 の正規表現ルールが大文字小文字を区別せずマッチすること (P0 回帰テスト)"""
         from rdl_enterprise.cascade import InterpCascade
-        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.mb_graph import MBGraph, MBNode, CommitmentOrigin
 
         graph = MBGraph()
         node = MBNode(
@@ -1982,7 +1982,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
             action_template={"type": "direct_reply", "payload": "エラーコード対応"},
             confidence=0.85,
         )
-        graph.commit_node(node)
+        graph.commit_node(node, origin=CommitmentOrigin.TEST_FIXTURE)
         cascade = InterpCascade(graph)
 
         # 大文字混在クエリ
@@ -1994,7 +1994,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
     def test_level3_counterfactual_replay_mb_dependent_measures_diff(self):
         """is_mb_dependent な bridge では同一外生条件 K の下で内生的変化が rupture_effect として測定されること"""
         from rdl_enterprise.cascade import InterpCascade
-        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.mb_graph import MBGraph, MBNode, CommitmentOrigin
         from rdl_enterprise.constraint import RuptureProbe, ConstraintBundle, ConstraintContext
         from rdl_enterprise.snapshot import ReplayToken
 
@@ -2025,7 +2025,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
             confidence=0.8,
             approval_count=10,
         )
-        graph.commit_node(node)
+        graph.commit_node(node, origin=CommitmentOrigin.TEST_FIXTURE)
 
         bundle = ConstraintBundle(node_ids=["n_test"], locus_type="strong", constraint_score=0.8)
         probe = RuptureProbe()
@@ -2044,7 +2044,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
             RelationConstraintLocator,
             ConstraintContext,
         )
-        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.mb_graph import MBGraph, MBNode, CommitmentOrigin
 
         graph = MBGraph()
         n_main = MBNode(
@@ -2063,7 +2063,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
             confidence=0.8,
             approval_count=10,
         )
-        graph.commit_node(n_main)
+        graph.commit_node(n_main, origin=CommitmentOrigin.TEST_FIXTURE)
 
         locator = RelationConstraintLocator()
         efp = _make_efp("テスト", category="support")
@@ -2079,7 +2079,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
         self.assertEqual(b1.auxiliary.convergence_signal, 0.0)
 
         # 2. 推論ノード追加時
-        graph.commit_node(n_inferred)
+        graph.commit_node(n_inferred, origin=CommitmentOrigin.TEST_FIXTURE)
         b2 = locator.locate_bundle_for_node(graph, n_main, ctx)
 
         # core のスコアと収束度は全く変わらない
@@ -2097,7 +2097,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
     def test_auxiliary_constraint_signal_separated_from_core_constraint_score(self):
         """inferred_support は core_constraint_score に加算されず auxiliary_constraint_signal に隔離されること"""
         from rdl_enterprise.cascade import InterpCascade, CascadeConfig
-        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.mb_graph import MBGraph, MBNode, CommitmentOrigin
         from rdl_enterprise.constraint import RelationConstraintLocator, ConstraintContext, ConstraintConfig
 
         graph = MBGraph()
@@ -2119,7 +2119,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
             confidence=0.8,
             approval_count=10,
         )
-        graph.commit_node(n_main)
+        graph.commit_node(n_main, origin=CommitmentOrigin.TEST_FIXTURE)
 
         locator = RelationConstraintLocator()
         efp = _make_efp("パスワードリセット", category="support")
@@ -2131,7 +2131,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
         single_core_score = bundle_single.constraint_score
 
         # 2. inferred_support ノードを追加
-        graph.commit_node(n_inferred)
+        graph.commit_node(n_inferred, origin=CommitmentOrigin.TEST_FIXTURE)
         bundle_with_inferred = locator.locate_bundle_for_node(graph, n_main, ctx)
 
         # core_constraint_score には一切加算されないこと（確定拘束強度は単体時と不変）
@@ -2153,7 +2153,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
     def test_level3_counterfactual_input_transfers_mb_intervention(self):
         """Level 3 counterfactual 再演時に CounterfactualInput (M_B と M_B \\ bundle の差異) が明示伝達されること"""
         from rdl_enterprise.cascade import InterpCascade
-        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.mb_graph import MBGraph, MBNode, CommitmentOrigin
         from rdl_enterprise.constraint import RuptureProbe, ConstraintBundle, ConstraintContext
         from rdl_enterprise.snapshot import ReplayToken, CounterfactualInput
 
@@ -2183,7 +2183,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
             confidence=0.8,
             approval_count=10,
         )
-        graph.commit_node(n1)
+        graph.commit_node(n1, origin=CommitmentOrigin.TEST_FIXTURE)
 
         bridge = MBInterventionBridge()
         bundle = ConstraintBundle(node_ids=["n1"], locus_type="strong", constraint_score=0.8)
@@ -2213,7 +2213,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
     def test_resolve_emits_actual_replay_token_and_probe_reuses_it(self):
         """resolve() 自体から排出された actual ReplayToken が prediction に封入され RuptureProbe で再利用されること"""
         from rdl_enterprise.cascade import InterpCascade
-        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.mb_graph import MBGraph, MBNode, CommitmentOrigin
         from rdl_enterprise.constraint import RuptureProbe, ConstraintBundle, ConstraintContext
         from rdl_enterprise.snapshot import ReplayToken
 
@@ -2258,7 +2258,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
             confidence=0.8,
             approval_count=10,
         )
-        graph.commit_node(node_x)
+        graph.commit_node(node_x, origin=CommitmentOrigin.TEST_FIXTURE)
         bundle = ConstraintBundle(node_ids=["n_x"], locus_type="strong", constraint_score=0.8)
         probe = RuptureProbe()
 
@@ -2338,7 +2338,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
     def test_runtime_e2e_k_actual_trace_connection_to_probe(self):
         """EnterpriseRuntime の通常運用経路で dispatch_ticket() の actual_replay_token が feedback 経由で Probe まで届くこと (BASE v2.0 §4.2)"""
         from rdl_enterprise.runtime import EnterpriseRuntime
-        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.mb_graph import MBGraph, MBNode, CommitmentOrigin
         from rdl_enterprise.snapshot import ReplayToken, BusinessInput
 
         runtime = EnterpriseRuntime()
@@ -2372,7 +2372,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
             confidence=0.8,
             approval_count=5,
         )
-        runtime.mb_graph.commit_node(node_b)
+        runtime.mb_graph.commit_node(node_b, origin=CommitmentOrigin.TEST_FIXTURE)
 
         # 未知チケットを受信し、dispatch_ticket() で Level 3 推論を実行
         efp = BusinessInput(
@@ -2408,7 +2408,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
     def test_level3_fail_closed_contract_without_counterfactual_input_verification(self):
         """CounterfactualInput の受理・介入証跡がない外部推論器は fail-closed で rupture_effect = None (ξ) となること"""
         from rdl_enterprise.cascade import InterpCascade
-        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.mb_graph import MBGraph, MBNode, CommitmentOrigin
         from rdl_enterprise.constraint import RuptureProbe, ConstraintBundle, ConstraintContext
         from rdl_enterprise.snapshot import ReplayToken
 
@@ -2436,7 +2436,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
             confidence=0.8,
             approval_count=10,
         )
-        graph.commit_node(node)
+        graph.commit_node(node, origin=CommitmentOrigin.TEST_FIXTURE)
 
         bundle = ConstraintBundle(node_ids=["n_legacy"], locus_type="strong", constraint_score=0.8)
         probe = RuptureProbe()
@@ -2452,7 +2452,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
     def test_rupture_result_audit_view_hashes_and_conditions_hash(self):
         """RuptureResult に conditions_hash, base_mb_view_hash, cut_mb_view_hash が監査証跡として正しく刻印されること"""
         from rdl_enterprise.cascade import InterpCascade
-        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.mb_graph import MBGraph, MBNode, CommitmentOrigin
         from rdl_enterprise.constraint import RuptureProbe, ConstraintBundle, ConstraintContext
 
         received_cf_inputs = []
@@ -2478,7 +2478,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
             confidence=0.8,
             approval_count=10,
         )
-        graph.commit_node(n1)
+        graph.commit_node(n1, origin=CommitmentOrigin.TEST_FIXTURE)
 
         bridge = VerifiedInterventionBridge()
         bundle = ConstraintBundle(node_ids=["n_audit_1"], locus_type="strong", constraint_score=0.8)
@@ -2505,7 +2505,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
     def test_strict_intervention_verification_rejects_self_declared_mb_dependent_without_counterfactual_input(self):
         """is_mb_dependent=True と自己申告していても、CounterfactualInput を受理・適用しない推論器は fail-closed で rupture_effect = None (ξ) となること"""
         from rdl_enterprise.cascade import InterpCascade
-        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.mb_graph import MBGraph, MBNode, CommitmentOrigin
         from rdl_enterprise.constraint import RuptureProbe, ConstraintBundle, ConstraintContext
 
         class SelfDeclaredBridgeWithoutCFSupport:
@@ -2530,7 +2530,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
             confidence=0.8,
             approval_count=10,
         )
-        graph.commit_node(node)
+        graph.commit_node(node, origin=CommitmentOrigin.TEST_FIXTURE)
 
         bridge = SelfDeclaredBridgeWithoutCFSupport()
         bundle = ConstraintBundle(node_ids=["n_self_declare"], locus_type="strong", constraint_score=0.8)
@@ -2598,7 +2598,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
             action_template={"type": "direct_reply", "payload": "申請フォーム"},
             confidence=0.85,
         )
-        runtime.mb_graph.commit_node(node)
+        runtime.mb_graph.commit_node(node, origin=CommitmentOrigin.TEST_FIXTURE)
 
         # Level 1 ルール推論
         efp = BusinessInput("T_TRACE_01", "U1", "hr", "有給休暇の取り方")
@@ -2617,16 +2617,16 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
     def test_unified_prediction_finalization_and_frozen_context_hash(self):
         """全推論層 (L0-L3, Fallback) の出口が一本化され、FrozenInterpretationContext.context_hash が一貫刻印されること (BASE v2.0 §4.2)"""
         from rdl_enterprise.cascade import InterpCascade, CascadeConfig
-        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.mb_graph import MBGraph, MBNode, CommitmentOrigin
         from rdl_enterprise.snapshot import BusinessInput, FrozenInterpretationContext
 
         graph = MBGraph()
         n0 = MBNode(id="n_l0", domain="hr", trigger_pattern={"exact_keys": ["完全一致クエリ"]}, action_template={"type": "direct_reply", "payload": "L0回答"}, confidence=0.9)
         n1 = MBNode(id="n_l1", domain="hr", trigger_pattern={"rule_expr": r"正規表現.*"}, action_template={"type": "direct_reply", "payload": "L1回答"}, confidence=0.8)
         n2 = MBNode(id="n_l2", domain="hr", trigger_pattern={"exact_keys": ["類似マッチクエリ"]}, action_template={"type": "direct_reply", "payload": "L2回答"}, confidence=0.7)
-        graph.commit_node(n0)
-        graph.commit_node(n1)
-        graph.commit_node(n2)
+        graph.commit_node(n0, origin=CommitmentOrigin.TEST_FIXTURE)
+        graph.commit_node(n1, origin=CommitmentOrigin.TEST_FIXTURE)
+        graph.commit_node(n2, origin=CommitmentOrigin.TEST_FIXTURE)
 
         frozen_ctx = FrozenInterpretationContext(
             mb_version="v2",
@@ -2664,7 +2664,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
     def test_active_constraint_subgraph_and_locus_bundle_matching(self):
         """ContextSelector により活性化サブグラフ L が選出され、locate_bundle_for_locus が 1:1 で L を束ねて切断対象とすること (BASE v2.0 §4.2)"""
         from rdl_enterprise.cascade import InterpCascade, CascadeConfig
-        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.mb_graph import MBGraph, MBNode, CommitmentOrigin
         from rdl_enterprise.constraint import RelationConstraintLocator, ConstraintContext
         from rdl_enterprise.snapshot import BusinessInput
 
@@ -2679,7 +2679,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
                 confidence=0.5 + 0.1 * i,
                 approval_count=10 * i,
             )
-            graph.commit_node(n)
+            graph.commit_node(n, origin=CommitmentOrigin.TEST_FIXTURE)
 
         cascade = InterpCascade(graph)
         efp = BusinessInput("T_SUB", "U1", "support", "問合せ_0 について教えて")
@@ -2716,7 +2716,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
     def test_applied_view_hash_contract_and_trace_verification(self):
         """RuptureProbe が BridgeExecutionTrace の 4点照合を検証し、満たした場合のみ intervention_verified=True とし effect_verified_locus_ids を記録すること (BASE v2.0 §4.2)"""
         from rdl_enterprise.cascade import InterpCascade
-        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.mb_graph import MBGraph, MBNode, CommitmentOrigin
         from rdl_enterprise.constraint import RuptureProbe, ConstraintBundle, ConstraintContext
         from rdl_enterprise.snapshot import BusinessInput, ReplayToken, CounterfactualInput, BridgeExecutionTrace
 
@@ -2764,7 +2764,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
 
         graph = MBGraph()
         n_tgt = MBNode(id="n_tgt", domain="sales", trigger_pattern={"exact_keys": ["特別割引"]}, action_template={"type": "direct_reply", "payload": "10%割引"}, confidence=0.8)
-        graph.commit_node(n_tgt)
+        graph.commit_node(n_tgt, origin=CommitmentOrigin.TEST_FIXTURE)
 
         bridge = VerifiedTraceMockBridge()
         bundle = ConstraintBundle(node_ids=["n_tgt"], locus_type="strong", constraint_score=0.8)
@@ -2788,7 +2788,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
     def test_applied_view_hash_no_fabrication_fail_closed(self):
         """P0 契約: Bridge が applied_mb_view_hash / execution_trace を明示報告しない場合、requested を代入・捏造せず Fail-Closed (intervention_verified=False, rupture_effect=None) とすること (BASE v2.0 §4.2)"""
         from rdl_enterprise.cascade import InterpCascade
-        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.mb_graph import MBGraph, MBNode, CommitmentOrigin
         from rdl_enterprise.constraint import RuptureProbe, ConstraintBundle, ConstraintContext
         from rdl_enterprise.snapshot import BusinessInput, ReplayToken, CounterfactualInput
 
@@ -2817,7 +2817,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
 
         graph = MBGraph()
         n_tgt = MBNode(id="n_tgt", domain="sales", trigger_pattern={"exact_keys": ["特別割引"]}, action_template={"type": "direct_reply", "payload": "10%割引"}, confidence=0.8)
-        graph.commit_node(n_tgt)
+        graph.commit_node(n_tgt, origin=CommitmentOrigin.TEST_FIXTURE)
 
         bridge = SilentBridgeWithoutAppliedHash()
         bundle = ConstraintBundle(node_ids=["n_tgt"], locus_type="strong", constraint_score=0.8, freshness=1.0, relevance=0.8)
@@ -2835,7 +2835,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
     def test_context_selector_relevance_floor_and_propagation(self):
         """P3 契約: ContextSelector が relevance_floor (0.05) で無関係ノードを足切りし、明示的 support 関係から 1-hop 伝播すること (BASE v2.0 §4.2)"""
         from rdl_enterprise.cascade import InterpCascade
-        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.mb_graph import MBGraph, MBNode, CommitmentOrigin
         from rdl_enterprise.snapshot import BusinessInput
 
         graph = MBGraph()
@@ -2869,9 +2869,9 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
             approval_count=1000, # 圧倒的な承認実績
         )
 
-        graph.commit_node(n_seed)
-        graph.commit_node(n_supported)
-        graph.commit_node(n_high_approval_isolated)
+        graph.commit_node(n_seed, origin=CommitmentOrigin.TEST_FIXTURE)
+        graph.commit_node(n_supported, origin=CommitmentOrigin.TEST_FIXTURE)
+        graph.commit_node(n_high_approval_isolated, origin=CommitmentOrigin.TEST_FIXTURE)
 
         cascade = InterpCascade(graph)
         efp = BusinessInput("T_PROP", "U1", "sales", "大型契約についての相談")
@@ -2888,7 +2888,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
 
     def test_bundle_level_vs_node_level_ablation(self):
         """P4/P5 契約: 複数ノード束 L において、束全体の切断で ΔF > 0 が生じた場合でも、単一ノード個別切断 (Leave-One-Out) により effect_verified_node_ids を分離・限定すること (BASE v2.0 §4.2)"""
-        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.mb_graph import MBGraph, MBNode, CommitmentOrigin
         from rdl_enterprise.constraint import RuptureProbe, ConstraintBundle, ConstraintContext
         from rdl_enterprise.snapshot import BusinessInput, ReplayToken, CounterfactualInput, BridgeExecutionTrace
 
@@ -2947,8 +2947,8 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
         n1 = MBNode(id="n1", domain="tech", trigger_pattern={"exact_keys": ["API仕様"]}, action_template={"type": "direct_reply", "payload": "p1"}, confidence=0.9)
         n2 = MBNode(id="n2", domain="tech", trigger_pattern={"exact_keys": ["API補足"]}, action_template={"type": "direct_reply", "payload": "p2"}, confidence=0.8)
         n1.node_relations = {"n2": "support"}
-        graph.commit_node(n1)
-        graph.commit_node(n2)
+        graph.commit_node(n1, origin=CommitmentOrigin.TEST_FIXTURE)
+        graph.commit_node(n2, origin=CommitmentOrigin.TEST_FIXTURE)
 
         bridge = MultiNodeAblationMockBridge()
         bundle = ConstraintBundle(node_ids=["n1", "n2"], locus_type="strong", constraint_score=0.85)
