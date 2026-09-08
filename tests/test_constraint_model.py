@@ -1273,7 +1273,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
             mb_content_hash=graph.content_hash(),
             frozen_mb=graph,
             target_domain="sales",
-            initial_level0_cache={("sales", "見積"): "n1"},
+            initial_level0_cache={("v1.0", "sales", "見積"): "n1"},
         )
 
         efp = _make_efp("見積", category="sales")
@@ -1372,7 +1372,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
             mb_content_hash=graph.content_hash(),
             frozen_mb=graph,
             target_domain="sales",
-            initial_level0_cache={("sales", "見積作成"): "n1"},
+            initial_level0_cache={("v1.0", "sales", "見積作成"): "n1"},
         )
 
         efp = _make_efp("見積作成", category="sales")

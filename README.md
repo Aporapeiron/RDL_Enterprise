@@ -1,6 +1,6 @@
 # RDL_Enterprise — RDL業務AI ランタイム
 
-**RDL（関係力学言語 / Relational Dynamics Language）** をベースにした、自律適応型業務AIエージェントの本格運用・参照実装。
+**RDL（関係力学言語 / Relational Dynamics Language）** をベースにした、自律適応型業務AIエージェントの運用実証・参照実装。
 
 既存のLLMを「AIの本体」ではなく「外部推論器・未回収関係（$\xi$）展開器」と位置づけ、業務経験を通じて職場固有の有限関係拘束構造 **$M_B$** を形成・沈澱させ、**「仕事に慣れるほど計算量・コストが逓減する（逆スケーリング）」** 閉じた代謝ループを実現します。
 
@@ -17,7 +17,7 @@
 4. **凍結解釈文脈（FrozenInterpretationContext）と ReplayToken**:
    * 意思決定時のコンテキストハッシュ $h_{ctx}$ とトークン $\tau_{replay}$ を完全記録。監査・差分検証・反実仮想（Counterfactual Simulation）を改ざん不能に担保。
 5. **自己修正力低下（$\kappa \to 0$）と HITL（Human-in-the-Loop）**:
-   * 確信度不足や破断兆候を力学的に検出し、自律的に人間に質問・確認。先輩の回答を $M_B$ へ即時沈澱。
+   * 確信度不足や破断兆候を力学的に検出し、自律的に人間に質問・確認。先輩の回答を成功確認後に $M_B$ へ沈澱（権限者による方針指示は即時反映）。
 6. **環境変化の検知と安全な再編相（$M_\Delta$）**:
    * 制度変更や組織改編で従来の予測が外れると不整合熱 $H$ が蓄積し、有効判定境界 $\theta_{eff} = \theta_0 - g(\xi_{obs})$ を突破して自動的に再編相 $M_\Delta$ へ突入。
    * 耐久テストハーネス（回帰・権限境界・表現揺らし）、シャドウ推論（Shadow Execution）、バージョン隔離されたCanary運用（Canary Isolation）を経て安全に本番適用（Leap）。
@@ -55,7 +55,7 @@ RDL_Enterprise/
 │   ├── test_candidate_immutability.py   # 候補ノード不変性・スナップショットテスト
 │   ├── test_constraint_model.py         # 制約部分グラフ・関係伝播・Locus意味付けテスト
 │   ├── test_core.py                     # コア代謝・ライフサイクルテスト
-│   ├── test_product_acceptance.py       # 製品受入テスト（最小代謝閉ループ・権威分離・バージョン束縛等 9大テスト）
+│   ├── test_product_acceptance.py       # 製品受入テスト（最小代謝閉ループ・権威分離・バージョン束縛・観測保留等 11大テスト）
 │   ├── test_promotion_gate.py           # 昇格ゲート・シャドウ評価テスト
 │   ├── test_shadow.py                   # 反実仮想シャドウ推論テスト
 │   └── test_social_adapter.py           # ソーシャル摂動フィクスチャテスト
@@ -101,4 +101,4 @@ Pure LLM（毎回フルプロンプト推論）、Standard RAG（毎回検索注
 py -m pytest -o pythonpath=src
 ```
 
-全 **142件** の単体・結合・受入テストが高速（約0.2秒）にパスします。
+全 **144件** の単体・結合・受入テストが高速（約0.2秒）にパスします。

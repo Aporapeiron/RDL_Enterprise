@@ -582,10 +582,14 @@ class EnterpriseRuntime:
                 # 通常運転：局所更新 (dM_B/dt)
                 matched_node = target_graph.get(pred.matched_node_id) if pred.matched_node_id else None
                 if matched_node:
-                    if not is_timeout and feedback and feedback.user_resolved and not feedback.human_rejected:
+                    if not is_timeout and status == CaseStatus.SUCCESS and feedback and feedback.user_resolved and not feedback.human_rejected:
                         matched_node.record_success(approved=feedback.human_approved)
-                    else:
+                    elif not is_timeout and status in (CaseStatus.FAILURE, CaseStatus.REJECTED):
                         matched_node.record_failure(rejected=rejected)
+                    elif is_timeout or status == CaseStatus.UNKNOWN:
+                        # 観測不能・タイムアウト (UNKNOWN): 判断の誤りではないため failure_count / confidence は変更せず未解決として記録
+                        if hasattr(matched_node, "record_unresolved"):
+                            matched_node.record_unresolved()
 
                 if status == CaseStatus.SUCCESS and (not feedback or not getattr(snapshot.efp_prime, "human_approved", False)):
                     self.auto_resolved_count += 1

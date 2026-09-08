@@ -98,17 +98,18 @@ graph TD
 1. **Locus Semantic Staging**:
    * ノード群を役割（`core` / `auxiliary`）および意味論的座（Locus: 組織方針、法務制約、業務手順、例外措置）へステージング。
 2. **グラフ活性化と 1-hop 伝播**:
-   * 直接適合した制約ノードから、依存・背反・前提関係（`depends_on`, `conflicts_with`, `requires_authority`）を持つ隣接ノードを 1-hop 伝播して部分グラフ $L_{candidate}$ を構成。
+   * 入力適合度が閾値（`relevance_floor = 0.05`）以上のシードノードから、明示的拘束エッジ（`support`, `authority`, `policy_authority`）、共起関係（`co_occurs`）、および補助的推定関係（`inferred_support`）を持つ隣接ノードを 1-hop 伝播して活性化部分グラフ $L_{candidate}$ を構成。
 3. **Applied View Contract**:
    * 実際に推論・評価プロセスを通っていない制約の「見せかけの適用（捏造）」を型レベルで遮断し、`execution_trace` に基づく追跡可能な制約のみを `applied_constraints` として記録。
 
 ### 3.3 最小代謝ループの閉塞（Closed Loop Sedimentation）
-* **Level 0 キャッシュのバージョン束縛**:
+* **Level 0 キャッシュの厳格なバージョン束縛**:
   * キャッシュキーは `(mb_version, domain, normalized_query)` の3組で構造的に束縛される。
-  * グラフ更新（Leap や Rollback）によって `mb_version` がインクリメントされた場合、過去バージョンのキャッシュが誤適用される事故をゼロにする。
-* **沈澱（Sedimentation）の契約**:
+  * グラフ更新（Leap や Rollback）によって `mb_version` が更新された場合、過去バージョンのキャッシュが誤適用される事故をゼロにする。
+  * 旧形式キャッシュの取り込みは、明示的な `migrate_legacy_cache(cache, source_mb_version)` 経由でのみ許可され、由来バージョン（provenance）なしでの自己昇格を禁止。
+* **沈澱（Sedimentation）と観測保留（UNKNOWN ≠ FAILURE）の契約**:
   * 案件受付時（未確認時）にはライブ Level 0 キャッシュへ書き込まず、非同期ライフサイクルを経て `user_resolved == True` かつ `!human_rejected` が確認された段階で初めて `sediment_level0()` を呼び出す。
-  * これにより、誤答やノイズがキャッシュへ永続化される汚染を防止。
+  * タイムアウトや未回収案件（UNKNOWN）は判断の誤り（FAILURE）ではなく未確定な未回収関係（$\xi$）の残存として扱い、ノード統計（`failure_count` / `confidence`）を悪化させず `unresolved_count` として独立記録。
 
 ### 3.4 権威的方針注入（Authority Injection）の分離
 * `InterpCascade.crystallize_rule()`: 業務成功から自律生成される経験的ルール（`origin="experience"`, `source_lineage="sedimentation:experience"`）。
@@ -170,12 +171,14 @@ $H_{total} \ge \theta_{eff}$ に達した瞬間、巡航相（Cruise）から再
 | **Test 7** | 権威方針と経験沈澱の分離 | `origin="authority"` で注入されたノードは `authority_level="policy"` および固有 Lineage を保持し、経験沈澱ノードと混同されないこと。 |
 | **Test 8** | バージョン束縛キャッシュ | グラフバージョン更新後、旧バージョンのキャッシュキーが無効化され、旧compatキーが存在していても新バージョン側で誤適用されず厳格に推論が再実行されること。 |
 | **Test 9** | 未認可方針注入の遮断 | 権限範囲外のアクターによる `inject_authoritative_rule()` の呼び出しが `PermissionError` で即座にフェイルクローズ遮断されること。 |
+| **Test 10** | TIMEOUTの観測保留 | タイムアウト案件（UNKNOWN）において、ノードの `failure_count` や `confidence` が悪化せず、`unresolved_count` として観測保留記録されること。 |
+| **Test 11** | キャッシュ移行の起源明示 | 旧形式キャッシュのインポート時に `source_mb_version` の明示を義務付け、現行バージョンへの不当な自己昇格が防止されること。 |
 
 ---
 
 ## 6. 結論と次期フェーズ展望
 
-本文書で定義された `RDL_Enterprise v2.0` は、T0/BASE の公理系（有限境界、未回収関係、代謝閉ループ、自己例外化禁止）を完全に具現化した。
-新入社員フェーズからベテランフェーズへの逆スケーリング（計算コスト逓減）は実証され、Canary 熱隔離および権威分離によってエンタープライズ運用に耐えうる頑健性を獲得した。
+本文書で定義された `RDL_Enterprise v2.0` は、現時点の有限実装境界において、T0/BASE の主要契約（有限境界 $B$、未回収関係 $\xi$ の残存、代謝閉ループ、自己例外化禁止）を実装・検証した。
+経験の蓄積に伴う計算コスト逓減（逆スケーリング）はシミュレーション上で実証され、Canary 熱隔離、権威方針分離、および観測保留（UNKNOWN ≠ FAILURE）規律によってエンタープライズ実証に耐えうる検証基盤を確立した。
 
 次期フェーズ（Phase B）では、実業務データ連携、非同期分散キュー統合、およびマルチエージェント間の境界調停へと展開を進める。

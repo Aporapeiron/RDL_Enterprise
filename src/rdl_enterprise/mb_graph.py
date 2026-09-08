@@ -104,6 +104,7 @@ class MBNode:
     failure_count: int = 0
     approval_count: int = 0
     rejection_count: int = 0
+    unresolved_count: int = 0
     is_frozen: bool = False
     source_id: Optional[str] = None       # 固有の発行元・作成元ID (BASE v2.0 §4.2: ソース独立性)
     source_lineage: Optional[str] = None  # 上流系譜 (例: "manual_hr_v1", "policy_sec_2026")
@@ -183,6 +184,17 @@ class MBNode:
         if rejected:
             self.rejection_count += 1
         self.confidence = max(0.1, self.confidence - 0.1)
+        self.last_updated = datetime.utcnow().isoformat()
+
+    def record_unresolved(self):
+        """
+        観測不能・タイムアウト（UNKNOWN）の記録。
+        判断が誤っていたわけではないため、failure_count や confidence は減衰させず、
+        未回収関係（ξ）の滞留・未解決観測として独立にカウントする。
+        """
+        if self.is_frozen:
+            raise RuntimeError(f"MBNode(id={self.id}) は凍結(frozen)されています。学習・統計更新は禁止されています。")
+        self.unresolved_count += 1
         self.last_updated = datetime.utcnow().isoformat()
 
 

@@ -298,6 +298,63 @@ class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
                 authority=operator,
             )
 
+    def test_timeout_never_increments_node_failure_or_degrades_confidence(self):
+        """受入条件 10 (P0): TIMEOUT / UNKNOWN は node outcome failure から厳格分離され、観測保留として記録されること"""
+        runtime = EnterpriseRuntime(mb_graph=self.prod_graph)
+        node = runtime.mb_graph.get("node_wf_ringi")
+        initial_failure = node.failure_count
+        initial_confidence = node.confidence
+        initial_unresolved = node.unresolved_count
+
+        # 1. 案件受付 -> タイムアウト (UNKNOWN化)
+        efp_timeout = BusinessInput("T_TIMEOUT_TEST", "U1", "workflow", "稟議申請の方法")
+        runtime.dispatch_ticket(efp_timeout)
+        runtime.expire_pending_tickets(["T_TIMEOUT_TEST"])
+
+        # TIMEOUT では failure_count や confidence は一切汚染されず、unresolved_count のみ加算されること
+        self.assertEqual(node.failure_count, initial_failure)
+        self.assertEqual(node.confidence, initial_confidence)
+        self.assertEqual(node.unresolved_count, initial_unresolved + 1)
+
+        # 2. 一方で明示的なユーザー未解決 (FAILURE) では failure_count++ / confidence-- となること
+        efp_fail = BusinessInput("T_FAIL_TEST", "U2", "workflow", "稟議申請の方法")
+        runtime.dispatch_ticket(efp_fail)
+        runtime.resolve_ticket_feedback("T_FAIL_TEST", FeedbackResult(user_resolved=False))
+
+        self.assertEqual(node.failure_count, initial_failure + 1)
+        self.assertLess(node.confidence, initial_confidence)
+
+    def test_legacy_cache_migration_requires_source_version_and_prevents_unauthorized_elevation(self):
+        """受入条件 11 (P1): legacy cache migration は source-version を義務付け、現行バージョンへの自己昇格を防止すること"""
+        from rdl_enterprise.cascade import InterpCascade
+
+        graph = MBGraph(version="v2.0")
+
+        # 1. 2タプルキーを initial_cache に渡すと ValueError で拒絶
+        legacy_cache = {("workflow", "稟議申請の方法"): "node_wf_ringi"}
+        with self.assertRaises(ValueError):
+            InterpCascade(mb_graph=graph, initial_cache=legacy_cache)
+
+        # 2. 2タプルキーを import_cache() に渡しても ValueError で拒絶
+        cascade = InterpCascade(mb_graph=graph)
+        with self.assertRaises(ValueError):
+            cascade.import_cache(legacy_cache)
+
+        # 3. 明示的な migrate_legacy_cache では source_mb_version が必須
+        with self.assertRaises(ValueError):
+            cascade.migrate_legacy_cache(legacy_cache, source_mb_version="")
+
+        # 4. source_mb_version="v1.0" として安全に取り込み
+        cascade.migrate_legacy_cache(legacy_cache, source_mb_version="v1.0")
+        norm_q = cascade._normalize("稟議申請の方法")
+        self.assertIn(("v1.0", "workflow", norm_q), cascade.level0_cache)
+        self.assertNotIn(("v2.0", "workflow", norm_q), cascade.level0_cache)
+
+        # カスケードの現行バージョンが v2.0 であるため、v1.0 由来のキャッシュは Level 0 でヒットしないこと！
+        efp = BusinessInput("T_MIG_01", "U1", "workflow", "稟議申請の方法")
+        pred = cascade.interpret(efp)
+        self.assertNotEqual(pred.cost_tier, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -36,14 +36,17 @@ class InterpCascade:
         self.llm_bridge = llm_bridge
         self.config = config or CascadeConfig()
         # Level 0 キャッシュ: (mb_version, domain, norm_query) -> node_id
-        current_ver = getattr(self.mb_graph, "version", "unknown")
+        # BASE v2.0 §4.2: キャッシュはグラフバージョンに厳格に構造束縛され、暗黙のバージョン捏造は禁止。
         norm_initial_cache: Dict[Tuple[str, str, str], str] = {}
         if initial_cache:
             for k, v in initial_cache.items():
-                if len(k) == 2:
-                    norm_initial_cache[(current_ver, k[0], k[1])] = v
-                elif len(k) == 3:
+                if len(k) == 3:
                     norm_initial_cache[k] = v
+                else:
+                    raise ValueError(
+                        f"Level 0 キャッシュキーは (mb_version, domain, query) の3タプルが必須です。無効なキー: {k}。"
+                        f"旧形式の移行には InterpCascade.migrate_legacy_cache(cache, source_mb_version) を使用してください。"
+                    )
         self.level0_cache: Dict[Tuple[str, str, str], str] = norm_initial_cache
         # 関係拘束評価器（カスタム ConstraintConfig を保持）
         self.constraint_locator = RelationConstraintLocator(constraint_config or ConstraintConfig())
@@ -58,13 +61,26 @@ class InterpCascade:
         return dict(self.level0_cache)
 
     def import_cache(self, cache: Dict[Tuple, str]):
-        """外部キャッシュスナップショットを取り込み（2タプルキーは現在バージョンで正規化）"""
-        current_ver = getattr(self.mb_graph, "version", "unknown")
+        """外部キャッシュスナップショットを取り込み（3タプルバージョン付きキーのみ許可）"""
         for k, v in cache.items():
-            if len(k) == 2:
-                self.level0_cache[(current_ver, k[0], k[1])] = v
-            elif len(k) == 3:
+            if len(k) == 3:
                 self.level0_cache[k] = v
+            else:
+                raise ValueError(
+                    f"Level 0 キャッシュキーは (mb_version, domain, query) の3タプルが必須です。無効なキー: {k}。"
+                    f"旧形式の移行には migrate_legacy_cache(cache, source_mb_version) を使用してください。"
+                )
+
+    def migrate_legacy_cache(self, legacy_cache: Dict[Tuple[str, str], str], source_mb_version: str):
+        """
+        旧形式 (domain, query) のキャッシュを、指定された由来バージョン (source_mb_version) を明示付与して安全に取り込む。
+        自動で current_version を捏造・昇格させず、provenance（由来バージョン）の明示を義務付ける (BASE v2.0 公理B5)。
+        """
+        if not source_mb_version:
+            raise ValueError("source_mb_version は必須です。由来バージョンなしでの昇格は禁止されています。")
+        for (dom, q), node_id in legacy_cache.items():
+            norm_q = self._normalize(q)
+            self.level0_cache[(source_mb_version, dom, norm_q)] = node_id
 
     def _normalize(self, text: str) -> str:
         return re.sub(r"\s+", "", text.lower())
