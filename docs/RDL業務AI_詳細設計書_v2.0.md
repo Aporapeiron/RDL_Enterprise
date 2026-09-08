@@ -1,0 +1,171 @@
+# RDL業務AI 詳細設計書 v2.0
+*文書コード：RDL-ENT-SPEC-02 / 統合実装仕様書*  
+*準拠公理：RDL T0 基底措定（BASE v2.0） / T0 最低動作仕様（SPEC v2.0） / T1 操作仕様（SILN Operations）*
+
+---
+
+## 1. システム概要と基本思想
+
+### 1.1 背景と設計目標
+本システム（`RDL_Enterprise`）は、既存の大規模言語モデル（LLM）や検索基盤を「AIの本体」として特権化せず、高負荷時や未知探索時に起動される「外部推論器・未回収関係（$\xi$）展開器」と位置づける。
+業務経験を通じて、その組織固有の有限関係拘束構造 **$M_B$（自己側の有限整合構造）** を形成・適応させ、**「仕事に慣れるほど計算量・コストが逓減する（逆スケーリング）」** 閉じた代謝ループを実現する自律型業務AIランタイムである。
+
+```text
+【目標像】
+「新入社員として配属され、経験と人との対話を通じてベテランへと成長し、
+  制度改変には自律的に発熱して再編・適応するAI」
+```
+
+### 1.2 RDL T0/BASE v2.0 への厳格準拠
+1. **有限境界 $B$ と未回収関係 $\xi$**:
+   * 業務ドメイン（アカウント、ネットワーク、ハードウェア等）、組織権限、アクセス可能ツールを明示的な境界 $B$ として画定する。
+   * 境界 $B$ を引く限り、制度の隙間や文脈依存の例外（$\xi$）が不可避に残る。本システムは全知全能を仮定せず、常に未回収関係 $\xi$ を力学的に追跡・計測する。
+2. **代謝ループの閉塞（Closed Loop）**:
+   * 外部入力 $EFP$ に対する予測 $F$ の出力にとどまらず、事後結果 $EFP'$ の観測、内部解釈差分 $E$ の算出、熱 $H$ の蓄積／散逸、そして **成功案件（`CaseStatus.SUCCESS`）の $M_B$ およびライブ Level 0 キャッシュへの沈澱（Sedimentation）** までを一貫した閉ループとして成立させる。
+3. **自己例外化禁止（B5公理）**:
+   * AI自身の権限判定ルール、HITL（人に聞く）閾値、ツール実行規則も $M_B$ のノード群および制約構造の中に組み込まれ、例外的な特権を持たず、再編相 $M_\Delta$ の検査・改訂対象となる。
+4. **権威的方針注入（Authority Injection）と経験沈澱（Experience Sedimentation）の分離**:
+   * 人間管理者による明示的な方針変更（`origin="authority"`）と、現場業務の成功に伴う経験沈澱（`origin="experience"`）を系統（Lineage）として厳密に分離し、権威昇格や監査の正当性を保つ。
+
+---
+
+## 2. 全体アーキテクチャ
+
+システムは、代謝骨格を司る **RDL Runtime Core**、階層型推論を行う **InterpCascade（推論関数スロット）**、動的制約を解決する **ConstraintEngine**、再編時の安全性を保証する **DurabilityHarness ＆ PromotionGate** から構成される。
+
+```mermaid
+graph TD
+    UserIn[業務入力 EFP] --> Runtime[EnterpriseRuntime Core]
+    
+    subgraph Core[RDL Runtime Core]
+        ContextMgr[Frozen Context & ReplayToken]
+        HState[HState 熱管理・自然散逸・θ_eff判定]
+        CanaryMgr[CanaryManager バージョン熱隔離]
+        Lifecycle[非同期ライフサイクル PENDING/SUCCESS/UNKNOWN]
+    end
+
+    subgraph Inference[InterpCascade 推論多層スロット]
+        L0[Tier 0: Level 0 バージョン束縛キャッシュ]
+        L1[Tier 1: Level 1 構造化確定ルール]
+        L2[Tier 2: Level 2 局所埋め込み類似検索]
+        L3[Tier 3: Level 3 外部LLM推論器]
+    end
+
+    subgraph Constraints[ConstraintEngine & Active Subgraph]
+        LocusStage[Locus Semantic Staging]
+        ActiveSub[Active Constraint Subgraph 抽出]
+        RelProp[1-hop 関係性伝播 & 意味制約検証]
+    end
+
+    subgraph Durability[Durability & Promotion Gate]
+        Harness[DurabilityHarness 破断検査]
+        ShadowRunner[ShadowExecutionRunner 反実仮想並行推論]
+        Gate[PromotionGate 自動ロールバック & Leap]
+    end
+
+    Runtime --> Inference
+    Inference <--> Constraints
+    Inference --> Action[予測出力 F / アクション実行]
+    Action --> Feedback[事後結果 EFP' / 人間フィードバック]
+    Feedback --> Runtime
+
+    Runtime -- "成功確認 (SUCCESS)" --> Sediment[Level 0 & M_B 沈澱]
+    Sediment --> L0
+    
+    Runtime -- "H >= θ_eff (再編発動)" --> Durability
+    Durability -- "合格 M_B' (Leap)" --> Runtime
+```
+
+---
+
+## 3. 主要コンポーネント詳細仕様
+
+### 3.1 凍結解釈文脈（FrozenInterpretationContext）と ReplayToken
+推論時の境界 $B$ と $M_B$ の状態を改ざん不能な確定スナップショットとして固定する。
+* **`context_hash` ($C_0$)**: 推論時の `(mb_version, domain, active_constraints_hash, authority_context)` の決定論的ハッシュ。
+* **`ReplayToken` ($K$)**: 案件ID、タイムスタンプ、入力特徴、および $C_0$ から導出される一意トークン。事後フィードバック時やシャドウ並行推論時の反実仮想比較（Counterfactual Comparison）における基準線となる。
+
+### 3.2 動的アクティブ制約部分グラフ（Active Constraint Subgraph）
+すべてのルールノードを全件照合するのではなく、案件の文脈・ドメイン・権限境界に応じて動的に部分グラフを切り出す。
+1. **Locus Semantic Staging**:
+   * ノード群を役割（`core` / `auxiliary`）および意味論的座（Locus: 組織方針、法務制約、業務手順、例外措置）へステージング。
+2. **グラフ活性化と 1-hop 伝播**:
+   * 直接適合した制約ノードから、依存・背反・前提関係（`depends_on`, `conflicts_with`, `requires_authority`）を持つ隣接ノードを 1-hop 伝播して部分グラフ $L_{candidate}$ を構成。
+3. **Applied View Contract**:
+   * 実際に推論・評価プロセスを通っていない制約の「見せかけの適用（捏造）」を型レベルで遮断し、`execution_trace` に基づく追跡可能な制約のみを `applied_constraints` として記録。
+
+### 3.3 最小代謝ループの閉塞（Closed Loop Sedimentation）
+* **Level 0 キャッシュのバージョン束縛**:
+  * キャッシュキーは `(mb_version, domain, normalized_query)` の3組で構造的に束縛される。
+  * グラフ更新（Leap や Rollback）によって `mb_version` がインクリメントされた場合、過去バージョンのキャッシュが誤適用される事故をゼロにする。
+* **沈澱（Sedimentation）の契約**:
+  * 案件受付時（未確認時）にはライブ Level 0 キャッシュへ書き込まず、非同期ライフサイクルを経て `user_resolved == True` かつ `!human_rejected` が確認された段階で初めて `sediment_level0()` を呼び出す。
+  * これにより、誤答やノイズがキャッシュへ永続化される汚染を防止。
+
+### 3.4 権威的方針注入（Authority Injection）の分離
+* `InterpCascade.crystallize_rule()`: 業務成功から自律生成される経験的ルール（`origin="experience"`, `source_lineage="sedimentation:experience"`）。
+* `InterpCascade.inject_authoritative_rule()`: 権限者（管理者、情報セキュリティ責任者等）から明示的に付与される方針ノード（`authority_level="policy"`, `source_lineage="authority:{role}:{actor}"`）。
+* ガバナンスにおいて、経験的ノードは耐性低下や発熱によって淘汰・再編され得るが、権威的ノードは権限者の明示的な改廃手続きを経るまで保持される。
+
+### 3.5 バージョン隔離された Canary 運用と自動ロールバック
+* **Canary 熱隔離**:
+  * Canary 展開中のバージョンにおいて発生した不整合・タイムアウト熱は、本番（Production）の `HState` を一切汚染せず、`CanaryManager` 固有の熱状態に蓄積される。
+* **自動ロールバック**:
+  * Canary 熱が閾値 $\theta_{canary}$ を超過した場合、またはシャドウ反実仮想評価で改悪率が許容限界を超えた場合、即座に本番バージョンへ安全にロールバックされる。
+
+---
+
+## 4. 計算力学モデル（T0 Primitive 実装）
+
+### 4.1 整合慣性質量 $\|M_B\|$ と自己修正可能性 $\kappa$
+各ノード $n$ の慣性質量 $\|n\|$ および自己修正可能性 $\kappa(n)$ は、経験の蓄積（成功 $S$, 承認 $A$, 失敗 $F$, 却下 $R$）により更新される。
+
+$$
+\|n\| = \max\left(0.1, 1.0 + \alpha (S + 2A) - \beta (F + 2R)\right)
+$$
+
+$$
+\kappa(n) = \frac{1.0}{1.0 + \lambda \|n\|}
+$$
+
+* 経験を重ねて安定したノードは $\|n\|$ が増大し、$\kappa \to 0$（硬化・低コスト即答）。
+* 失敗や差し戻しが重なると $\|n\|$ が減衰し、$\kappa$ が上昇（軟化・再編容易化）。
+
+### 4.2 熱 $H$ の多層追跡と動的有効閾値 $\theta_{eff}$
+熱 $H$ は単一スカラーではなく、予測不整合熱 $H_{pred}$、権限逸脱熱 $H_{auth}$、不確実性タイムアウト熱 $H_{timeout}$ の合成ベクトルとして追跡される。
+
+$$
+H_{total} = w_{pred} H_{pred} + w_{auth} H_{auth} + w_{time} H_{timeout}
+$$
+
+未回収関係（観測された外部ノイズ・文脈不確実性）$\xi_{obs}$ に応じて、有効閾値 $\theta_{eff}$ は動的に引き下げられる。
+
+$$
+\theta_{eff} = \theta_0 - g(\xi_{obs})
+$$
+
+$H_{total} \ge \theta_{eff}$ に達した瞬間、巡航相（Cruise）から再編相（$M_\Delta$）への状態遷移が強制発火する。
+
+---
+
+## 5. 検証済み受入テスト基準（Phase A Acceptance Matrix）
+
+| テスト識別子 | 検証対象メカニズム | 合格基準 |
+|---|---|---|
+| **Test 1** | 最小代謝閉ループ | Tier 1/3 応答後、`FeedbackResult(user_resolved=True)` の回収を経て即座に Tier 0 キャッシュへ沈澱し、次回同一クエリが Tier 0 で即答されること。 |
+| **Test 2** | 未解決案件の汚染防止 | `user_resolved=False` または人間差し戻し案件は Level 0 キャッシュへ沈澱しないこと。 |
+| **Test 3** | 未知案件の HITL 発火 | 確信度不足の未知案件に対し、人間に確認（`hitl_triggered=True`）し、回答が $M_B$ へ沈澱すること。 |
+| **Test 4** | 環境変化と $M_\Delta$ 発火 | 苦情・失敗の連続により $H \ge \theta_{eff}$ となり、再編相プロポーザルが起草されること。 |
+| **Test 5** | 耐久ハーネス検証 | 回帰検査・権限境界検査・摂動ストレステストを通過した候補のみが昇格対象となること。 |
+| **Test 6** | Canary タイムアウト熱隔離 | Canary スナップショットのタイムアウト発生時、本番 `HState` の熱および $\theta_{eff}$ が一切影響を受けず、Canary 側のみ発熱・ロールバック判定されること。 |
+| **Test 7** | 権威方針と経験沈澱の分離 | `origin="authority"` で注入されたノードは `authority_level="policy"` および固有 Lineage を保持し、経験沈澱ノードと混同されないこと。 |
+| **Test 8** | バージョン束縛キャッシュ | グラフバージョン更新後、旧バージョンのキャッシュキーが無効化され、新バージョン側の推論が正しく実行されること。 |
+
+---
+
+## 6. 結論と次期フェーズ展望
+
+本文書で定義された `RDL_Enterprise v2.0` は、T0/BASE の公理系（有限境界、未回収関係、代謝閉ループ、自己例外化禁止）を完全に具現化した。
+新入社員フェーズからベテランフェーズへの逆スケーリング（計算コスト逓減）は実証され、Canary 熱隔離および権威分離によってエンタープライズ運用に耐えうる頑健性を獲得した。
+
+次期フェーズ（Phase B）では、実業務データ連携、非同期分散キュー統合、およびマルチエージェント間の境界調停へと展開を進める。

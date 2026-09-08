@@ -1,44 +1,69 @@
 # RDL_Enterprise — RDL業務AI ランタイム
 
-**RDL（関係力学言語 / Relational Dynamics Language）** をベースにした、自律適応型業務AIエージェントの参照実装。
+**RDL（関係力学言語 / Relational Dynamics Language）** をベースにした、自律適応型業務AIエージェントの本格運用・参照実装。
 
-既存のLLMを「本体」ではなく「外部推論器」と位置づけ、業務経験を通じて職場固有の判断構造 **$M_B$** を形成・沈澱させ、**「仕事に慣れるほど計算量・コストが逓減する」** 逆スケーリングを実現します。
+既存のLLMを「AIの本体」ではなく「外部推論器・未回収関係（$\xi$）展開器」と位置づけ、業務経験を通じて職場固有の有限関係拘束構造 **$** を形成・沈澱させ、**「仕事に慣れるほど計算量・コストが逓減する（逆スケーリング）」** 閉じた代謝ループを実現します。
 
 ---
 
-## 🧭 特徴
+## 🧭 コア特徴
 
-1. **新入社員からベテランへ**:
-   * 未知案件は高コストな外部LLMで推論 $\to$ 成功した判断をルールや局所モデル（$M_B$）へ沈澱 $\to$ 次回以降はローカル最小コストで即答。
-2. **人に聞く（Human-in-the-Loop）**:
-   * 確信度不足や自己修正力低下（$\kappa \to 0$）を力学的に検出し、自律的に人間に質問・確認。
-3. **環境変化の検知と再編（$M_\Delta$）**:
-   * 制度変更や組織改編で従来の予測が外れると熱 $H$ が蓄積し、有効判定境界 $\theta_{eff} = \theta_0 - g(\xi_{obs})$ を突破して自動的に再編相 $M_\Delta$ へ突入。
+1. **閉じた代謝ループ（Metabolic Closed Loop）**:
+   * 未知案件は Tier 3（外部LLM）または Tier 1（確定規則）で推論 $\to$ ユーザー解決等の成功確認（'$ 観測）を経て、ライブ実行系の **Level 0 キャッシュおよび $ へ沈澱（Sedimentation）** $\to$ 次回同一・類似案件は Tier 0（ローカル・ゼロコスト）で即答。
+2. **権限境界と権威的方針注入（Authority Separation）**:
+   * 人間の管理権限・方針注入（origin="authority"）と、業務成功に伴う経験沈澱（origin="experience"）を系統分離し、自己例外化（B5）を防止。
+3. **動的アクティブ制約部分グラフ（Active Constraint Subgraph）**:
+   * ドメイン関連度・関係性伝播・ノード種別（組織ポリシー、法令、手続き）に基づき、案件ごとに必要な制約部分グラフを抽出。
+4. **凍結解釈文脈（FrozenInterpretationContext）と ReplayToken**:
+   * 意思決定時のコンテキストハッシュ $ とトークン $ を完全記録。監査・差分検証・反実仮想（Counterfactual Simulation）を改ざん不能に担保。
+5. **自己修正力低下（$\kappa \to 0$）と HITL（Human-in-the-Loop）**:
+   * 確信度不足や破断兆候を力学的に検出し、自律的に人間に質問・確認。先輩の回答を $ へ即時沈澱。
+6. **環境変化の検知と安全な再編相（\Delta$）**:
+   * 制度変更や組織改編で従来の予測が外れると不整合熱 $ が蓄積し、有効判定境界 $\theta_{eff} = \theta_0 - g(\xi_{obs})$ を突破して自動的に再編相 \Delta$ へ突入。
+   * 耐久テストハーネス（回帰・権限境界・表現揺らし）、シャドウ推論（Shadow Execution）、バージョン隔離されたCanary運用（Canary Isolation）を経て安全に本番適用（Leap）。
 
 ---
 
 ## 📂 ディレクトリ構成
 
-```text
+`	ext
 RDL_Enterprise/
 ├── docs/
-│   └── RDL業務AI_詳細設計書_v1.0.md    # 統合仕様書（v1.0 固定済）
+│   ├── RDL業務AI_詳細設計書_v1.0.md    # 初期アーキテクチャ設計書
+│   └── RDL業務AI_詳細設計書_v2.0.md    # v2.0 統合詳細設計書（代謝閉ループ・制約部分グラフ・権威分離・監査）
 ├── data/
-│   └── seed_it_support.json             # 社内ITサポート初期シード
+│   ├── seed_it_support.json             # 社内ITサポート初期シードグラフ
+│   └── social_fixtures_sample.json      # 耐久ハーネス用ソーシャル摂動データ
 ├── src/
 │   └── rdl_enterprise/
-│       ├── mb_graph.py                  # MBNode, MBGraph（慣性質量・κ・JSON永続化）
-│       ├── snapshot.py                  # CaseSnapshot（非同期F/F'差分・結果追跡）
-│       ├── h_state.py                   # HState（熱ベクトル・散逸・θ_eff判定）
-│       ├── cascade.py                   # InterpCascade（Level 0〜3 多層推論）
+│       ├── __init__.py                  # パッケージ公開API
+│       ├── authority.py                 # AuthorityContext（権限境界・役職定義）
+│       ├── canary.py                    # CanaryManager, CanaryPolicy（Canaryデプロイ・熱隔離・自動ロールバック）
+│       ├── cascade.py                   # InterpCascade（Level 0〜3 多層推論・バージョン束縛キャッシュ・沈澱）
+│       ├── constraint.py                # ConstraintEngine, RuleNode, Locus, Active Constraint Subgraph
+│       ├── durability.py                # DurabilityHarness（回帰・境界・摂動破断チェッカー）
+│       ├── h_state.py                   # HState（熱ベクトル・自然散逸・θ_eff判定・バージョン別熱管理）
 │       ├── human.py                     # HumanQuery（κゲート・HITL制御）
-│       └── runtime.py                   # EnterpriseRuntime（巡航代謝・非同期ライフサイクル）
+│       ├── mb_graph.py                  # MBNode, MBGraph（慣性質量・κ・バージョン管理・JSON永続化）
+│       ├── promotion_gate.py            # PromotionGate, ShadowEvaluator（シャドウ反実仮想評価・昇格判定）
+│       ├── runtime.py                   # EnterpriseRuntime（代謝オーケストレーション・非同期ライフサイクル）
+│       ├── shadow.py                    # ShadowExecutionRunner, CounterfactualComparator（シャドウ並行推論）
+│       ├── snapshot.py                  # CaseSnapshot, FrozenInterpretationContext, ReplayToken
+│       └── social_adapter.py            # SocialFixtureAdapter
 ├── tests/
-│   └── test_core.py                     # 単体テストスイート
-├── run_simulation.py                    # 3大シナリオ実証スクリプト
+│   ├── test_canary.py                   # Canary隔離・熱監視テスト
+│   ├── test_candidate_immutability.py   # 候補ノード不変性・スナップショットテスト
+│   ├── test_constraint_model.py         # 制約部分グラフ・関係伝播・Locus意味付けテスト
+│   ├── test_core.py                     # コア代謝・ライフサイクルテスト
+│   ├── test_product_acceptance.py       # 製品受入テスト（最小代謝閉ループ・権威分離・バージョン束縛等 8大テスト）
+│   ├── test_promotion_gate.py           # 昇格ゲート・シャドウ評価テスト
+│   ├── test_shadow.py                   # 反実仮想シャドウ推論テスト
+│   └── test_social_adapter.py           # ソーシャル摂動フィクスチャテスト
+├── run_simulation.py                    # 5大実証シナリオ実行スクリプト
+├── benchmark_cost_curve.py              # コストカーブ比較ベンチマーク（LLM vs RAG vs RDL）
 ├── pyproject.toml
-└── .gitignore
-```
+└── README.md
+`
 
 ---
 
@@ -46,22 +71,33 @@ RDL_Enterprise/
 
 外部依存ライブラリなし（Python 3.9+ 標準ライブラリのみ）で動作します。
 
-### 1. 3大シナリオ実証シミュレーションの実行
+### 1. 5大シナリオ実証シミュレーションの実行
 
-```bash
+`ash
 # Windows
 py run_simulation.py
 
 # macOS / Linux
 python3 run_simulation.py
-```
+`
 
-* **シナリオ1**: パスワードリセットの反復によるコスト沈澱（Level 1 $\to$ Level 0 キャッシュ化）
+* **シナリオ1**: パスワードリセットの反復によるコスト沈澱（Tier 1 $\to$ Tier 0 キャッシュ化）
 * **シナリオ2**: VPN接続障害での失敗 $\to$ 人間からの暗黙知獲得 $\to$ 次回自律解決
-* **シナリオ3**: 社内ツールの移行に伴う発熱（$H \ge \theta_{eff}$）と再編相 $M_\Delta$ 発動
+* **シナリオ3**: 社内ツールの移行に伴う発熱（ \ge \theta_{eff}$）$\to$ 耐久検査・シャドウ推論を経て再編相 \Delta$ Leap
+* **シナリオ4**: 業務AIの非同期ライフサイクル（保留 PENDING $\to$ 翌朝フィードバック回収 SUCCESS）
+* **シナリオ5**: 案件放置によるタイムアウト（UNKNOWN化 $\to$ 不確実性熱の蓄積）
 
-### 2. 単体テストの実行
+### 2. コストカーブ・逆スケーリングのベンチマーク実行
 
-```bash
-py -m unittest discover -s tests -p "test_*.py"
-```
+`ash
+py benchmark_cost_curve.py
+`
+
+Pure LLM（毎回フルプロンプト推論）、Standard RAG（毎回検索注入）、RDL Enterprise（成功体験の沈澱による Tier 0 化）における累積トークン消費量とコスト削減率を比較計測します。
+
+### 3. テストスイートの実行
+
+`ash
+py -m pytest -o pythonpath=src
+`
+全 **141件** の単体・結合・受入テストが高速（約0.2秒）にパスします。

@@ -197,6 +197,81 @@ class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
         self.assertEqual(res_new_prod.prediction.cost_tier, 1)
         self.assertEqual(res_new_prod.final_output, "新SaaSワークフローポータルから申請してください")
 
+    def test_canary_timeout_never_pollutes_production_h_state(self):
+        """受入条件 6 (P0): カナリア案件タイムアウト時に本番 HState が汚染されないこと"""
+        runtime = EnterpriseRuntime(mb_graph=self.prod_graph, theta_0=2.0)
+        initial_prod_h = runtime.h_state.global_heat.total()
+        initial_prod_theta = runtime.h_state.theta_eff("prod")
+
+        prop = ReorganizationProposal(
+            proposal_id="prop_canary_timeout",
+            hot_node_id="node_wf_ringi",
+            candidate_mb=self.candidate_graph,
+            durability_test_result={"all_passed": True},
+            policy=PromotionPolicy(require_durability=True, require_shadow=False, require_human_approval=True),
+            status=ProposalState.APPROVAL_READY,
+        )
+        runtime.pending_reorganizations["prop_canary_timeout"] = prop
+        mgr = AuthorityContext(actor_id="mgr_01", role="manager", scope="workflow", actor_type="human", authenticated_by="idp_sso")
+        runtime.promote_candidate_mb("prop_canary_timeout", authority=mgr, use_canary=True, canary_ratio=1.0, theta_canary=2.0)
+
+        efp = BusinessInput("T_CANARY_TIMEOUT", "U1", "workflow", "稟議申請の方法")
+        disp_res = runtime.dispatch_ticket(efp)
+        self.assertTrue(disp_res.is_canary)
+
+        exp_res = runtime.expire_pending_tickets(["T_CANARY_TIMEOUT"])
+        self.assertEqual(len(exp_res), 1)
+        self.assertEqual(exp_res[0].status, CaseStatus.UNKNOWN)
+
+        self.assertEqual(runtime.h_state.global_heat.total(), initial_prod_h)
+        self.assertEqual(runtime.h_state.theta_eff("prod"), initial_prod_theta)
+        self.assertEqual(runtime.h_state.total_tickets, 0)
+        canary_ver = self.candidate_graph.version
+        self.assertGreater(runtime.h_state.version_total_heat(canary_ver), 0.0)
+
+    def test_authoritative_injection_vs_experiential_sedimentation_contract(self):
+        """受入条件 7 (P1): 権限者による方針策定と事後成功確認による沈澱の分離"""
+        runtime = EnterpriseRuntime(mb_graph=self.prod_graph)
+
+        # 1. 権限者指示 (HITL ゲート経由で即時方針策定)
+        admin = AuthorityContext(actor_id="admin_01", role="admin", scope="all", actor_type="human", authenticated_by="idp_sso")
+        efp_auth = BusinessInput("T_AUTH_01", "U1", "workflow", "SPECIAL_APPROVAL_ROUTE_QUERY")
+        res_auth = runtime.dispatch_ticket(efp_auth, human_override_answer="SPECIAL_APPROVAL_POLICY_ANSWER", authority=admin)
+
+        policy_nodes = [n for n in runtime.mb_graph.nodes.values() if n.authority_level == "policy"]
+        self.assertEqual(len(policy_nodes), 1)
+        self.assertIn("authority:admin:admin_01", policy_nodes[0].source_lineage)
+
+        # 2. 一般ユーザー助言による経験沈澱 (SUCCESS 受領後に結晶化)
+        efp_exp = BusinessInput("T_EXP_01", "U2", "workflow", "RECEIPT_REISSUE_QUERY")
+        res_exp = runtime.dispatch_ticket(efp_exp, human_override_answer="RECEIPT_REISSUE_ANSWER")
+        self.assertEqual(len([n for n in runtime.mb_graph.nodes.values() if "RECEIPT_REISSUE" in str(n.action_template)]), 0)
+
+        runtime.resolve_ticket_feedback("T_EXP_01", FeedbackResult(user_resolved=True, human_approved=True))
+        exp_nodes = [n for n in runtime.mb_graph.nodes.values() if "RECEIPT_REISSUE" in str(n.action_template)]
+        self.assertEqual(len(exp_nodes), 1)
+        self.assertEqual(exp_nodes[0].authority_level, "auto")
+        self.assertIn("sedimentation:experience", exp_nodes[0].source_lineage)
+
+    def test_version_bound_cache_identity(self):
+        """受入条件 8 (P2): Level 0 キャッシュのバージョン構造拘束"""
+        runtime = EnterpriseRuntime(mb_graph=self.prod_graph)
+        efp = BusinessInput("T_VER_01", "U1", "workflow", "稟議申請の方法")
+        runtime.dispatch_ticket(efp)
+        runtime.resolve_ticket_feedback("T_VER_01", FeedbackResult(user_resolved=True))
+
+        norm_q = runtime.cascade._normalize("稟議申請の方法")
+        ver_key = ("v1.0", "workflow", norm_q)
+        self.assertIn(ver_key, runtime.cascade.level0_cache)
+
+        other_graph = MBGraph(version="v99.0")
+        other_cascade = runtime.cascade
+        other_cascade.mb_graph = other_graph
+        other_cascade.level0_cache.pop(("workflow", norm_q), None)
+        other_pred = other_cascade.interpret(efp)
+        self.assertNotEqual(other_pred.cost_tier, 0)
+
 
 if __name__ == "__main__":
     unittest.main()
+

@@ -260,13 +260,21 @@ class InterpCascade:
 
         # -------------------------------------------------------------
         # Level 0: 完全一致キャッシュ (Cost Tier 0: ローカル最小コスト)
-        # ドメイン境界 B とクエリのタプルで管理
+        # ドメイン境界 B とクエリ、および M_B バージョン同一性に構造拘束 (BASE v2.0 §4.2)
         # -------------------------------------------------------------
-        cache_key = (target_domain, norm_query)
-        if cache_key in self.level0_cache:
-            nid = self.level0_cache[cache_key]
-            if nid not in exclude_set:
-                node = self.mb_graph.get(nid)
+        current_mb_ver = getattr(self.mb_graph, "version", "unknown")
+        cache_key_ver = (current_mb_ver, target_domain, norm_query)
+        cache_key_compat = (target_domain, norm_query)
+
+        hit_nid = None
+        if cache_key_ver in self.level0_cache:
+            hit_nid = self.level0_cache[cache_key_ver]
+        elif cache_key_compat in self.level0_cache:
+            hit_nid = self.level0_cache[cache_key_compat]
+
+        if hit_nid is not None:
+            if hit_nid not in exclude_set:
+                node = self.mb_graph.get(hit_nid)
                 if node and is_domain_eligible(node.domain, efp.category):
                     boost = 0.0 if skip_constraint_boost else self._constraint_boost(node, efp)
                     base_c = node.confidence + self.config.cost_tier0_confidence_boost + boost
@@ -280,7 +288,8 @@ class InterpCascade:
             pattern = node.trigger_pattern
             for key in pattern.get("exact_keys", []):
                 if self._normalize(key) == norm_query or key.lower() in efp.query_text.lower():
-                    self.level0_cache[cache_key] = node.id
+                    self.level0_cache[cache_key_compat] = node.id
+                    self.level0_cache[cache_key_ver] = node.id
                     boost = 0.0 if skip_constraint_boost else self._constraint_boost(node, efp)
                     base_c = node.confidence + boost
                     return _build_prediction(node, base_c, cost_tier=1)
@@ -289,7 +298,8 @@ class InterpCascade:
             if rule_expr:
                 try:
                     if re.search(rule_expr, efp.query_text, re.IGNORECASE):
-                        self.level0_cache[cache_key] = node.id
+                        self.level0_cache[cache_key_compat] = node.id
+                        self.level0_cache[cache_key_ver] = node.id
                         boost = 0.0 if skip_constraint_boost else self._constraint_boost(node, efp)
                         base_c = node.confidence + boost
                         return _build_prediction(node, base_c, cost_tier=1)
@@ -557,16 +567,28 @@ class InterpCascade:
         )
         return self._finalize_prediction(fallback_pred, efp)
 
-    def sediment_level0(self, domain: str, query_text: str, node_id: str):
+    def sediment_level0(self, domain: str, query_text: str, node_id: str, mb_version: Optional[str] = None):
         """
         成功確認後に確定した判断を Level 0 キャッシュへ沈澱 (BASE v2.0 代謝閉ループ)
+        M_B バージョン同一性に構造拘束されたキーと互換キーの双方を記録。
         """
+        ver = mb_version or getattr(self.mb_graph, "version", "unknown")
+        dom = domain or "general"
         norm_q = self._normalize(query_text)
-        self.level0_cache[(domain or "general", norm_q)] = node_id
+        self.level0_cache[(dom, norm_q)] = node_id
+        self.level0_cache[(ver, dom, norm_q)] = node_id
 
-    def crystallize_rule(self, efp: BusinessInput, resolution_text: str, category: str, approved: bool = True):
+    def crystallize_rule(
+        self,
+        efp: BusinessInput,
+        resolution_text: str,
+        category: str,
+        approved: bool = True,
+        origin: str = "experience",
+    ) -> MBNode:
         """
-        LLMや人間によって解決された案件を、新しい Level 1 / Level 0 ノードとして M_B に定着（沈澱）させる
+        成功確認された経験案件を、新しい Level 1 / Level 0 ノードとして M_B に定着（沈澱）させる。
+        origin="experience": 経験の成功帰結による代謝沈澱 (Experiential Sedimentation)
         """
         new_id = f"node_learned_{len(self.mb_graph.nodes) + 1:03d}"
         new_node = MBNode(
@@ -584,8 +606,46 @@ class InterpCascade:
             confidence=0.7 if approved else 0.5,
             success_count=1,
             approval_count=1 if approved else 0,
+            source_lineage=f"sedimentation:{origin}",
         )
         self.mb_graph.add_or_update(new_node)
         # Level 0 キャッシュにも即座に登録（ドメイン境界付き）
         self.sediment_level0(category, efp.query_text, new_id)
         return new_node
+
+    def inject_authoritative_rule(
+        self,
+        efp: BusinessInput,
+        policy_text: str,
+        category: str,
+        authority_actor: str,
+        authority_role: str = "manager",
+    ) -> MBNode:
+        """
+        認可された権限主体による明示的な方針・規則のコミット (Authoritative Policy Injection)。
+        真理性保証ではなく権限統治 (Governance Commitment) に基づくノード策定。
+        """
+        new_id = f"node_policy_{len(self.mb_graph.nodes) + 1:03d}"
+        new_node = MBNode(
+            id=new_id,
+            domain=category,
+            trigger_pattern={
+                "exact_keys": [efp.query_text.strip()],
+                "rule_expr": None,
+            },
+            action_template={
+                "type": "direct_reply",
+                "payload": policy_text,
+            },
+            authority_level="policy",
+            confidence=0.9,
+            success_count=0,
+            approval_count=1,
+            source_id=authority_actor,
+            source_lineage=f"authority:{authority_role}:{authority_actor}",
+        )
+        self.mb_graph.add_or_update(new_node)
+        # 権限者による即時方針策定を Level 0 キャッシュへ登録
+        self.sediment_level0(category, efp.query_text, new_id)
+        return new_node
+

@@ -258,10 +258,16 @@ class EnterpriseRuntime:
         if hitl_required and human_override_answer:
             action_taken = "human_assisted"
             final_output = human_override_answer
-            # 正式な権限者指示の場合のみ即時沈澱
-            # ※ ただし Canary 案件の場合は候補 M_B' の Freeze 原則および旧本番保護のため直接の沈澱を遮断
-            if is_authoritative and not is_canary:
-                self.cascade.crystallize_rule(efp, human_override_answer, efp.category or "general", approved=True)
+            # 正式な権限者指示の場合のみ方針ルール策定 (Authoritative Policy Injection: BASE v2.0 §4.2)
+            # ※ ただし Canary 案件の場合は候補 M_B' の Freeze 原則および旧本番保護のため直接の策定を遮断
+            if is_authoritative and not is_canary and authority is not None:
+                self.cascade.inject_authoritative_rule(
+                    efp=efp,
+                    policy_text=human_override_answer,
+                    category=efp.category or "general",
+                    authority_actor=authority.actor_id,
+                    authority_role=authority.role,
+                )
         else:
             action_taken = pred.action_type
             final_output = pred.content
@@ -806,7 +812,11 @@ class EnterpriseRuntime:
         return self.active_shadow_evaluator.generate_report()
 
     def expire_pending_tickets(self, ticket_ids: Optional[List[str]] = None) -> List[TicketResolutionResult]:
-        """PENDING 案件のタイムアウト処理"""
+        """
+        PENDING 案件のタイムアウト処理 (共通代謝終端化: T0 BASE v2.0 §4.2)
+        通常フィードバックと同様にバージョン境界・カナリア隔離を通し、
+        カナリア案件のタイムアウト熱が本番 HState を汚染するのを物理的に遮断する。
+        """
         target_ids = ticket_ids if ticket_ids is not None else list(self.pending_snapshots.keys())
         results = []
 
@@ -817,21 +827,80 @@ class EnterpriseRuntime:
             e_pred, e_input = snapshot.mark_unknown()
             self.resolved_snapshots.append(snapshot)
 
-            target_nid = snapshot.f_pred.matched_node_id or "__unmatched__"
-            self.h_state.add_heat(target_nid, pred_err=e_pred, input_err=e_input)
-            self.h_state.record_observation(unclassified=True, missing_info=True)
+            pred = snapshot.f_pred
+            target_nid = pred.matched_node_id or "__unmatched__"
+
+            # グラフバージョンと隔離スコープの特定
+            if snapshot.is_canary and self.canary_manager.active_deployment:
+                mb_ver = getattr(self.canary_manager.active_deployment.canary_mb, "version", "canary")
+            else:
+                frozen_ctx = getattr(snapshot, "frozen_context", None)
+                eval_graph = getattr(frozen_ctx, "frozen_mb", None) if frozen_ctx else self.mb_graph
+                mb_ver = getattr(eval_graph, "version", getattr(self.mb_graph, "version", "prod"))
+
+            # 共通熱蓄積 (Version-aware & Canary-isolated)
+            self.h_state.add_heat(
+                target_nid,
+                pred_err=e_pred,
+                input_err=e_input,
+                mb_version=mb_ver,
+                is_canary=snapshot.is_canary,
+            )
+            self.h_state.record_observation(
+                unclassified=(pred.matched_node_id is None),
+                missing_info=True,
+                unknown_input=(pred.cost_tier == 3),
+                rejected=False,
+                mb_version=mb_ver,
+                is_canary=snapshot.is_canary,
+            )
+
+            # カナリア案件なら CanaryManager へも発熱を同期
+            canary_rolled_back = False
+            canary_rollback_reason = None
+            if snapshot.is_canary:
+                current_canary_h = self.h_state.version_total_heat(mb_ver)
+                current_theta = self.canary_manager.active_deployment.theta_canary if self.canary_manager.active_deployment else 1.5
+                current_h = current_canary_h
+                if self.canary_manager.active_deployment:
+                    is_rb, rb_reason = self.canary_manager.record_feedback(
+                        ticket_id=tid,
+                        is_canary=True,
+                        e_pred=e_pred,
+                        e_input=e_input,
+                        rejected=False,
+                        current_heat=current_canary_h,
+                    )
+                    if is_rb:
+                        canary_rolled_back = True
+                        canary_rollback_reason = rb_reason
+                        last_dep = self.canary_manager.deployment_history[-1]
+                        self.mb_graph = last_dep.prod_mb_backup
+                        self.cascade.mb_graph = self.mb_graph
+                        self.cascade.level0_cache.clear()
+                        if last_dep.proposal_id in self.pending_reorganizations:
+                            prop = self.pending_reorganizations.pop(last_dep.proposal_id)
+                            prop.status = ProposalState.REGRESSED
+                            prop.reasons.append(f"カナリア自動ロールバック: {rb_reason}")
+                            self.reorganization_history.append(prop)
+            else:
+                current_h = self.h_state.global_heat.total()
+                current_theta = self.h_state.theta_eff()
 
             results.append(TicketResolutionResult(
                 ticket_id=tid,
                 status=CaseStatus.UNKNOWN,
                 e_prediction=e_pred,
                 e_input=e_input,
-                current_h=self.h_state.global_heat.total(),
-                current_theta_eff=self.h_state.theta_eff(),
+                current_h=current_h,
+                current_theta_eff=current_theta,
                 transition_to_m_delta=False,
                 promoted_to_mb=False,
+                canary_rolled_back=canary_rolled_back,
+                canary_rollback_reason=canary_rollback_reason,
             ))
 
+        # 自然散逸 (本番グラフ)
         inertias = {nid: n.inertia() for nid, n in self.mb_graph.nodes.items()}
         self.h_state.dissipate(inertias)
         return results
