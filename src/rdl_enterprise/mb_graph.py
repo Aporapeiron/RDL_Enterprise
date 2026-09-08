@@ -110,7 +110,76 @@ class MBNode:
     source_lineage: Optional[str] = None  # 上流系譜 (例: "manual_hr_v1", "policy_sec_2026")
     node_relations: Dict[str, str] = field(default_factory=dict) # 他ノードとの明示的関係: {node_id: "support" | "contradict" | "independent" | "unknown"}
     created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
-    last_updated: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+    last_evidence_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+    last_observed_at: Optional[str] = None
+
+    def __init__(
+        self,
+        id: str,
+        domain: str,
+        trigger_pattern: Dict[str, Any],
+        action_template: Dict[str, Any],
+        authority_level: str = "auto",
+        confidence: float = 0.5,
+        success_count: int = 0,
+        failure_count: int = 0,
+        approval_count: int = 0,
+        rejection_count: int = 0,
+        unresolved_count: int = 0,
+        is_frozen: bool = False,
+        source_id: Optional[str] = None,
+        source_lineage: Optional[str] = None,
+        node_relations: Optional[Dict[str, str]] = None,
+        created_at: Optional[str] = None,
+        last_evidence_at: Optional[str] = None,
+        last_observed_at: Optional[str] = None,
+        last_updated: Optional[str] = None,
+    ):
+        self.is_frozen = False
+        self.id = id
+        self.domain = domain
+        self.trigger_pattern = trigger_pattern
+        self.action_template = action_template
+        self.authority_level = authority_level
+        self.confidence = confidence
+        self.success_count = success_count
+        self.failure_count = failure_count
+        self.approval_count = approval_count
+        self.rejection_count = rejection_count
+        self.unresolved_count = unresolved_count
+        self.source_id = source_id
+        self.source_lineage = source_lineage
+        self.node_relations = node_relations if node_relations is not None else {}
+
+        def _to_iso(val: Any) -> Optional[str]:
+            if val is None:
+                return None
+            if isinstance(val, datetime):
+                return val.isoformat()
+            return str(val)
+
+        self.created_at = _to_iso(created_at) or datetime.utcnow().isoformat()
+        raw_evidence = last_evidence_at if last_evidence_at is not None else last_updated
+        self.last_evidence_at = _to_iso(raw_evidence) or datetime.utcnow().isoformat()
+        self.last_observed_at = _to_iso(last_observed_at)
+        if is_frozen:
+            self.is_frozen = True
+
+    @property
+    def last_updated(self) -> str:
+        """
+        後方互換用プロパティ。
+        意味的証拠の鮮度（last_evidence_at）を返し、freshness 計算に直接連動する。
+        観測不能・タイムアウトによる last_observed_at はここには反映されない。
+        """
+        return self.last_evidence_at
+
+    @last_updated.setter
+    def last_updated(self, value: Any):
+        if isinstance(value, datetime):
+            self.last_evidence_at = value.isoformat()
+        else:
+            self.last_evidence_at = str(value)
 
     def __setattr__(self, name: str, value: Any):
         if getattr(self, "is_frozen", False) and name != "is_frozen":
@@ -175,7 +244,7 @@ class MBNode:
         if approved:
             self.approval_count += 1
         self.confidence = min(1.0, self.confidence + 0.05)
-        self.last_updated = datetime.utcnow().isoformat()
+        self.last_evidence_at = datetime.utcnow().isoformat()
 
     def record_failure(self, rejected: bool = False):
         if self.is_frozen:
@@ -184,18 +253,19 @@ class MBNode:
         if rejected:
             self.rejection_count += 1
         self.confidence = max(0.1, self.confidence - 0.1)
-        self.last_updated = datetime.utcnow().isoformat()
+        self.last_evidence_at = datetime.utcnow().isoformat()
 
     def record_unresolved(self):
         """
         観測不能・タイムアウト（UNKNOWN）の記録。
         判断が誤っていたわけではないため、failure_count や confidence は減衰させず、
         未回収関係（ξ）の滞留・未解決観測として独立にカウントする。
+        意味的証拠の更新（last_evidence_at）は行わず、観測タイムスタンプ（last_observed_at）のみを更新する。
         """
         if self.is_frozen:
             raise RuntimeError(f"MBNode(id={self.id}) は凍結(frozen)されています。学習・統計更新は禁止されています。")
         self.unresolved_count += 1
-        self.last_updated = datetime.utcnow().isoformat()
+        self.last_observed_at = datetime.utcnow().isoformat()
 
 
 class MBGraph:
@@ -250,8 +320,9 @@ class MBGraph:
         """
         グラフの論理的・力学的実体に対する暗号論的ハッシュ (SHA-256)
         ノード構造、ルール、アクション定義に加え、慣性質量 ||M_B|| と κ に直結する
-        成功・失敗・承認・差し戻し回数、および m0 を完全包含する。
-        （タイムスタンプ created_at / last_updated のみ除外）
+        成功・失敗・承認・差し戻し回数、m0、および行動状態・時間拘束（freshness）に直結する
+        last_evidence_at を完全包含する。
+        （過渡的観測残差 ξ である created_at / last_observed_at / unresolved_count のみ除外）
         """
         canonical_nodes = []
         for nid in sorted(self.nodes.keys()):
@@ -267,6 +338,7 @@ class MBGraph:
                 "failure_count": node.failure_count,
                 "approval_count": node.approval_count,
                 "rejection_count": node.rejection_count,
+                "last_evidence_at": node.last_evidence_at,
             }
             if getattr(node, "source_id", None) is not None:
                 n_dict["source_id"] = node.source_id

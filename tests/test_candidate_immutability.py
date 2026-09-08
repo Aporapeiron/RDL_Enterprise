@@ -203,7 +203,7 @@ class TestCandidateImmutabilityAndBinding(unittest.TestCase):
             node.record_failure()
 
     def test_content_hash_includes_dynamical_inertia_parameters(self):
-        """全行動状態ハッシュ化: success_count や m0 など慣性質量・自己修正可能性に効く値が異なればハッシュが変化すること"""
+        """全行動状態ハッシュ化: success_count, m0, last_evidence_at など行動・鮮度力学に効く値が異なればハッシュが変化すること"""
         base_hash = self.candidate_graph.content_hash()
 
         # success_count の改変
@@ -215,6 +215,17 @@ class TestCandidateImmutabilityAndBinding(unittest.TestCase):
         tampered2 = MBGraph.from_dict(self.candidate_graph.to_dict())
         tampered2.m0 = 5.0
         self.assertNotEqual(tampered2.content_hash(), base_hash)
+
+        # last_evidence_at の改変（意味的証拠の更新時刻は freshness およびグラフ同一性に直結するためハッシュが変化）
+        tampered3 = MBGraph.from_dict(self.candidate_graph.to_dict())
+        tampered3.get("node_wf").last_evidence_at = "2020-01-01T00:00:00"
+        self.assertNotEqual(tampered3.content_hash(), base_hash)
+
+        # last_observed_at および unresolved_count の改変（過渡的観測残差 ξ であり、グラフ同一性には影響しないためハッシュ不変）
+        tampered4 = MBGraph.from_dict(self.candidate_graph.to_dict())
+        tampered4.get("node_wf").last_observed_at = "2026-12-31T23:59:59"
+        tampered4.get("node_wf").unresolved_count += 10
+        self.assertEqual(tampered4.content_hash(), base_hash)
 
     def test_canary_observations_do_not_pollute_prod_xi_obs_or_theta_eff(self):
         """Version-aware 観測統計: カナリアで差し戻しが多発しても、本番の xi_obs および theta_eff が一切変動しないこと"""

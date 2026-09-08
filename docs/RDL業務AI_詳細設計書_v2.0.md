@@ -110,6 +110,10 @@ graph TD
 * **沈澱（Sedimentation）と観測保留（UNKNOWN ≠ FAILURE）の契約**:
   * 案件受付時（未確認時）にはライブ Level 0 キャッシュへ書き込まず、非同期ライフサイクルを経て `user_resolved == True` かつ `!human_rejected` が確認された段階で初めて `sediment_level0()` を呼び出す。
   * タイムアウトや未回収案件（UNKNOWN）は判断の誤り（FAILURE）ではなく未確定な未回収関係（$\xi$）の残存として扱い、ノード統計（`failure_count` / `confidence`）を悪化させず `unresolved_count` として独立記録。
+* **意味的証拠鮮度（`last_evidence_at`）と観測残差（`last_observed_at`）の直交分離**:
+  * 関係拘束スコア（`freshness`）の計算元には、肯定的・確定的な経験更新（成功・失敗・方針注入・結晶化）のタイムスタンプである `last_evidence_at` のみを用いる。
+  * タイムアウト等の観測不能（UNKNOWN）は観測時刻 `last_observed_at` のみを更新し、`last_evidence_at` は保存される（「未確認放置案件による不当な鮮度リフレッシュ」の完全遮断）。
+  * グラフ同一性（`content_hash`）には行動力学・時間拘束に直結する `last_evidence_at` を包含し、過渡的観測残差 $\xi$ である `last_observed_at` および `unresolved_count` は除外する。
 
 ### 3.4 権威的方針注入（Authority Injection）の分離
 * `InterpCascade.crystallize_rule()`: 業務成功から自律生成される経験的ルール（`origin="experience"`, `source_lineage="sedimentation:experience"`）。
@@ -173,6 +177,7 @@ $H_{total} \ge \theta_{eff}$ に達した瞬間、巡航相（Cruise）から再
 | **Test 9** | 未認可方針注入の遮断 | 権限範囲外のアクターによる `inject_authoritative_rule()` の呼び出しが `PermissionError` で即座にフェイルクローズ遮断されること。 |
 | **Test 10** | TIMEOUTの観測保留 | タイムアウト案件（UNKNOWN）において、ノードの `failure_count` や `confidence` が悪化せず、`unresolved_count` として観測保留記録されること。 |
 | **Test 11** | キャッシュ移行の起源明示 | 旧形式キャッシュのインポート時に `source_mb_version` の明示を義務付け、現行バージョンへの不当な自己昇格が防止されること。 |
+| **Test 12** | 意味的鮮度と残差の分離 | タイムアウト案件（UNKNOWN）において、ノードの `last_evidence_at` および `content_hash` が保存され、不当な鮮度リフレッシュが発生しないこと。 |
 
 ---
 

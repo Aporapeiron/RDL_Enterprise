@@ -355,6 +355,46 @@ class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
         pred = cascade.interpret(efp)
         self.assertNotEqual(pred.cost_tier, 0)
 
+    def test_timeout_preserves_semantic_freshness_and_content_hash(self):
+        """受入条件 12 (P0-P1): タイムアウト案件は意味的証拠鮮度 (last_evidence_at) と content_hash を保存し、観測時刻のみ記録すること"""
+        from datetime import datetime, timezone, timedelta
+        runtime = EnterpriseRuntime(mb_graph=self.prod_graph)
+        node = runtime.mb_graph.get("node_wf_ringi")
+
+        # 過去の証拠更新時刻（100日前）に設定
+        stale_evidence_time = (datetime.now(timezone.utc) - timedelta(days=100)).isoformat()
+        node.last_evidence_at = stale_evidence_time
+        node.last_observed_at = None
+        initial_unresolved = node.unresolved_count
+
+        initial_evidence_at = node.last_evidence_at
+        initial_updated = node.last_updated
+        initial_hash = runtime.mb_graph.content_hash()
+
+        # 1. 案件受付 -> タイムアウト (UNKNOWN)
+        efp_timeout = BusinessInput("T_TIMEOUT_FRESHNESS", "U1", "workflow", "稟議申請の方法")
+        runtime.dispatch_ticket(efp_timeout)
+        runtime.expire_pending_tickets(["T_TIMEOUT_FRESHNESS"])
+
+        # 観測タイムスタンプおよび未解決カウントのみが更新されること
+        self.assertIsNotNone(node.last_observed_at)
+        self.assertEqual(node.unresolved_count, initial_unresolved + 1)
+
+        # 意味的証拠鮮度 (last_evidence_at / last_updated) は一切更新・リフレッシュされていないこと
+        self.assertEqual(node.last_evidence_at, initial_evidence_at)
+        self.assertEqual(node.last_updated, initial_updated)
+
+        # タイムアウト観測残差 ξ はグラフ同一性 (content_hash) に影響を与えないこと
+        self.assertEqual(runtime.mb_graph.content_hash(), initial_hash)
+
+        # 2. 一方で検証済みフィードバック (SUCCESS) では last_evidence_at が更新され、content_hash も変化すること
+        efp_success = BusinessInput("T_SUCCESS_FRESHNESS", "U2", "workflow", "稟議申請の方法")
+        runtime.dispatch_ticket(efp_success)
+        runtime.resolve_ticket_feedback("T_SUCCESS_FRESHNESS", FeedbackResult(user_resolved=True, human_approved=True))
+
+        self.assertNotEqual(node.last_evidence_at, initial_evidence_at)
+        self.assertNotEqual(runtime.mb_graph.content_hash(), initial_hash)
+
 
 if __name__ == "__main__":
     unittest.main()
