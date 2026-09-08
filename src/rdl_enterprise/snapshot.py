@@ -78,12 +78,14 @@ class CounterfactualMBView:
     r"""
     反実仮想推論における不変な知識境界ビュー (BASE v2.0 §4.2)
     介入によって確定した M_B (または M_B \ bundle) の状態を暗号論的に固定する。
+    ノード実体は deep-freeze された不変タプルとして保持され、外部からの改変を受け付けない。
     """
     mb_content_hash: str
     node_ids: Tuple[str, ...]
     excluded_node_ids: Tuple[str, ...]
     domain: Optional[str] = None
     view_hash: str = ""
+    nodes: Tuple[Any, ...] = field(default_factory=tuple)
 
     @classmethod
     def from_nodes(
@@ -93,6 +95,17 @@ class CounterfactualMBView:
         mb_content_hash: str = "unknown",
         domain: Optional[str] = None,
     ) -> "CounterfactualMBView":
+        import copy
+        frozen_nodes = []
+        for n in available_nodes:
+            if hasattr(n, "freeze"):
+                # ディープコピーして凍結
+                n_cp = copy.deepcopy(n)
+                n_cp.freeze()
+                frozen_nodes.append(n_cp)
+            else:
+                frozen_nodes.append(copy.deepcopy(n))
+
         n_ids = tuple(sorted([getattr(n, "id", str(n)) for n in available_nodes]))
         ex_ids = tuple(sorted(list(excluded_node_ids)))
         payload = {
@@ -108,6 +121,7 @@ class CounterfactualMBView:
             excluded_node_ids=ex_ids,
             domain=domain,
             view_hash=v_hash,
+            nodes=tuple(frozen_nodes),
         )
 
 
@@ -117,24 +131,48 @@ class CounterfactualInput:
     Level 3 外部推論器 (LLM Bridge) に渡す反実仮想推論入力 (BASE v2.0 §4.2)
     外生固定条件集合 K (replay_token) を固定したまま、
     M_B と M_B \ bundle の違い（内生的介入変数）を bridge に明示的に注入する。
+    knowledge view は mb_view.nodes の不変スナップショットに一元化される。
     """
     efp: BusinessInput
     replay_token: ReplayToken
     mb_view: Optional[CounterfactualMBView] = None             # 不変な知識境界ビュー (view_hash付き)
     excluded_node_ids: List[str] = field(default_factory=list)
-    available_nodes: List[Any] = field(default_factory=list)  # MBNode 群
+    _available_nodes_raw: List[Any] = field(default_factory=list) # 初期化用の一時ノード群
     domain: Optional[str] = None
     constructed_prompt_context: Optional[str] = None
 
-    def __post_init__(self):
-        if self.mb_view is None:
+    def __init__(
+        self,
+        efp: BusinessInput,
+        replay_token: ReplayToken,
+        mb_view: Optional[CounterfactualMBView] = None,
+        excluded_node_ids: Optional[List[str]] = None,
+        available_nodes: Optional[List[Any]] = None,
+        domain: Optional[str] = None,
+        constructed_prompt_context: Optional[str] = None,
+    ):
+        self.efp = efp
+        self.replay_token = replay_token
+        self.domain = domain
+        self.constructed_prompt_context = constructed_prompt_context
+        self.excluded_node_ids = list(excluded_node_ids or [])
+        raw_nodes = list(available_nodes or [])
+
+        if mb_view is None:
             self.mb_view = CounterfactualMBView.from_nodes(
-                available_nodes=self.available_nodes,
+                available_nodes=raw_nodes,
                 excluded_node_ids=self.excluded_node_ids,
                 domain=self.domain,
             )
-        elif not self.excluded_node_ids and self.mb_view.excluded_node_ids:
-            self.excluded_node_ids = list(self.mb_view.excluded_node_ids)
+        else:
+            self.mb_view = mb_view
+            if not self.excluded_node_ids and mb_view.excluded_node_ids:
+                self.excluded_node_ids = list(mb_view.excluded_node_ids)
+
+    @property
+    def available_nodes(self) -> List[Any]:
+        """不変知識境界ビュー mb_view.nodes への完全委譲プロパティ"""
+        return list(self.mb_view.nodes) if self.mb_view else []
 
 
 @dataclass(frozen=True)
@@ -152,10 +190,52 @@ class InterpretationTrace:
     provider_response_id: Optional[str] = None
     trace_id: str = ""
 
+    @classmethod
+    def compute_prediction_hash(cls, pred: "InterpretationPrediction") -> str:
+        """予測 F の暗号論的意味ハッシュ"""
+        payload = {
+            "action_type": pred.action_type,
+            "content": pred.content,
+            "confidence": round(pred.confidence, 4),
+            "matched_node_id": pred.matched_node_id or "",
+            "cost_tier": pred.cost_tier,
+            "domain": pred.domain or "",
+            "expected_outcome": pred.expected_outcome,
+            "constraint_locus_ids": sorted(pred.constraint_locus_ids or []),
+        }
+        raw = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+    @classmethod
+    def create(
+        cls,
+        context_hash: str,
+        conditions_hash: str,
+        pred: "InterpretationPrediction",
+        mb_view_hash: str = "",
+        provider_response_id: Optional[str] = None,
+        trace_id: Optional[str] = None,
+    ) -> "InterpretationTrace":
+        import uuid
+        t_id = trace_id or f"trace_{uuid.uuid4().hex[:8]}"
+        p_hash = cls.compute_prediction_hash(pred)
+        return cls(
+            context_hash=context_hash,
+            conditions_hash=conditions_hash,
+            prediction_hash=p_hash,
+            mb_view_hash=mb_view_hash,
+            provider_response_id=provider_response_id,
+            trace_id=t_id,
+        )
+
 
 @dataclass
 class InterpretationPrediction:
-    """事前予測 F"""
+    """
+    事前予測 F (BASE v2.0 §4.2)
+    - matched_node_id: 単一の確定ルールとして直接発火したノードID（Level 0〜2）
+    - constraint_locus_ids: F 形成時に作用・拘束した M_B の関係位置群（責任拘束位置）
+    """
     action_type: str                  # "direct_reply" | "tool_call" | "ask_human" | "delegate"
     content: str                      # 回答テキストまたは処理内容
     confidence: float                 # 確信度 [0.0, 1.0]
@@ -164,7 +244,12 @@ class InterpretationPrediction:
     domain: Optional[str] = None
     expected_outcome: str = "resolve" # "resolve" | "need_input" | "escalate"
     replay_token: Optional[ReplayToken] = None # 反実仮想再演・同一条件証跡 K
+    constraint_locus_ids: List[str] = field(default_factory=list) # 責任拘束位置 (M_B 関係位置群)
     metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self):
+        if not self.constraint_locus_ids and self.matched_node_id:
+            self.constraint_locus_ids = [self.matched_node_id]
 
 
 @dataclass
@@ -528,6 +613,7 @@ class CaseSnapshot:
         frozen_node_snapshot: Optional[Any] = None,
         frozen_context: Optional[FrozenInterpretationContext] = None,
         actual_replay_token: Optional[ReplayToken] = None,
+        interpretation_trace: Optional[InterpretationTrace] = None,
     ):
         self.efp = efp
         self.f_pred = f_pred
@@ -538,6 +624,7 @@ class CaseSnapshot:
         self.frozen_context = frozen_context
         # F を実際に生んだ推論作用証跡 K_actual
         self.actual_replay_token = actual_replay_token or getattr(f_pred, "replay_token", None)
+        self.interpretation_trace = interpretation_trace or getattr(f_pred, "metadata", {}).get("interpretation_trace", None)
         self.status = CaseStatus.PENDING
         self.efp_prime: Optional[FeedbackResult] = None
         self.f_prime: Optional[SubsequentInterpretation] = None  # 純粋な後続作用解釈 F'

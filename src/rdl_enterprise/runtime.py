@@ -233,6 +233,7 @@ class EnterpriseRuntime:
         matched_node = active_graph.get(pred.matched_node_id) if pred.matched_node_id else None
         frozen_node = copy.deepcopy(matched_node) if matched_node else None
 
+        trace = pred.metadata.get("interpretation_trace")
         snapshot = CaseSnapshot(
             efp=efp,
             f_pred=pred,
@@ -241,6 +242,7 @@ class EnterpriseRuntime:
             is_canary=is_canary,
             frozen_node_snapshot=frozen_node,
             frozen_context=frozen_ctx,
+            interpretation_trace=trace,
         )
         self.pending_snapshots[efp.ticket_id] = snapshot
 
@@ -389,7 +391,8 @@ class EnterpriseRuntime:
             except Exception:
                 pass
 
-        if eval_matched_node is not None:
+        target_locus_ids = list(pred.constraint_locus_ids) if pred.constraint_locus_ids else ([pred.matched_node_id] if pred.matched_node_id else [])
+        if target_locus_ids:
             try:
                 actual_token = getattr(snapshot, "actual_replay_token", None)
                 if actual_token is None and snapshot.f_pred is not None:
@@ -406,8 +409,8 @@ class EnterpriseRuntime:
                     actual_replay_token=actual_token,
                 )
                 locator = RelationConstraintLocator(constraint_cfg)
-                # 局所評価で旧ノードの拘束束 C_old を取得 (凍結時刻 t で評価)
-                bundle = locator.locate_bundle_for_node(eval_graph, eval_matched_node, ctx)
+                # 責任拘束位置群から拘束束 C_old を取得 (凍結時刻 t で評価)
+                bundle = locator.locate_bundle_for_locus(eval_graph, target_locus_ids, ctx)
                 if bundle is not None:
                     c_old = bundle.constraint_score
                     probe = RuptureProbe(constraint_cfg)

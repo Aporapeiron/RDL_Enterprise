@@ -2001,7 +2001,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
                 return True
             def resolve(self, efp):
                 return {"type": "direct_reply", "payload": "base"}
-            def resolve_replay(self, efp, replay_token=None):
+            def resolve_replay(self, efp, replay_token=None, counterfactual_input=None):
                 self.call_count += 1
                 # 1回目 (f_base) と 2回目 (f_without) で内生的な差分を模倣
                 if self.call_count == 1:
@@ -2377,8 +2377,10 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
         dispatch_res = runtime.dispatch_ticket(efp)
         snap = runtime.pending_snapshots[efp.ticket_id]
 
-        # Level 3 推論で決定された後、ノードが評価対象として関連付けられる
-        snap.f_pred.matched_node_id = "node_billing_special"
+        # Level 3 自然推論: matched_node_id は None のままだが、
+        # eligible_nodes から constraint_locus_ids が自動設定されていること (BASE v2.0 §4.2)
+        self.assertIsNone(snap.f_pred.matched_node_id)
+        self.assertIn("node_billing_special", snap.f_pred.constraint_locus_ids)
 
         from rdl_enterprise.snapshot import FeedbackResult
         feedback = FeedbackResult(
@@ -2491,6 +2493,118 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
         self.assertIsNotNone(res.base_mb_view_hash)
         self.assertIsNotNone(res.cut_mb_view_hash)
         self.assertNotEqual(res.base_mb_view_hash, res.cut_mb_view_hash)
+
+    def test_strict_intervention_verification_rejects_self_declared_mb_dependent_without_counterfactual_input(self):
+        """is_mb_dependent=True と自己申告していても、CounterfactualInput を受理・適用しない推論器は fail-closed で rupture_effect = None (ξ) となること"""
+        from rdl_enterprise.cascade import InterpCascade
+        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.constraint import RuptureProbe, ConstraintBundle, ConstraintContext
+
+        class SelfDeclaredBridgeWithoutCFSupport:
+            def __init__(self):
+                self.is_mb_dependent = True # 自己申告のみ
+                self.call_count = 0
+            def can_replay(self):
+                return True
+            def resolve(self, efp):
+                return {"type": "direct_reply", "payload": "base"}
+            def resolve_counterfactual(self, efp, replay_token):
+                # counterfactual_input 引数を受け取れない（適用しない）シグネチャ
+                self.call_count += 1
+                return {"type": "direct_reply", "payload": f"output_{self.call_count}"}
+
+        graph = MBGraph()
+        node = MBNode(
+            id="n_self_declare",
+            domain="general",
+            trigger_pattern={"exact_keys": ["キー"]},
+            action_template={"type": "direct_reply", "payload": "x"},
+            confidence=0.8,
+            approval_count=10,
+        )
+        graph.add_or_update(node)
+
+        bridge = SelfDeclaredBridgeWithoutCFSupport()
+        bundle = ConstraintBundle(node_ids=["n_self_declare"], locus_type="strong", constraint_score=0.8)
+        probe = RuptureProbe()
+        efp = _make_efp("未知クエリ", category="general")
+        ctx = ConstraintContext(efp=efp, current_time=datetime.utcnow(), llm_bridge=bridge)
+
+        res = probe.probe(bundle, graph, ctx)
+        # 自己申告のみで CounterfactualInput の受領・検証がないため、厳格な fail-closed により None (ξ)
+        self.assertIsNone(res.rupture_effect)
+        self.assertFalse(res.intervention_verified)
+
+    def test_counterfactual_mb_view_immutable_node_snapshots(self):
+        """CounterfactualMBView.nodes が deep-freeze された不変タプルであり、生ノードの変更を受け付けないこと (BASE v2.0 §4.2)"""
+        from rdl_enterprise.mb_graph import MBNode
+        from rdl_enterprise.snapshot import CounterfactualMBView, CounterfactualInput, BusinessInput, ReplayToken
+
+        node = MBNode(
+            id="n_freeze_test",
+            domain="security",
+            trigger_pattern={"exact_keys": ["秘密キー"]},
+            action_template={"type": "direct_reply", "payload": "secret_v1"},
+            confidence=0.9,
+        )
+
+        view = CounterfactualMBView.from_nodes(
+            available_nodes=[node],
+            excluded_node_ids=[],
+            mb_content_hash="hash_123",
+            domain="security",
+        )
+
+        # 1. view.nodes はタプルであり、かつ凍結されていること
+        self.assertIsInstance(view.nodes, tuple)
+        self.assertEqual(len(view.nodes), 1)
+        frozen_node = view.nodes[0]
+        self.assertTrue(getattr(frozen_node, "is_frozen", False))
+
+        # 凍結ノードの属性直接改変が拒絶されること
+        with self.assertRaises(RuntimeError):
+            frozen_node.confidence = 0.1
+
+        # 2. 元のノードを変更しても view.nodes には影響しないこと (スナップショット性)
+        node.confidence = 0.2
+        self.assertEqual(view.nodes[0].confidence, 0.9)
+
+        # 3. CounterfactualInput.available_nodes が mb_view.nodes へ委譲されていること
+        token = ReplayToken(token_id="tok_1", model_name="test")
+        efp = BusinessInput("T1", "U1", "security", "query")
+        cf_input = CounterfactualInput(efp=efp, replay_token=token, mb_view=view)
+        self.assertEqual(len(cf_input.available_nodes), 1)
+        self.assertEqual(cf_input.available_nodes[0].id, "n_freeze_test")
+
+    def test_interpretation_trace_runtime_lifecycle(self):
+        """dispatch_ticket から CaseSnapshot まで InterpretationTrace が一貫して保持されること (BASE v2.0 §4.2)"""
+        from rdl_enterprise.runtime import EnterpriseRuntime
+        from rdl_enterprise.mb_graph import MBNode
+        from rdl_enterprise.snapshot import BusinessInput, InterpretationTrace
+
+        runtime = EnterpriseRuntime()
+        node = MBNode(
+            id="n_rule_trace",
+            domain="hr",
+            trigger_pattern={"exact_keys": ["有給休暇"]},
+            action_template={"type": "direct_reply", "payload": "申請フォーム"},
+            confidence=0.85,
+        )
+        runtime.mb_graph.add_or_update(node)
+
+        # Level 1 ルール推論
+        efp = BusinessInput("T_TRACE_01", "U1", "hr", "有給休暇の取り方")
+        dispatch_res = runtime.dispatch_ticket(efp)
+        snap = runtime.pending_snapshots[efp.ticket_id]
+
+        # pred に constraint_locus_ids が設定されていること
+        self.assertEqual(snap.f_pred.matched_node_id, "n_rule_trace")
+        self.assertEqual(snap.f_pred.constraint_locus_ids, ["n_rule_trace"])
+
+        # prediction_hash の算出
+        pred_hash = InterpretationTrace.compute_prediction_hash(snap.f_pred)
+        self.assertIsInstance(pred_hash, str)
+        self.assertGreater(len(pred_hash), 0)
 
 
 if __name__ == "__main__":

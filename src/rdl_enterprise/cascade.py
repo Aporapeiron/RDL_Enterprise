@@ -141,6 +141,7 @@ class InterpCascade:
                 cost_tier=cost_tier,
                 domain=node.domain,
                 expected_outcome=outcome,
+                constraint_locus_ids=[node.id],
             )
 
         # -------------------------------------------------------------
@@ -307,7 +308,12 @@ class InterpCascade:
                 elif not user_resolved:
                     outcome = "need_input"
                     base_conf = max(0.05, base_conf * 0.6)
-            return InterpretationPrediction(
+
+            # Level 3 の責任拘束位置 (responsible constraint loci):
+            # このドメイン境界 B のもとで推論器の前提として提供された全 M_B ノード群
+            level3_locus_ids = [n.id for n in eligible_nodes]
+
+            pred = InterpretationPrediction(
                 action_type=llm_res.get("type", "direct_reply"),
                 content=llm_res.get("payload", "LLMによる汎用回答"),
                 confidence=base_conf,  # 未知初見のため標準確信度
@@ -316,8 +322,23 @@ class InterpCascade:
                 domain=efp.category or "unknown",
                 expected_outcome=outcome,
                 replay_token=actual_token,
+                constraint_locus_ids=level3_locus_ids,
                 metadata=pred_metadata,
             )
+
+            # 監査証跡 (InterpretationTrace) の生成と保存 (BASE v2.0 §4.2)
+            from rdl_enterprise.snapshot import InterpretationTrace
+            mb_hash = getattr(self.mb_graph, "content_hash", lambda: "unknown")()
+            cond_hash = getattr(actual_token, "conditions_hash", "") if actual_token else ""
+            view_h = pred_metadata.get("mb_view_hash", "")
+            trace = InterpretationTrace.create(
+                context_hash=mb_hash,
+                conditions_hash=cond_hash,
+                pred=pred,
+                mb_view_hash=view_h,
+            )
+            pred.metadata["interpretation_trace"] = trace
+            return pred
 
         # LLM未設定のデフォルトフォールバック（人間に聞く）
         fallback_conf = 0.1
@@ -330,6 +351,7 @@ class InterpCascade:
                 fallback_conf = 0.06
                 fallback_outcome = "need_input"
 
+        fallback_locus_ids = [n.id for n in eligible_nodes]
         return InterpretationPrediction(
             action_type="ask_human",
             content="過去事例・ルールが見つかりません。先輩社員へ確認が必要です。",
@@ -338,6 +360,7 @@ class InterpCascade:
             cost_tier=3,
             domain=efp.category or "unknown",
             expected_outcome=fallback_outcome,
+            constraint_locus_ids=fallback_locus_ids,
         )
 
     def crystallize_rule(self, efp: BusinessInput, resolution_text: str, category: str, approved: bool = True):

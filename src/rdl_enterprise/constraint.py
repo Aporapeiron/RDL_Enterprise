@@ -800,6 +800,70 @@ class RelationConstraintLocator:
             auxiliary_convergence_signal=aux_conv_signal,
         )
 
+    def locate_bundle_for_locus(
+        self,
+        mb_graph: object,
+        locus_node_ids: List[str],
+        ctx: ConstraintContext,
+    ) -> Optional[ConstraintBundle]:
+        r"""
+        責任拘束位置群 (constraint_locus_ids) から拘束束を特定・構築する (BASE v2.0 §4.2)。
+        - 単一ノード (Level 0〜2): locate_bundle_for_node に委譲。
+        - 複数ノード (Level 3): locus_node_ids 内の各ノードの拘束強度を局所評価し、
+          最も強く働いている代表ノード（および支援関係）を核として ConstraintBundle を構築する。
+        - locus_node_ids 内の全ノードを bundle に包含し、破断検査において M_B \ bundle の実効的切断を可能にする。
+        """
+        if not locus_node_ids:
+            return None
+
+        # 存在ノードの収集
+        nodes = []
+        for nid in locus_node_ids:
+            n = mb_graph.get(nid) if hasattr(mb_graph, "get") else None
+            if n is not None:
+                nodes.append(n)
+
+        if not nodes:
+            return None
+
+        if len(nodes) == 1:
+            return self.locate_bundle_for_node(mb_graph, nodes[0], ctx)
+
+        # 複数ノード (Level 3 等): 各ノードの bundle を評価し、最も拘束スコアの高いノードを主軸とする
+        evaluated_bundles = []
+        for n in nodes:
+            b = self.locate_bundle_for_node(mb_graph, n, ctx)
+            if b is not None:
+                evaluated_bundles.append((b, n))
+
+        if not evaluated_bundles:
+            return None
+
+        # 最も強い拘束を持つ bundle をベースにする
+        evaluated_bundles.sort(key=lambda item: item[0].constraint_score, reverse=True)
+        best_bundle, primary_node = evaluated_bundles[0]
+
+        # locus 全体のノード群を切断対象 (bundle.node_ids) に確実に統合
+        combined_node_ids = list(best_bundle.node_ids)
+        for n in nodes:
+            if n.id not in combined_node_ids:
+                combined_node_ids.append(n.id)
+
+        return ConstraintBundle(
+            node_ids=combined_node_ids,
+            locus_type=best_bundle.locus_type,
+            constraint_score=best_bundle.constraint_score,
+            relevance=best_bundle.relevance,
+            freshness=best_bundle.freshness,
+            authority_weight=best_bundle.authority_weight,
+            source_strength=best_bundle.source_strength,
+            convergence=best_bundle.convergence,
+            is_structural_bridge=best_bundle.is_structural_bridge,
+            inferred_node_ids=best_bundle.inferred_node_ids,
+            auxiliary_constraint_signal=best_bundle.auxiliary_constraint_signal,
+            auxiliary_convergence_signal=best_bundle.auxiliary_convergence_signal,
+        )
+
     def locate(
         self,
         mb_graph: object,     # MBGraph
@@ -1174,9 +1238,11 @@ class RuptureProbe:
                                 rupture_effect = 0.0
                         else:
                             # M_B 依存プロンプト/介入の場合:
-                            # 【Fail-Closed 検査】CounterfactualInput を受理した証跡がない、かつ is_mb_dependent でもない場合、
-                            # 介入が行われていないのに rupture_effect を算出することを禁止する (None = ξ)
-                            if not intervention_verified and not getattr(bridge, "received_counterfactual_input", False) and not getattr(bridge, "is_mb_dependent", False):
+                            # 【厳格な反実仮想介入検証 (Strict Intervention Verification: BASE v2.0 §4.2)】
+                            # 自己申告 (is_mb_dependent=True) 単体でのバイパスを完全排除。
+                            # 実際に CounterfactualInput を受領・適用した実証 (intervention_verified=True または received_counterfactual_input)
+                            # がない場合、介入が行われていないのに rupture_effect を算出することを禁止する (None = ξ)
+                            if not intervention_verified and not getattr(bridge, "received_counterfactual_input", False):
                                 rupture_effect = None
                             else:
                                 diff = 0.0
