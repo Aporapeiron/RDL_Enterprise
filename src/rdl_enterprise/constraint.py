@@ -241,7 +241,9 @@ class RuptureResult:
     intervention_verified: bool = False         # Level 3 で M_B 介入が実証されたか
     base_trace_id: Optional[str] = None         # f_base の InterpretationTrace trace_id
     cut_trace_id: Optional[str] = None          # f_without の InterpretationTrace trace_id
-    effect_verified_locus_ids: List[str] = field(default_factory=list)  # 切断で有意差が実証された責任拘束位置
+    effect_verified_bundle_ids: List[str] = field(default_factory=list)  # 束集合切断 (set-level) で有意差が実証されたノード集合
+    effect_verified_node_ids: List[str] = field(default_factory=list)    # 個別アブレーション (node-level) で因果責任が実証されたノード群
+    effect_verified_locus_ids: List[str] = field(default_factory=list)  # 後方互換用 (bundle_ids と同一)
 
 
 # ---------------------------------------------------------------------------
@@ -859,34 +861,55 @@ class RelationConstraintLocator:
         if primary_lin:
             seen_lineages.add(primary_lin)
 
+        # L 内部の関係分離 (BASE v2.0 §4.2):
+        # - core_node_ids: primary + 明示的 support (確定拘束ノード)
+        # - inferred_node_ids: inferred_support (未回収関係 ξ)
+        # - contradict / unknown: core からは完全に除外
+        core_node_ids = [primary_node.id]
+        inferred_node_ids = []
+
         # L 内部の相互支援・相乗効果 (Composite Synergy)
-        synergy_mass = 0.0
-        distinct_lineages = len(seen_lineages)
+        # 【公理的厳格分離】:
+        # core_synergy_mass: 明示的 support のみから加算 (core constraint score へ寄与)
+        # aux_synergy_signal: inferred_support 由来 (auxiliary ξ signal として保持)
+        core_synergy_mass = 0.0
+        aux_synergy_signal = 0.0
+
         for score, rel, fresh, auth, src, lin, n in evaluated_nodes[1:]:
             rel_type = _check_node_relation(primary_node, n)
-            if rel_type in ("support", "inferred_support"):
-                lin_factor = 0.2 if (lin and lin in seen_lineages) else 1.0
-                if lin:
-                    seen_lineages.add(lin)
-                weight = 1.0 if rel_type == "support" else 0.5
-                synergy_mass += 0.03 * rel * src * lin_factor * weight
+            lin_factor = 0.2 if (lin and lin in seen_lineages) else 1.0
+            if lin:
+                seen_lineages.add(lin)
 
-        synergy_mass = min(0.20, synergy_mass)
-        composite_score = min(1.0, primary_score + synergy_mass)
+            if rel_type == "support":
+                core_node_ids.append(n.id)
+                core_synergy_mass += 0.03 * rel * src * lin_factor
+            elif rel_type == "inferred_support":
+                inferred_node_ids.append(n.id)
+                aux_synergy_signal += 0.02 * rel * src * lin_factor
+            # contradict や unknown は core にも auxiliary にも入れず除外
+
+        core_synergy_mass = min(0.20, core_synergy_mass)
+        aux_signal = min(0.50, aux_synergy_signal + 0.05 * len(inferred_node_ids))
+        core_score = min(1.0, primary_score + core_synergy_mass)
 
         # 独立ソース系統数に基づく収束度
-        convergence = min(1.0, 0.4 + 0.15 * len(seen_lineages))
+        core_conv = min(1.0, 0.4 + 0.15 * len(seen_lineages))
+        aux_conv = min(0.5, 0.02 * len(inferred_node_ids))
 
         return ConstraintBundle(
-            node_ids=locus_ids,  # 完全に L と 1:1 一致
-            locus_type="strong" if composite_score >= 0.6 else "subgraph",
-            constraint_score=composite_score,
+            node_ids=core_node_ids,  # primary + 明示的 support のみ
+            locus_type="strong" if core_score >= 0.6 else "subgraph",
+            constraint_score=core_score,
             relevance=primary_rel,
             freshness=primary_fresh,
             authority_weight=primary_auth,
             source_strength=primary_src,
-            convergence=convergence,
+            convergence=core_conv,
             is_structural_bridge=False,
+            inferred_node_ids=inferred_node_ids,  # auxiliary ξ
+            auxiliary_constraint_signal=aux_signal,
+            auxiliary_convergence_signal=aux_conv,
         )
 
     def locate(
@@ -1152,7 +1175,8 @@ class RuptureProbe:
         intervention_verified: bool = False
         base_trace_id: Optional[str] = None
         cut_trace_id: Optional[str] = None
-        effect_verified_locus_ids: List[str] = []
+        effect_verified_bundle_ids: List[str] = []
+        effect_verified_node_ids: List[str] = []
 
         def _make_result(verdict: str, opposing_strength: float, rupture_reason: str = "") -> RuptureResult:
             return RuptureResult(
@@ -1167,7 +1191,9 @@ class RuptureProbe:
                 intervention_verified=intervention_verified,
                 base_trace_id=base_trace_id,
                 cut_trace_id=cut_trace_id,
-                effect_verified_locus_ids=list(effect_verified_locus_ids),
+                effect_verified_bundle_ids=list(effect_verified_bundle_ids),
+                effect_verified_node_ids=list(effect_verified_node_ids),
+                effect_verified_locus_ids=list(effect_verified_bundle_ids),
             )
 
         try:
@@ -1272,13 +1298,16 @@ class RuptureProbe:
                     and conds_match
                 )
 
-            # 介入実証フラグの厳格判定:
-            # BridgeExecutionTrace がある場合は 4 点照合を必須とし、
-            # ない場合は従来の counterfactual_verified (Bridge が CounterfactualInput を受領したこと) を確認
-            if base_exec_trace is not None or cut_exec_trace is not None:
+            # 介入実証フラグの厳格判定 (BASE v2.0 §4.2):
+            # 捏造バイパスの完全排除 (Self-Exception Prohibition):
+            # Bridge が applied_mb_view_hash / execution_trace を明示報告し、
+            # 4 点照合 (requested == applied == view_hash, base != cut, conds_match) を満たした場合のみ
+            # intervention_verified = True とする。
+            # execution_trace が存在しない場合は実証不能として Fail-Closed (False) とする。
+            if base_exec_trace is not None and cut_exec_trace is not None:
                 intervention_verified = bool(hashes_match)
             else:
-                intervention_verified = bool(base_verified and cut_verified)
+                intervention_verified = False
 
             if used_llm_bridge:
                 # 1. リプレイ能力・反実仮想契約の検証
@@ -1319,7 +1348,31 @@ class RuptureProbe:
                                 diff += 0.2 * abs(f_base.confidence - f_without.confidence)
                                 rupture_effect = min(1.0, round(diff, 4))
                                 if rupture_effect > 0:
-                                    effect_verified_locus_ids = list(bundle.node_ids)
+                                    # 束集合レベル検証 (set-level verification: BASE v2.0 §4.2)
+                                    effect_verified_bundle_ids = list(bundle.node_ids)
+                                    # 単一ノード束ならそのノード自体が個別効果を持つ
+                                    if len(bundle.node_ids) == 1:
+                                        effect_verified_node_ids = list(bundle.node_ids)
+                                    else:
+                                        # 複数ノード束の場合の単一ノード摂動 (Single-Node Ablation / Leave-One-Out)
+                                        for single_nid in bundle.node_ids:
+                                            try:
+                                                f_single_cut = cascade_cut.interpret(
+                                                    ctx.efp,
+                                                    exclude_node_ids=[single_nid],
+                                                    skip_constraint_boost=True,
+                                                    replay_token=replay_token_K,
+                                                )
+                                                s_diff = 0.0
+                                                if f_base.action_type != f_single_cut.action_type:
+                                                    s_diff += 0.4
+                                                if f_base.content != f_single_cut.content:
+                                                    s_diff += 0.4
+                                                s_diff += 0.2 * abs(f_base.confidence - f_single_cut.confidence)
+                                                if round(s_diff, 4) > 0:
+                                                    effect_verified_node_ids.append(single_nid)
+                                            except Exception:
+                                                pass
                     else:
                         # 片方が Level 3 でもう片方がローカル階層（切断によってフォールバック等が発生）
                         diff = 0.0
@@ -1333,7 +1386,8 @@ class RuptureProbe:
                                 diff += 0.1
                         rupture_effect = min(1.0, round(diff, 4))
                         if rupture_effect > 0:
-                            effect_verified_locus_ids = list(bundle.node_ids)
+                            effect_verified_bundle_ids = list(bundle.node_ids)
+                            effect_verified_node_ids = list(bundle.node_ids)
             else:
                 # ローカル決定的推論 (Level 0 - Level 2、または bridge なしの決定的フォールバック):
                 # 決定的な再実行による変化量測定
@@ -1348,7 +1402,8 @@ class RuptureProbe:
                         diff += 0.1
                 rupture_effect = min(1.0, round(diff, 4))
                 if rupture_effect > 0:
-                    effect_verified_locus_ids = list(bundle.node_ids)
+                    effect_verified_bundle_ids = list(bundle.node_ids)
+                    effect_verified_node_ids = list(bundle.node_ids)
         except Exception:
             rupture_effect = None
             base_view_hash = None
@@ -1357,7 +1412,8 @@ class RuptureProbe:
             intervention_verified = False
             base_trace_id = None
             cut_trace_id = None
-            effect_verified_locus_ids = []
+            effect_verified_bundle_ids = []
+            effect_verified_node_ids = []
 
         # =============================================================
         # Phase 2: 破断・妥当性判定 (Verdict Probing: survive / break / unresolved)

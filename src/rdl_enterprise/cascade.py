@@ -87,32 +87,75 @@ class InterpCascade:
         eligible_nodes: List[MBNode],
         efp: BusinessInput,
         limit: int = 4,
+        relevance_floor: float = 0.05,
     ) -> List[MBNode]:
         r"""
         活性化拘束サブグラフ選出器 (ContextSelector: BASE v2.0 §4.2)。
         有限境界 B 内の利用可能関係 (eligible_nodes) の中から、
         入力 EFP との適合度・トリガー共起・相互関係性に基づいて
         実際に F 形成候補となり得る活性化サブグラフ L_candidate を選出する。
+
+        【関係活性化伝播モデル (Graph Relation Propagation)】:
+        1. 入力クエリに対して適合度が閾値 (relevance_floor) 以上のシードノード群 (Seed Nodes) を特定。
+        2. シードノードから MBGraph 上の明示的関係エッジ (support, authority 等) を
+           1-hop 伝播 (Relation Edge Propagation) させて接続ノード群を展開。
+        3. 関連性ゼロ (rel == 0) の孤立ノードは、承認実績が高くても原則として除外。
         """
         if not eligible_nodes:
             return []
-        if len(eligible_nodes) <= limit:
-            return list(eligible_nodes)
 
-        from .constraint import _compute_relevance
+        from .constraint import _compute_relevance, _compute_authority_weight
+
+        # 1. 各ノードの直接関連度 (Relevance) とスコアを算出
+        node_map = {n.id: n for n in eligible_nodes}
+        rel_map: Dict[str, float] = {}
         scored_nodes: List[Tuple[float, MBNode]] = []
+
         for node in eligible_nodes:
             rel = _compute_relevance(efp.query_text, node.trigger_pattern)
+            rel_map[node.id] = rel
             src_str = node.approval_count / (node.approval_count + node.rejection_count + 1.0)
-            score = rel * 0.7 + src_str * 0.3
+            auth_w = _compute_authority_weight(node.authority_level)
+            # 適合度を主軸とし、ソース拘束・権威で補正
+            score = rel * 0.7 + src_str * 0.2 + auth_w * 0.1
             scored_nodes.append((score, node))
 
+        # 2. 直接適合シードノード (Seed Nodes: rel >= relevance_floor) の抽出
+        seed_nodes = [n for score, n in scored_nodes if rel_map[n.id] >= relevance_floor]
+
+        # 3. グラフ関係伝播 (1-hop Relation Propagation)
+        # シードノードから明示的に support または共起している接続ノードを展開
+        activated_ids = set(n.id for n in seed_nodes)
+        for sn in list(seed_nodes):
+            # (a) 明示的 node_relations の伝播 (support 関係)
+            for target_id, rel_type in getattr(sn, "node_relations", {}).items():
+                if rel_type == "support" and target_id in node_map:
+                    activated_ids.add(target_id)
+            # (b) トリガー共起 (find_co_occurring_nodes) の伝播
+            if hasattr(self.mb_graph, "find_co_occurring_nodes"):
+                co_nodes = self.mb_graph.find_co_occurring_nodes(sn, limit=3)
+                for cn in co_nodes:
+                    if cn.id in node_map and rel_map.get(cn.id, 0.0) >= (relevance_floor * 0.5):
+                        activated_ids.add(cn.id)
+
+        # 4. 活性化サブグラフの候補選別
+        if activated_ids:
+            candidates = [n for n in eligible_nodes if n.id in activated_ids]
+            # スコア降順に並べ替え
+            candidates.sort(
+                key=lambda n: (
+                    rel_map[n.id] * 0.7 +
+                    (n.approval_count / (n.approval_count + n.rejection_count + 1.0)) * 0.2 +
+                    _compute_authority_weight(n.authority_level) * 0.1
+                ),
+                reverse=True,
+            )
+            return candidates[:limit]
+
+        # シードノードが1件もない（完全未知クエリ）の場合:
+        # ドメイン境界内で最も高い authority / source を持つノード上位（最大 limit 個）をフォールバック選出
         scored_nodes.sort(key=lambda x: x[0], reverse=True)
-        # 適合スコアが正のノード群を優先し、最大 limit 個を選出
-        top_candidates = [n for score, n in scored_nodes[:limit]]
-        if not top_candidates:
-            top_candidates = [scored_nodes[0][1]]
-        return top_candidates
+        return [n for score, n in scored_nodes[:min(limit, len(scored_nodes))]]
 
     def _finalize_prediction(
         self,
@@ -341,21 +384,26 @@ class InterpCascade:
                     llm_res = self.llm_bridge.resolve(efp)
                     cf_applied = False
 
-                # Bridge からの BridgeExecutionTrace 抽出または適用ビュー照合
+                # Bridge からの BridgeExecutionTrace 抽出または適用ビュー照合 (BASE v2.0 §4.2)
+                # 【自己捏造の厳格禁止 (Self-Exception Prohibition)】:
+                # Bridge が applied_mb_view_hash または execution_trace を実証的に返さなかった場合、
+                # requested_mb_view_hash から applied を自動生成することを禁止する。
                 if isinstance(llm_res, dict):
-                    if "execution_trace" in llm_res:
+                    if "execution_trace" in llm_res and isinstance(llm_res["execution_trace"], BridgeExecutionTrace):
                         exec_trace = llm_res["execution_trace"]
-                    elif "applied_mb_view_hash" in llm_res:
+                    elif "applied_mb_view_hash" in llm_res and llm_res["applied_mb_view_hash"]:
+                        applied_ids = tuple(llm_res.get("applied_node_ids", selected_locus_ids))
                         exec_trace = BridgeExecutionTrace(
                             requested_mb_view_hash=mb_view.view_hash,
                             applied_mb_view_hash=str(llm_res["applied_mb_view_hash"]),
                             conditions_hash=getattr(replay_token, "conditions_hash", ""),
+                            applied_node_ids=applied_ids,
                         )
-                if exec_trace is None and cf_applied:
-                    # Bridge Adapter が CounterfactualInput を受領した場合の実行証跡自動構築
+                elif hasattr(self.llm_bridge, "applied_mb_view_hash") and getattr(self.llm_bridge, "applied_mb_view_hash", None):
+                    # Bridge インスタンスが客観的証憑として applied_mb_view_hash プロパティを開示している場合
                     exec_trace = BridgeExecutionTrace(
                         requested_mb_view_hash=mb_view.view_hash,
-                        applied_mb_view_hash=getattr(self.llm_bridge, "applied_mb_view_hash", mb_view.view_hash),
+                        applied_mb_view_hash=str(self.llm_bridge.applied_mb_view_hash),
                         conditions_hash=getattr(replay_token, "conditions_hash", ""),
                         applied_node_ids=tuple(selected_locus_ids),
                     )
@@ -400,16 +448,25 @@ class InterpCascade:
                         except Exception:
                             actual_token = None
 
-                # Bridge からの BridgeExecutionTrace 抽出または適用ビュー照合
+                # Bridge からの BridgeExecutionTrace 抽出または適用ビュー照合 (BASE v2.0 §4.2)
                 if isinstance(llm_res, dict):
-                    if "execution_trace" in llm_res:
+                    if "execution_trace" in llm_res and isinstance(llm_res["execution_trace"], BridgeExecutionTrace):
                         exec_trace = llm_res["execution_trace"]
-                    elif "applied_mb_view_hash" in llm_res:
+                    elif "applied_mb_view_hash" in llm_res and llm_res["applied_mb_view_hash"]:
+                        applied_ids = tuple(llm_res.get("applied_node_ids", selected_locus_ids))
                         exec_trace = BridgeExecutionTrace(
                             requested_mb_view_hash=mb_view.view_hash,
                             applied_mb_view_hash=str(llm_res["applied_mb_view_hash"]),
                             conditions_hash=getattr(actual_token, "conditions_hash", "") if actual_token else "",
+                            applied_node_ids=applied_ids,
                         )
+                elif hasattr(self.llm_bridge, "applied_mb_view_hash") and getattr(self.llm_bridge, "applied_mb_view_hash", None):
+                    exec_trace = BridgeExecutionTrace(
+                        requested_mb_view_hash=mb_view.view_hash,
+                        applied_mb_view_hash=str(self.llm_bridge.applied_mb_view_hash),
+                        conditions_hash=getattr(actual_token, "conditions_hash", "") if actual_token else "",
+                        applied_node_ids=tuple(selected_locus_ids),
+                    )
 
                 pred_metadata["mb_view_hash"] = mb_view.view_hash
                 pred_metadata["conditions_hash"] = getattr(actual_token, "conditions_hash", "") if actual_token else ""

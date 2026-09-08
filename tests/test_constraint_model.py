@@ -2003,10 +2003,11 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
                 return {"type": "direct_reply", "payload": "base"}
             def resolve_replay(self, efp, replay_token=None, counterfactual_input=None):
                 self.call_count += 1
+                v_hash = counterfactual_input.mb_view.view_hash if (counterfactual_input and counterfactual_input.mb_view) else "v_hash"
                 # 1回目 (f_base) と 2回目 (f_without) で内生的な差分を模倣
                 if self.call_count == 1:
-                    return {"type": "direct_reply", "payload": "base_with_mb"}
-                return {"type": "direct_reply", "payload": "cut_without_mb"}
+                    return {"type": "direct_reply", "payload": "base_with_mb", "applied_mb_view_hash": v_hash}
+                return {"type": "direct_reply", "payload": "cut_without_mb", "applied_mb_view_hash": v_hash}
 
         graph = MBGraph()
         bridge = MBDependentBridge()
@@ -2162,10 +2163,11 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
                 return {"type": "direct_reply", "payload": "base_output"}
             def resolve_counterfactual(self, efp, replay_token, counterfactual_input=None):
                 received_cf_inputs.append(counterfactual_input)
+                v_hash = counterfactual_input.mb_view.view_hash if (counterfactual_input and counterfactual_input.mb_view) else "v_hash"
                 # available_nodes の有無によってプロンプト/出力を実際に変化させる (内生的変化)
                 if counterfactual_input and len(counterfactual_input.available_nodes) > 0:
-                    return {"type": "direct_reply", "payload": f"with_nodes_{len(counterfactual_input.available_nodes)}"}
-                return {"type": "direct_reply", "payload": "cut_without_nodes"}
+                    return {"type": "direct_reply", "payload": f"with_nodes_{len(counterfactual_input.available_nodes)}", "applied_mb_view_hash": v_hash}
+                return {"type": "direct_reply", "payload": "cut_without_nodes", "applied_mb_view_hash": v_hash}
 
         graph = MBGraph()
         n1 = MBNode(
@@ -2457,9 +2459,10 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
                 return {"type": "direct_reply", "payload": "base_output"}
             def resolve_counterfactual(self, efp, replay_token, counterfactual_input=None):
                 received_cf_inputs.append(counterfactual_input)
+                v_hash = counterfactual_input.mb_view.view_hash if (counterfactual_input and counterfactual_input.mb_view) else "cf_view_hash"
                 if counterfactual_input and len(counterfactual_input.available_nodes) > 0:
-                    return {"type": "direct_reply", "payload": "with_mb"}
-                return {"type": "direct_reply", "payload": "without_mb"}
+                    return {"type": "direct_reply", "payload": "with_mb", "applied_mb_view_hash": v_hash}
+                return {"type": "direct_reply", "payload": "without_mb", "applied_mb_view_hash": v_hash}
 
         graph = MBGraph()
         n1 = MBNode(
@@ -2682,17 +2685,28 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
         self.assertEqual(len(selected), 2)
         self.assertEqual(selected[0].id, "node_sub_0")
 
-        # locate_bundle_for_locus による 1:1 拘束束構築
+        # locate_bundle_for_locus による拘束束構築
         locus_ids = [s.id for s in selected]
         locator = RelationConstraintLocator()
         ctx = ConstraintContext(efp=efp, active_domain="support")
         bundle = locator.locate_bundle_for_locus(graph, locus_ids, ctx)
 
-        # 評価対象と切断対象が locus_ids と完全一致
-        self.assertEqual(bundle.node_ids, locus_ids)
+        # 1. 明示的 support 関係がない場合:
+        # node_sub_0 が primary となり、暗黙ノード node_sub_1 は inferred_node_ids (auxiliary ξ) へ分離される
+        self.assertEqual(bundle.node_ids, [locus_ids[0]])
         self.assertEqual(bundle.primary_node_id(), locus_ids[0])
-        self.assertEqual(bundle.supporting_node_ids, locus_ids[1:])
+        self.assertEqual(bundle.inferred_node_ids, [locus_ids[1]])
         self.assertGreater(bundle.constraint_score, 0.0)
+        self.assertGreater(bundle.auxiliary_constraint_signal, 0.0)
+
+        # 2. 明示的 support 関係がある場合:
+        # node_sub_0 が node_sub_1 を support している場合、両ノードが core bundle.node_ids に入る
+        n0 = graph.get("node_sub_0")
+        n0.node_relations = {"node_sub_1": "support"}
+        bundle_with_support = locator.locate_bundle_for_locus(graph, locus_ids, ctx)
+        self.assertEqual(bundle_with_support.node_ids, locus_ids)
+        self.assertEqual(bundle_with_support.supporting_node_ids, locus_ids[1:])
+        self.assertEqual(bundle_with_support.inferred_node_ids, [])
 
     def test_applied_view_hash_contract_and_trace_verification(self):
         """RuptureProbe が BridgeExecutionTrace の 4点照合を検証し、満たした場合のみ intervention_verified=True とし effect_verified_locus_ids を記録すること (BASE v2.0 §4.2)"""
@@ -2764,6 +2778,192 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
         self.assertIsNotNone(res.base_trace_id)
         self.assertIsNotNone(res.cut_trace_id)
         self.assertNotEqual(res.base_mb_view_hash, res.cut_mb_view_hash)
+
+
+    def test_applied_view_hash_no_fabrication_fail_closed(self):
+        """P0 契約: Bridge が applied_mb_view_hash / execution_trace を明示報告しない場合、requested を代入・捏造せず Fail-Closed (intervention_verified=False, rupture_effect=None) とすること (BASE v2.0 §4.2)"""
+        from rdl_enterprise.cascade import InterpCascade
+        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.constraint import RuptureProbe, ConstraintBundle, ConstraintContext
+        from rdl_enterprise.snapshot import BusinessInput, ReplayToken, CounterfactualInput
+
+        class SilentBridgeWithoutAppliedHash:
+            """applied_mb_view_hash も execution_trace も返さない Bridge"""
+            def __init__(self):
+                self.is_mb_dependent = True
+                self._token = ReplayToken(token_id="tok_silent", model_name="v-model", seed=42)
+            def can_replay(self):
+                return True
+            def create_replay_token(self):
+                return self._token
+            def resolve(self, efp, mb_view=None):
+                return {
+                    "type": "direct_reply",
+                    "payload": "base_silent_reply",
+                    # applied_mb_view_hash, execution_trace をあえて含めない
+                }
+            def resolve_counterfactual(self, cf_input: CounterfactualInput):
+                is_cut = bool(cf_input.excluded_node_ids)
+                return {
+                    "type": "direct_reply",
+                    "payload": "cut_silent_reply" if is_cut else "base_silent_reply",
+                    # applied_mb_view_hash, execution_trace をあえて含めない
+                }
+
+        graph = MBGraph()
+        n_tgt = MBNode(id="n_tgt", domain="sales", trigger_pattern={"exact_keys": ["特別割引"]}, action_template={"type": "direct_reply", "payload": "10%割引"}, confidence=0.8)
+        graph.add_or_update(n_tgt)
+
+        bridge = SilentBridgeWithoutAppliedHash()
+        bundle = ConstraintBundle(node_ids=["n_tgt"], locus_type="strong", constraint_score=0.8, freshness=1.0, relevance=0.8)
+        probe = RuptureProbe()
+        efp = BusinessInput("T_SILENT", "U1", "sales", "未定義の複雑な割引相談")
+        ctx = ConstraintContext(efp=efp, llm_bridge=bridge, active_domain="sales")
+
+        res = probe.probe(bundle, graph, ctx)
+
+        # 捏造バイパスが禁止され、Fail-Closed (未検証 ξ) となること
+        self.assertFalse(res.intervention_verified)
+        self.assertIsNone(res.rupture_effect)
+        self.assertEqual(res.verdict, "unresolved")
+
+    def test_context_selector_relevance_floor_and_propagation(self):
+        """P3 契約: ContextSelector が relevance_floor (0.05) で無関係ノードを足切りし、明示的 support 関係から 1-hop 伝播すること (BASE v2.0 §4.2)"""
+        from rdl_enterprise.cascade import InterpCascade
+        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.snapshot import BusinessInput
+
+        graph = MBGraph()
+        # 1. 直接適合ノード (rel >= 0.05)
+        n_seed = MBNode(
+            id="node_seed",
+            domain="sales",
+            trigger_pattern={"exact_keys": ["大型契約"]},
+            action_template={"type": "direct_reply", "payload": "seed"},
+            confidence=0.7,
+            approval_count=10,
+        )
+        # 2. 適合ゼロだが seed から明示的 support されているノード
+        n_supported = MBNode(
+            id="node_supported",
+            domain="sales",
+            trigger_pattern={"exact_keys": ["完全無関係キーXYZ"]},
+            action_template={"type": "direct_reply", "payload": "supported"},
+            confidence=0.8,
+            approval_count=5,
+        )
+        n_seed.node_relations = {"node_supported": "support"}
+
+        # 3. 適合ゼロで関係性もないが、承認数が極めて高い孤立ノード
+        n_high_approval_isolated = MBNode(
+            id="node_high_approval_isolated",
+            domain="sales",
+            trigger_pattern={"exact_keys": ["完全無関係キーABC"]},
+            action_template={"type": "direct_reply", "payload": "isolated"},
+            confidence=0.95,
+            approval_count=1000, # 圧倒的な承認実績
+        )
+
+        graph.add_or_update(n_seed)
+        graph.add_or_update(n_supported)
+        graph.add_or_update(n_high_approval_isolated)
+
+        cascade = InterpCascade(graph)
+        efp = BusinessInput("T_PROP", "U1", "sales", "大型契約についての相談")
+
+        selected = cascade.select_active_constraint_subgraph(graph.list_nodes(), efp, limit=3)
+        selected_ids = [n.id for n in selected]
+
+        # seed が選ばれる
+        self.assertIn("node_seed", selected_ids)
+        # 適合ゼロでも seed から 1-hop support 伝播されたノードが含まれる
+        self.assertIn("node_supported", selected_ids)
+        # 承認数がどれだけ高くても、関連性ゼロかつ孤立したノードは活性化サブグラフから除外される
+        self.assertNotIn("node_high_approval_isolated", selected_ids)
+
+    def test_bundle_level_vs_node_level_ablation(self):
+        """P4/P5 契約: 複数ノード束 L において、束全体の切断で ΔF > 0 が生じた場合でも、単一ノード個別切断 (Leave-One-Out) により effect_verified_node_ids を分離・限定すること (BASE v2.0 §4.2)"""
+        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.constraint import RuptureProbe, ConstraintBundle, ConstraintContext
+        from rdl_enterprise.snapshot import BusinessInput, ReplayToken, CounterfactualInput, BridgeExecutionTrace
+
+        class MultiNodeAblationMockBridge:
+            """
+            n1 + n2 の両方が存在するときの基本推論: base
+            n1 が切断されると: cut_n1 (変化あり: diff > 0)
+            n2 だけが切断されても: base (変化なし: n1 があれば同一動作)
+            n1 + n2 の両方が切断されると: cut_both (変化あり: diff > 0)
+            """
+            def __init__(self):
+                self.is_mb_dependent = True
+                self.applied_mb_view_hash = None
+                self._token = ReplayToken(token_id="tok_ablation", model_name="v-model", seed=42)
+            def can_replay(self):
+                return True
+            def create_replay_token(self):
+                return self._token
+            def resolve(self, efp, mb_view=None):
+                v_hash = mb_view.view_hash if mb_view else "base_view"
+                trace = BridgeExecutionTrace(
+                    requested_mb_view_hash=v_hash,
+                    applied_mb_view_hash=v_hash,
+                    conditions_hash=self._token.conditions_hash,
+                    applied_node_ids=("n1", "n2"),
+                )
+                return {
+                    "type": "direct_reply",
+                    "payload": "base_behavior",
+                    "applied_mb_view_hash": v_hash,
+                    "execution_trace": trace,
+                    "replay_token": self._token,
+                }
+            def resolve_counterfactual(self, cf_input: CounterfactualInput):
+                v_hash = cf_input.mb_view.view_hash if cf_input.mb_view else "cut_view"
+                excluded = set(cf_input.excluded_node_ids)
+                # n1 が除外されている場合のみ挙動が変わる
+                if "n1" in excluded:
+                    payload = "behavior_changed_without_n1"
+                else:
+                    payload = "base_behavior"
+                trace = BridgeExecutionTrace(
+                    requested_mb_view_hash=v_hash,
+                    applied_mb_view_hash=v_hash,
+                    conditions_hash=self._token.conditions_hash,
+                    applied_node_ids=tuple(n for n in ("n1", "n2") if n not in excluded),
+                )
+                return {
+                    "type": "direct_reply",
+                    "payload": payload,
+                    "applied_mb_view_hash": v_hash,
+                    "execution_trace": trace,
+                }
+
+        graph = MBGraph()
+        n1 = MBNode(id="n1", domain="tech", trigger_pattern={"exact_keys": ["API仕様"]}, action_template={"type": "direct_reply", "payload": "p1"}, confidence=0.9)
+        n2 = MBNode(id="n2", domain="tech", trigger_pattern={"exact_keys": ["API補足"]}, action_template={"type": "direct_reply", "payload": "p2"}, confidence=0.8)
+        n1.node_relations = {"n2": "support"}
+        graph.add_or_update(n1)
+        graph.add_or_update(n2)
+
+        bridge = MultiNodeAblationMockBridge()
+        bundle = ConstraintBundle(node_ids=["n1", "n2"], locus_type="strong", constraint_score=0.85)
+        probe = RuptureProbe()
+        efp = BusinessInput("T_ABL", "U1", "tech", "未知のAPI問い合わせ")
+        ctx = ConstraintContext(efp=efp, llm_bridge=bridge, active_domain="tech")
+
+        res = probe.probe(bundle, graph, ctx)
+
+        # 1. 介入検証は合格
+        self.assertTrue(res.intervention_verified)
+        self.assertIsNotNone(res.rupture_effect)
+        self.assertGreater(res.rupture_effect, 0.0)
+
+        # 2. 束集合レベル (set-level) では [n1, n2] の除去で効果が実証されている
+        self.assertEqual(res.effect_verified_bundle_ids, ["n1", "n2"])
+
+        # 3. ノード個別レベル (node-level ablation) では、単独除去で効果があった n1 のみが特定され、
+        #    単独除去では効果がなかった n2 は過大帰属されずに除外されていること！
+        self.assertEqual(res.effect_verified_node_ids, ["n1"])
 
 
 if __name__ == "__main__":
