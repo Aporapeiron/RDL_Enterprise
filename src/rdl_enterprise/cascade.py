@@ -91,12 +91,15 @@ class InterpCascade:
         efp: BusinessInput,
         exclude_node_ids: Optional[Any] = None,
         skip_constraint_boost: bool = False,
+        replay_token: Optional[Any] = None,
     ) -> InterpretationPrediction:
-        """
+        r"""
         事前予測 F または事後解釈 F' の形成。
         exclude_node_ids: 破断検査（RuptureProbe）における実効的除去摂動用。
                           指定されたノード群を仮想的に排除した M_B \ bundle の解釈を形成する。
         skip_constraint_boost: RuptureProbe 内での再帰呼び出しを防止するためのフラグ。
+        replay_token: 反実仮想実験における外生固定条件集合 K (ReplayToken)。
+                      指定された場合のみ反実仮想再演パスを実行する。
         """
         norm_query = self._normalize(efp.query_text)
         target_domain = efp.category or "any"
@@ -173,7 +176,7 @@ class InterpCascade:
             rule_expr = pattern.get("rule_expr")
             if rule_expr:
                 try:
-                    if re.search(rule_expr, efp.query_text):
+                    if re.search(rule_expr, efp.query_text, re.IGNORECASE):
                         self.level0_cache[cache_key] = node.id
                         boost = 0.0 if skip_constraint_boost else self._constraint_boost(node, efp)
                         base_c = node.confidence + boost
@@ -216,11 +219,32 @@ class InterpCascade:
         # Level 3: 外部LLM推論器 (Cost Tier 3: 外部高コスト推論)
         # -------------------------------------------------------------
         if self.llm_bridge:
-            # 外部LLMまたはモックLLMを呼び出し（resolve_replay が提供されていれば決定論的リプレイを優先実行）
-            if hasattr(self.llm_bridge, "resolve_replay") and callable(self.llm_bridge.resolve_replay):
-                llm_res = self.llm_bridge.resolve_replay(efp)
+            actual_token = replay_token
+            if replay_token is not None:
+                # 反実仮想再演 (Counterfactual Replay): 外生固定条件集合 K の下での再演
+                if hasattr(self.llm_bridge, "resolve_counterfactual") and callable(self.llm_bridge.resolve_counterfactual):
+                    llm_res = self.llm_bridge.resolve_counterfactual(efp, replay_token)
+                elif hasattr(self.llm_bridge, "resolve_replay") and callable(self.llm_bridge.resolve_replay):
+                    try:
+                        llm_res = self.llm_bridge.resolve_replay(efp, replay_token)
+                    except TypeError:
+                        llm_res = self.llm_bridge.resolve_replay(efp)
+                else:
+                    llm_res = self.llm_bridge.resolve(efp)
             else:
+                # 通常推論 (Normal Resolve): 通常の未知案件解釈作用
                 llm_res = self.llm_bridge.resolve(efp)
+                if hasattr(self.llm_bridge, "capture_counterfactual_context") and callable(self.llm_bridge.capture_counterfactual_context):
+                    try:
+                        actual_token = self.llm_bridge.capture_counterfactual_context(efp)
+                    except Exception:
+                        actual_token = None
+                elif hasattr(self.llm_bridge, "create_replay_token") and callable(self.llm_bridge.create_replay_token):
+                    try:
+                        actual_token = self.llm_bridge.create_replay_token()
+                    except Exception:
+                        actual_token = None
+
             base_conf = self.config.llm_default_confidence
             outcome = "need_input"
             if is_prime:
@@ -238,6 +262,7 @@ class InterpCascade:
                 cost_tier=3,
                 domain=efp.category or "unknown",
                 expected_outcome=outcome,
+                replay_token=actual_token,
             )
 
         # LLM未設定のデフォルトフォールバック（人間に聞く）

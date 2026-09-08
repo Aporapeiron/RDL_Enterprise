@@ -23,6 +23,46 @@ class BusinessInput:
 
 
 @dataclass
+class ReplayToken:
+    r"""
+    反実仮想実験 (Counterfactual Replay) における外生的固定条件集合 K (BASE v2.0 §4.2)
+    F_base = interp(M_B, EFP | K)
+    F_cut  = interp(M_B \ bundle, EFP | K)
+
+    【重要】ReplayToken は完成したレスポンスそのものを固定してはならない。
+    M_B 除去に伴うプロンプトや参照ノードの内生的変化は許容しつつ、
+    外生的なサンプリング揺らぎ、モデル条件、外部環境スナップショットを厳密に固定する。
+    """
+    token_id: str
+    model_name: str = "generic-llm"
+    provider: str = "mock"
+    system_prompt_version: str = "v1"
+    seed: Optional[int] = None
+    sampling_params: Dict[str, Any] = field(default_factory=dict)
+    tool_environment_snapshot: Dict[str, Any] = field(default_factory=dict)
+    external_evidence_snapshot: Dict[str, Any] = field(default_factory=dict)
+    request_config: Dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+    provenance: Dict[str, Any] = field(default_factory=dict)
+
+    def compute_hash(self) -> str:
+        """外生条件集合 K の決定性ハッシュ"""
+        payload = {
+            "token_id": self.token_id,
+            "model_name": self.model_name,
+            "provider": self.provider,
+            "system_prompt_version": self.system_prompt_version,
+            "seed": self.seed,
+            "sampling_params": self.sampling_params,
+            "tool_env": self.tool_environment_snapshot,
+            "evidence": self.external_evidence_snapshot,
+            "req_cfg": self.request_config,
+        }
+        raw = json.dumps(payload, sort_keys=True)
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
+@dataclass
 class InterpretationPrediction:
     """事前予測 F"""
     action_type: str                  # "direct_reply" | "tool_call" | "ask_human" | "delegate"
@@ -32,6 +72,7 @@ class InterpretationPrediction:
     cost_tier: int                    # 0: ローカル最小, 1: ルール, 2: 局所推論, 3: 外部LLM
     domain: Optional[str] = None
     expected_outcome: str = "resolve" # "resolve" | "need_input" | "escalate"
+    replay_token: Optional[ReplayToken] = None # 反実仮想再演・同一条件証跡 K
 
 
 @dataclass
@@ -133,6 +174,23 @@ class LLMBridgeIdentity:
             deterministic_replay=det_replay,
             replay_snapshot_hash=snapshot_hash,
             can_replay=can_rep,
+        )
+
+    def create_replay_token(self, token_id: Optional[str] = None, **kwargs) -> "ReplayToken":
+        """この同一性条件から反実仮想再演用の外生固定条件トークン K を生成"""
+        import uuid
+        t_id = token_id or f"tok_{uuid.uuid4().hex[:8]}"
+        return ReplayToken(
+            token_id=t_id,
+            model_name=self.model_name,
+            provider=kwargs.get("provider", "mock"),
+            system_prompt_version=self.system_prompt_version,
+            seed=self.seed,
+            sampling_params={"temperature": self.temperature, **kwargs.get("sampling_params", {})},
+            tool_environment_snapshot=kwargs.get("tool_environment_snapshot", {}),
+            external_evidence_snapshot=kwargs.get("external_evidence_snapshot", {}),
+            request_config=kwargs.get("request_config", {}),
+            provenance={"config_hash": self.config_hash, "replay_snapshot_hash": self.replay_snapshot_hash, **kwargs.get("provenance", {})},
         )
 
 

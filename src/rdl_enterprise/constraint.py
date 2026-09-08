@@ -71,6 +71,7 @@ class ConstraintContext:
     active_domain: Optional[str] = None
     config: ConstraintConfig = field(default_factory=ConstraintConfig)
     frozen_context: Optional[Any] = None  # FrozenInterpretationContext（完全同一解釈器を伝播）
+    llm_bridge: Optional[Any] = None      # 外部推論器 (LLM Bridge: Counterfactual Replay用)
 
 
 # ---------------------------------------------------------------------------
@@ -78,33 +79,83 @@ class ConstraintContext:
 # ---------------------------------------------------------------------------
 
 @dataclass
+class BundleCore:
+    """現在 F を実際に拘束している確定関係構造 (M_B[bundle])"""
+    node_ids: List[str]                  # primary + explicit support
+    constraint_score: float              # 確定拘束強度 ∈ [0, 1]
+    convergence: float = 0.0             # 確定関係群の収束一致度 ∈ [0, 1]
+    relevance: float = 0.0
+    freshness: float = 0.0
+    authority_weight: float = 0.0
+    source_strength: float = 0.0
+    source_lineages: List[str] = field(default_factory=list)
+
+
+@dataclass
+class BundleAuxiliary:
+    """まだ M_B の確定拘束として扱えない未回収関係 (ξ evidence)"""
+    inferred_node_ids: List[str] = field(default_factory=list)
+    constraint_signal: float = 0.0       # 潜在的拘束シグナル ∈ [0, 1]
+    convergence_signal: float = 0.0      # 潜在的収束シグナル ∈ [0, 1]
+    observation_count: int = 0           # 観測反復回数（P4 昇格代謝用）
+    independent_sources: List[str] = field(default_factory=list)  # 観測された独立ソース群
+
+
+@dataclass
 class ConstraintBundle:
     """
     「関係の束」として表現した拘束位置。
-    強く支えている位置 または 切れると全体が変わる構造的橋 を表す。
+    確定拘束（core）と未確定関係（auxiliary ξ）を二層構造として保持する。
 
     BASE v2.0: 強い場所とは「そこを外す・反転する・揺らすと、
     現在の解釈可能域が大きく変わる場所」。
     """
-    node_ids: List[str]           # 束を構成するノード群（複数可）
+    node_ids: List[str]           # 束を構成する確定ノード群（複数可）
     locus_type: str               # "strong" | "bridge" | "authority" | "source"
-    constraint_score: float       # 現在の問い・時点・位置における拘束強度 ∈ [0, 1]
+    constraint_score: float       # 現在の問い・時点・位置における確定拘束強度 ∈ [0, 1]
 
     # 各拘束断面の値（内訳）
     relevance: float = 0.0        # 現在の問いへの適合
     freshness: float = 0.0        # 時間的新鮮さ
     authority_weight: float = 0.0 # 制度的権限
     source_strength: float = 0.0  # ソース拘束（承認比率）
-    convergence: float = 0.0      # 複数独立関係の収束一致
+    convergence: float = 0.0      # 複数独立関係の収束一致 (core_convergence)
 
     is_structural_bridge: bool = False  # 構造的に唯一の接続橋か
     inferred_node_ids: List[str] = field(default_factory=list)  # 暗黙・推論支援ノード群 (auxiliary / ξ evidence)
     auxiliary_constraint_signal: float = 0.0                    # 推論支援ノード群から立ち上がる潜在シグナル ∈ [0, 1]
+    auxiliary_convergence_signal: float = 0.0                   # 推論支援ノード群から立ち上がる潜在収束シグナル ∈ [0, 1]
+
+    core: Optional[BundleCore] = None
+    auxiliary: Optional[BundleAuxiliary] = None
+
+    def __post_init__(self):
+        if self.core is None:
+            self.core = BundleCore(
+                node_ids=list(self.node_ids),
+                constraint_score=self.constraint_score,
+                convergence=self.convergence,
+                relevance=self.relevance,
+                freshness=self.freshness,
+                authority_weight=self.authority_weight,
+                source_strength=self.source_strength,
+            )
+        if self.auxiliary is None:
+            self.auxiliary = BundleAuxiliary(
+                inferred_node_ids=list(self.inferred_node_ids),
+                constraint_signal=self.auxiliary_constraint_signal,
+                convergence_signal=self.auxiliary_convergence_signal,
+            )
 
     @property
     def core_constraint_score(self) -> float:
-        """確定拘束強度 (constraint_score のエイリアス: 確定束ノードのみで算出)"""
-        return self.constraint_score
+        """確定拘束強度 (確定束ノードのみで算出)"""
+        return self.core.constraint_score if self.core else self.constraint_score
+
+    @property
+    def core_convergence(self) -> float:
+        """確定収束度 (確定束ノードのみで算出)"""
+        return self.core.convergence if self.core else self.convergence
 
     def primary_node_id(self) -> Optional[str]:
         """代表ノード ID（最初の要素）"""
@@ -678,7 +729,8 @@ class RelationConstraintLocator:
             aux_signal += 0.04 * s_rel * s_src * lineage_factor * 0.5
 
         aux_signal = min(0.12, aux_signal)
-        conv = min(1.0, conv + 0.05 * len(effective_supporting_nodes) + 0.02 * len(inferred_supporting_nodes))
+        core_conv = min(1.0, conv + 0.05 * len(effective_supporting_nodes))
+        aux_conv_signal = min(0.5, 0.02 * len(inferred_supporting_nodes))
 
         return ConstraintBundle(
             node_ids=bundle_node_ids,
@@ -688,10 +740,11 @@ class RelationConstraintLocator:
             freshness=fresh,
             authority_weight=auth,
             source_strength=src,
-            convergence=conv,
+            convergence=core_conv,
             is_structural_bridge=False,
             inferred_node_ids=inferred_node_ids,
             auxiliary_constraint_signal=aux_signal,
+            auxiliary_convergence_signal=aux_conv_signal,
         )
 
     def locate(
@@ -844,6 +897,9 @@ class RelationConstraintLocator:
 
                 aux_signal = min(0.12, aux_signal)
 
+                core_conv = min(1.0, d.get("convergence", 0.0) + 0.05 * len(effective_supporting_nodes))
+                aux_conv_signal = min(0.5, 0.02 * len(inferred_supporting_nodes))
+
                 bundles.append(ConstraintBundle(
                     node_ids=bundle_node_ids,
                     locus_type=locus_type,
@@ -852,10 +908,11 @@ class RelationConstraintLocator:
                     freshness=d.get("freshness", 0.0),
                     authority_weight=d.get("authority_weight", 0.0),
                     source_strength=d.get("source_strength", 0.0),
-                    convergence=min(1.0, d.get("convergence", 0.0) + 0.05 * len(effective_supporting_nodes) + 0.02 * len(inferred_supporting_nodes)),
+                    convergence=core_conv,
                     is_structural_bridge=False,
                     inferred_node_ids=inferred_node_ids,
                     auxiliary_constraint_signal=aux_signal,
+                    auxiliary_convergence_signal=aux_conv_signal,
                 ))
 
         # --- (b) 構造的橋の高速検出 (O(M * keys)) ---
@@ -953,46 +1010,88 @@ class RuptureProbe:
                 cascade_cut = ctx.frozen_context.create_isolated_cascade()
             else:
                 from rdl_enterprise.cascade import InterpCascade, CascadeConfig
+                bridge_to_use = ctx.llm_bridge
+                if bridge_to_use is None and ctx.frozen_context is not None:
+                    bridge_to_use = getattr(ctx.frozen_context, "llm_bridge", None)
                 cascade_base = InterpCascade(
                     mb_graph,
+                    llm_bridge=bridge_to_use,
                     config=CascadeConfig(),
                     constraint_config=cfg,
                     constraint_evaluation_time=ctx.current_time,
                 )
                 cascade_cut = InterpCascade(
                     mb_graph,
+                    llm_bridge=bridge_to_use,
                     config=CascadeConfig(),
                     constraint_config=cfg,
                     constraint_evaluation_time=ctx.current_time,
                 )
-            f_base = cascade_base.interpret(ctx.efp, skip_constraint_boost=True)
-            f_without = cascade_cut.interpret(ctx.efp, exclude_node_ids=bundle.node_ids, skip_constraint_boost=True)
+            # 外生固定条件集合 K (ReplayToken) の初期化・キャプチャ
+            bridge = getattr(cascade_base, "llm_bridge", None)
+            replay_token_K = None
+            if bridge is not None:
+                if hasattr(bridge, "capture_counterfactual_context") and callable(bridge.capture_counterfactual_context):
+                    try:
+                        replay_token_K = bridge.capture_counterfactual_context(ctx.efp)
+                    except Exception:
+                        replay_token_K = None
+                elif hasattr(bridge, "create_replay_token") and callable(bridge.create_replay_token):
+                    try:
+                        replay_token_K = bridge.create_replay_token()
+                    except Exception:
+                        replay_token_K = None
+                elif _is_deterministic_replay_capable(bridge):
+                    from rdl_enterprise.snapshot import LLMBridgeIdentity
+                    ident = LLMBridgeIdentity.from_bridge(bridge)
+                    replay_token_K = ident.create_replay_token()
+
+            # F_base と F_cut を同一の固定条件 K の下で評価
+            f_base = cascade_base.interpret(ctx.efp, skip_constraint_boost=True, replay_token=replay_token_K)
+
+            # f_base から token が得られた場合はそれを後続に伝播
+            if replay_token_K is None and getattr(f_base, "replay_token", None) is not None:
+                replay_token_K = f_base.replay_token
+
+            f_without = cascade_cut.interpret(
+                ctx.efp,
+                exclude_node_ids=bundle.node_ids,
+                skip_constraint_boost=True,
+                replay_token=replay_token_K,
+            )
 
             # Level 3 で外部推論器 (llm_bridge) が呼び出された場合:
-            # 同一seed / 同一response snapshot / deterministic replay 等の決定性が保証されない限り、
-            # 外部LLMの揺らぎや内部状態変化と切断効果を分離できないため、変化量を測定不能 (None = ξ) とする。
-            bridge = getattr(cascade_base, "llm_bridge", None)
             used_llm_bridge = bridge is not None and (f_base.cost_tier == 3 or f_without.cost_tier == 3)
 
             if used_llm_bridge:
-                # 1. リプレイ能力・契約の検証
+                # 1. リプレイ能力・反実仮想契約の検証
                 if not _is_deterministic_replay_capable(bridge):
                     rupture_effect = None
                 else:
-                    # 2. 実際の Replay 実行・推論作用同一性の実証 (BASE v2.0: 同じ推論作用の実証)
-                    # 両方の Cascade が Level 3 に到達した場合、同一入力に対して同一の推論作用（LLM応答）が
-                    # 再現されたかを検証。もし結果が異なっていれば、それは切断による変化ではなく
-                    # 外部LLMのサンプリング揺らぎによるものとみなし、直ちに測定不能 (None = ξ) とする。
+                    # 2. 外生条件同一性の実証と内生的変化の測定 (BASE v2.0: Counterfactual Replay Contract)
                     if f_base.cost_tier == 3 and f_without.cost_tier == 3:
-                        if (f_base.action_type != f_without.action_type or
-                            f_base.content != f_without.content or
-                            abs(f_base.confidence - f_without.confidence) > 1e-4):
-                            # 「再生可能」と宣言しながら実行結果が不一致（LLM 揺らぎ）なら測定不能 (None = ξ)
-                            rupture_effect = None
+                        is_mb_dependent = getattr(bridge, "is_mb_dependent", False) or hasattr(bridge, "build_prompt_with_mb")
+                        if not is_mb_dependent:
+                            # M_B に依存しない固定質問の場合、同一 K であれば完全に同一出力となるべき
+                            if (f_base.action_type != f_without.action_type or
+                                f_base.content != f_without.content or
+                                abs(f_base.confidence - f_without.confidence) > 1e-4):
+                                # 同一条件・同一入力なのに出力が揺らいだ（外生揺らぎの漏洩） -> 測定不能 (None = ξ)
+                                rupture_effect = None
+                            else:
+                                # 外生条件同一性が実証され、かつ M_B 切断による影響もなし
+                                rupture_effect = 0.0
                         else:
-                            # 同一推論作用の再生が実証された（切断による変化なし）
-                            rupture_effect = 0.0
+                            # M_B 依存プロンプトの場合: 同一 K の下で生じた内生的出力差を計算
+                            diff = 0.0
+                            if f_base.action_type != f_without.action_type:
+                                diff += 0.4
+                            if f_base.content != f_without.content:
+                                diff += 0.4
+                            diff += 0.2 * abs(f_base.confidence - f_without.confidence)
+                            rupture_effect = min(1.0, round(diff, 4))
                     else:
+                        # 片方が Level 3 でもう片方がローカル階層（切断によってフォールバック等が発生）
                         diff = 0.0
                         if f_base.action_type != f_without.action_type:
                             diff += 0.4

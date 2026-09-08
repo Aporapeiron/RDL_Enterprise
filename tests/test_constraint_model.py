@@ -1919,13 +1919,17 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
 
         class DedicatedReplayBridge:
             def __init__(self):
+                self.resolve_called = False
                 self.resolve_replay_called = False
+                self.received_replay_token = None
             def can_replay(self):
                 return True
             def resolve(self, efp):
+                self.resolve_called = True
                 return {"type": "direct_reply", "payload": "normal_resolve"}
-            def resolve_replay(self, efp):
+            def resolve_replay(self, efp, replay_token=None):
                 self.resolve_replay_called = True
+                self.received_replay_token = replay_token
                 return {"type": "direct_reply", "payload": "exact_replay_output"}
 
         graph = MBGraph()
@@ -1933,9 +1937,156 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
         cascade = InterpCascade(graph, llm_bridge=bridge)
         efp = _make_efp("未知クエリ", category="general")
 
+        # 1. 通常推論: 常に resolve() が呼ばれ、resolve_replay は呼ばれない (逆転現象の解消)
         pred = cascade.interpret(efp)
+        self.assertTrue(bridge.resolve_called)
+        self.assertFalse(bridge.resolve_replay_called)
+        self.assertEqual(pred.content, "normal_resolve")
+
+        # 2. 破断実験 (RuptureProbe): Counterfactual Replay Contract により resolve_replay が呼ばれる
+        node_x = MBNode(
+            id="n_x",
+            domain="general",
+            trigger_pattern={"exact_keys": ["テストキー"]},
+            action_template={"type": "direct_reply", "payload": "x"},
+            confidence=0.8,
+            approval_count=10,
+        )
+        graph.add_or_update(node_x)
+        bundle = ConstraintBundle(
+            node_ids=["n_x"],
+            locus_type="strong",
+            constraint_score=0.8,
+        )
+        probe = RuptureProbe()
+        ctx = ConstraintContext(efp=efp, current_time=datetime.utcnow(), llm_bridge=bridge)
+        res = probe.probe(bundle, graph, ctx)
         self.assertTrue(bridge.resolve_replay_called)
-        self.assertEqual(pred.content, "exact_replay_output")
+        self.assertIsNotNone(bridge.received_replay_token)
+
+    def test_level1_regex_rule_case_insensitive(self):
+        """Level 1 の正規表現ルールが大文字小文字を区別せずマッチすること (P0 回帰テスト)"""
+        from rdl_enterprise.cascade import InterpCascade
+        from rdl_enterprise.mb_graph import MBGraph, MBNode
+
+        graph = MBGraph()
+        node = MBNode(
+            id="n_rule_case",
+            domain="support",
+            trigger_pattern={"rule_expr": r"^error:\s*\d+"},
+            action_template={"type": "direct_reply", "payload": "エラーコード対応"},
+            confidence=0.85,
+        )
+        graph.add_or_update(node)
+        cascade = InterpCascade(graph)
+
+        # 大文字混在クエリ
+        efp = _make_efp("ERROR: 404 Not Found", category="support")
+        pred = cascade.interpret(efp)
+        self.assertEqual(pred.matched_node_id, "n_rule_case")
+        self.assertEqual(pred.cost_tier, 1)
+
+    def test_level3_counterfactual_replay_mb_dependent_measures_diff(self):
+        """is_mb_dependent な bridge では同一外生条件 K の下で内生的変化が rupture_effect として測定されること"""
+        from rdl_enterprise.cascade import InterpCascade
+        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.constraint import RuptureProbe, ConstraintBundle, ConstraintContext
+        from rdl_enterprise.snapshot import ReplayToken
+
+        class MBDependentBridge:
+            def __init__(self):
+                self.is_mb_dependent = True
+                self.call_count = 0
+            def can_replay(self):
+                return True
+            def resolve(self, efp):
+                return {"type": "direct_reply", "payload": "base"}
+            def resolve_replay(self, efp, replay_token=None):
+                self.call_count += 1
+                # 1回目 (f_base) と 2回目 (f_without) で内生的な差分を模倣
+                if self.call_count == 1:
+                    return {"type": "direct_reply", "payload": "base_with_mb"}
+                return {"type": "direct_reply", "payload": "cut_without_mb"}
+
+        graph = MBGraph()
+        bridge = MBDependentBridge()
+        cascade = InterpCascade(graph, llm_bridge=bridge)
+        node = MBNode(
+            id="n_test",
+            domain="general",
+            trigger_pattern={"exact_keys": ["テストキー"]},
+            action_template={"type": "direct_reply", "payload": "x"},
+            confidence=0.8,
+            approval_count=10,
+        )
+        graph.add_or_update(node)
+
+        bundle = ConstraintBundle(node_ids=["n_test"], locus_type="strong", constraint_score=0.8)
+        probe = RuptureProbe()
+        efp = _make_efp("未知クエリ", category="general")
+        ctx = ConstraintContext(efp=efp, current_time=datetime.utcnow(), llm_bridge=bridge)
+
+        res = probe.probe(bundle, graph, ctx)
+        # 内生変化（payload違い: 0.4）が rupture_effect として測定される
+        self.assertIsNotNone(res.rupture_effect)
+        self.assertAlmostEqual(res.rupture_effect, 0.4, places=2)
+
+    def test_constraint_bundle_two_tier_core_and_auxiliary(self):
+        """ConstraintBundle の core と auxiliary が分離され、convergence も独立していること"""
+        from rdl_enterprise.constraint import (
+            ConstraintBundle,
+            RelationConstraintLocator,
+            ConstraintContext,
+        )
+        from rdl_enterprise.mb_graph import MBGraph, MBNode
+
+        graph = MBGraph()
+        n_main = MBNode(
+            id="n1",
+            domain="support",
+            trigger_pattern={"exact_keys": ["テスト"]},
+            action_template={"type": "direct_reply", "payload": "手順1"},
+            confidence=0.7,
+            approval_count=10,
+        )
+        n_inferred = MBNode(
+            id="n2",
+            domain="support",
+            trigger_pattern={"exact_keys": ["テスト", "補助"]},
+            action_template={"type": "direct_reply", "payload": "手順2"},
+            confidence=0.8,
+            approval_count=10,
+        )
+        graph.add_or_update(n_main)
+
+        locator = RelationConstraintLocator()
+        efp = _make_efp("テスト", category="support")
+        ctx = ConstraintContext(efp=efp, active_domain="support")
+
+        # 1. 単一ノード時
+        b1 = locator.locate_bundle_for_node(graph, n_main, ctx)
+        self.assertIsNotNone(b1.core)
+        self.assertIsNotNone(b1.auxiliary)
+        base_core_score = b1.core.constraint_score
+        base_core_conv = b1.core.convergence
+        self.assertEqual(b1.auxiliary.constraint_signal, 0.0)
+        self.assertEqual(b1.auxiliary.convergence_signal, 0.0)
+
+        # 2. 推論ノード追加時
+        graph.add_or_update(n_inferred)
+        b2 = locator.locate_bundle_for_node(graph, n_main, ctx)
+
+        # core のスコアと収束度は全く変わらない
+        self.assertEqual(b2.core.constraint_score, base_core_score)
+        self.assertEqual(b2.core.convergence, base_core_conv)
+        self.assertEqual(b2.core_constraint_score, base_core_score)
+        self.assertEqual(b2.core_convergence, base_core_conv)
+
+        # auxiliary (ξ) のシグナルのみが立ち上がる
+        self.assertGreater(b2.auxiliary.constraint_signal, 0.0)
+        self.assertGreater(b2.auxiliary.convergence_signal, 0.0)
+        self.assertGreater(b2.auxiliary_constraint_signal, 0.0)
+        self.assertGreater(b2.auxiliary_convergence_signal, 0.0)
 
     def test_auxiliary_constraint_signal_separated_from_core_constraint_score(self):
         """inferred_support は core_constraint_score に加算されず auxiliary_constraint_signal に隔離されること"""
