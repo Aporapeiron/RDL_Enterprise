@@ -1635,6 +1635,131 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
         self.assertIsNotNone(res_det.rupture_effect)
         self.assertGreater(res_det.rupture_effect, 0.0)
 
+    def test_rupture_probe_respects_explicit_support_despite_payload_diff(self):
+        """明示的 support があれば payload 文字列が異なっていても内部亀裂にならず survive 判定へ進むこと"""
+        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.constraint import RelationConstraintLocator, RuptureProbe, ConstraintContext
+
+        graph = MBGraph()
+        # 代表ノード: 「特別休暇は申請可能」
+        n_a = MBNode(
+            id="n_a",
+            domain="hr",
+            trigger_pattern={"exact_keys": ["特別休暇"]},
+            action_template={"type": "direct_reply", "payload": "特別休暇は申請可能です。"},
+            node_relations={"n_b": "support"},
+            confidence=0.8,
+            approval_count=10,
+        )
+        # 支援ノード: 「慶弔の場合は特別休暇として申請可能」（payload 文字列は異なるが明示的 support）
+        n_b = MBNode(
+            id="n_b",
+            domain="hr",
+            trigger_pattern={"exact_keys": ["特別休暇", "慶弔"]},
+            action_template={"type": "direct_reply", "payload": "慶弔の場合は特別休暇として申請可能です。"},
+            node_relations={"n_a": "support"},
+            confidence=0.8,
+            approval_count=10,
+        )
+        graph.add_or_update(n_a)
+        graph.add_or_update(n_b)
+
+        locator = RelationConstraintLocator()
+        efp = _make_efp("特別休暇の申請", category="hr")
+        ctx = ConstraintContext(efp=efp, active_domain="hr")
+
+        bundle = locator.locate_bundle_for_node(graph, n_a, ctx)
+        self.assertIn("n_b", bundle.node_ids)
+
+        probe = RuptureProbe()
+        result = probe.probe(bundle, graph, ctx)
+        # 旧式の payload 完全一致比較なら unresolved になっていたが、明示的 support により survive すること
+        self.assertEqual(result.verdict, "survive")
+
+    def test_inferred_support_has_reduced_synergy_and_cannot_solely_survive(self):
+        """未指定で payload が異なる inferred_support は synergy が抑制され、単独で survive の根拠にならないこと"""
+        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.constraint import RelationConstraintLocator, RuptureProbe, ConstraintContext
+
+        graph = MBGraph()
+        # 代表ノード (approval_count = 0)
+        n_main = MBNode(
+            id="n_main",
+            domain="finance",
+            trigger_pattern={"exact_keys": ["経費"]},
+            action_template={"type": "direct_reply", "payload": "経費精算ガイド"},
+            approval_count=0,
+        )
+        # 支援ノード (approval_count = 10, payload は異なるが action_type 同一・未指定 relation)
+        n_inferred = MBNode(
+            id="n_inferred",
+            domain="finance",
+            trigger_pattern={"exact_keys": ["経費", "交通費"]},
+            action_template={"type": "direct_reply", "payload": "交通費精算ガイド"},
+            approval_count=10,
+        )
+        graph.add_or_update(n_main)
+        graph.add_or_update(n_inferred)
+
+        locator = RelationConstraintLocator()
+        efp = _make_efp("経費申請", category="finance")
+        ctx = ConstraintContext(efp=efp, active_domain="finance")
+
+        bundle = locator.locate_bundle_for_node(graph, n_main, ctx)
+        self.assertIn("n_inferred", bundle.node_ids)
+
+        probe = RuptureProbe()
+        result = probe.probe(bundle, graph, ctx)
+        # inferred_support は関係が未確定なため、Probe では unresolved (ξ) に留まること
+        self.assertEqual(result.verdict, "unresolved")
+
+    def test_llm_bridge_identity_includes_replay_snapshot_hash(self):
+        """LLMBridgeIdentity に seed, deterministic_replay, replay_snapshot_hash が包含され、Probe の決定性監査に効くこと"""
+        from rdl_enterprise.snapshot import LLMBridgeIdentity, FrozenInterpretationContext
+        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.constraint import RuptureProbe, ConstraintBundle, ConstraintContext
+
+        class SnapshotReplayBridge:
+            def __init__(self, snapshot_hash="snap_abc123"):
+                self.model_name = "claude-3-5"
+                self.replay_snapshot_hash = snapshot_hash
+                self.seed = 42
+                self.temperature = 0.0
+            def resolve(self, efp):
+                return {"type": "direct_reply", "payload": "snapshot_replayed_content"}
+
+        bridge = SnapshotReplayBridge()
+        identity = LLMBridgeIdentity.from_bridge(bridge)
+
+        bridge2 = SnapshotReplayBridge(snapshot_hash="snap_xyz789")
+        identity2 = LLMBridgeIdentity.from_bridge(bridge2)
+        self.assertEqual(identity.seed, 42)
+        self.assertEqual(identity.replay_snapshot_hash, "snap_abc123")
+        self.assertNotEqual(identity.config_hash, identity2.config_hash)
+
+        # 凍結コンテキストのハッシュ検証
+        graph = MBGraph()
+        n = MBNode(id="n1", domain="it", trigger_pattern={"exact_keys": ["PC手配"]}, action_template={"type": "direct_reply", "payload": "手配手順"})
+        graph.add_or_update(n)
+        graph.freeze()
+
+        frozen_ctx = FrozenInterpretationContext(
+            mb_version="v1",
+            mb_content_hash="hash1",
+            frozen_mb=graph,
+            llm_bridge=bridge,
+            target_domain="it",
+        )
+        self.assertIsNotNone(frozen_ctx.context_hash)
+
+        # replay_snapshot_hash が有効な bridge は決定性ありとみなされ、rupture_effect が実測されること
+        efp = _make_efp("PC手配", category="it")
+        ctx = ConstraintContext(efp=efp, active_domain="it", frozen_context=frozen_ctx)
+        bundle = ConstraintBundle(node_ids=["n1"], locus_type="strong", constraint_score=0.8, freshness=0.9, relevance=0.8)
+        probe = RuptureProbe()
+        res = probe.probe(bundle, graph, ctx)
+        self.assertIsNotNone(res.rupture_effect)
+
 
 if __name__ == "__main__":
     unittest.main()

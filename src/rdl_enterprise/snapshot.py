@@ -95,6 +95,9 @@ class LLMBridgeIdentity:
     temperature: float = 0.0
     system_prompt_version: str = "v1"
     config_hash: str = "default"
+    seed: Optional[int] = None
+    deterministic_replay: bool = False
+    replay_snapshot_hash: str = "none"
 
     @classmethod
     def from_bridge(cls, bridge: Optional[Any]) -> "LLMBridgeIdentity":
@@ -103,13 +106,19 @@ class LLMBridgeIdentity:
         m_name = getattr(bridge, "model_name", getattr(bridge, "model", "generic-llm"))
         temp = float(getattr(bridge, "temperature", 0.0))
         sp_ver = getattr(bridge, "system_prompt_version", "v1")
-        cfg_str = f"{m_name}:{temp}:{sp_ver}"
+        seed = getattr(bridge, "seed", None)
+        det_replay = bool(getattr(bridge, "deterministic_replay", False))
+        snapshot_hash = str(getattr(bridge, "replay_snapshot_hash", getattr(bridge, "snapshot_hash", "none")))
+        cfg_str = f"{m_name}:{temp}:{sp_ver}:{seed}:{det_replay}:{snapshot_hash}"
         c_hash = hashlib.sha256(cfg_str.encode("utf-8")).hexdigest()[:16]
         return cls(
             model_name=str(m_name),
             temperature=temp,
             system_prompt_version=str(sp_ver),
             config_hash=c_hash,
+            seed=seed,
+            deterministic_replay=det_replay,
+            replay_snapshot_hash=snapshot_hash,
         )
 
 

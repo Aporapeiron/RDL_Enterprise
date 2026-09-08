@@ -160,7 +160,7 @@ def _is_payload_contradictory(a: str, b: str) -> bool:
 def _check_node_relation(node: object, candidate: object) -> str:
     """
     node と candidate 間の関係性を評価。
-    返り値: "support" | "contradict" | "independent" | "unknown"
+    返り値: "support" | "contradict" | "independent" | "unknown" | "inferred_support"
     """
     n_rel = getattr(node, "node_relations", {}).get(candidate.id)
     c_rel = getattr(candidate, "node_relations", {}).get(node.id)
@@ -182,7 +182,12 @@ def _check_node_relation(node: object, candidate: object) -> str:
     if _is_payload_contradictory(p_node, p_cand):
         return "contradict"
 
-    return "support"
+    # payload が同一であれば同一言明の補強として support
+    if p_node == p_cand:
+        return "support"
+
+    # action_type は同一だが payload が異なる（未指定）場合は inferred_support（推論された支援）
+    return "inferred_support"
 
 
 def _bigram_jaccard(a: str, b: str) -> float:
@@ -583,7 +588,8 @@ class RelationConstraintLocator:
         for s in candidate_supporting_nodes:
             if not is_support_node_eligible(s, query, cfg, now):
                 continue
-            if _check_node_relation(node, s) != "support":
+            n_rel = _check_node_relation(node, s)
+            if n_rel not in ("support", "inferred_support"):
                 continue
             effective_supporting_nodes.append(s)
 
@@ -610,7 +616,9 @@ class RelationConstraintLocator:
                 if s_lineage:
                     seen_lineages.add(s_lineage)
 
-            synergy_boost += 0.04 * s_rel * s_src * lineage_factor
+            # 明示的 support は 1.0、推論支援 (inferred_support) は 0.5 に抑制
+            rel_factor = 1.0 if _check_node_relation(node, s) == "support" else 0.5
+            synergy_boost += 0.04 * s_rel * s_src * lineage_factor * rel_factor
 
         synergy_boost = min(0.12, synergy_boost)
         conv = min(1.0, conv + 0.05 * len(effective_supporting_nodes))
@@ -728,7 +736,8 @@ class RelationConstraintLocator:
                 for s in candidate_supporting_nodes:
                     if not is_support_node_eligible(s, query, cfg, now):
                         continue
-                    if _check_node_relation(node, s) != "support":
+                    n_rel = _check_node_relation(node, s)
+                    if n_rel not in ("support", "inferred_support"):
                         continue
                     effective_supporting_nodes.append(s)
 
@@ -752,7 +761,8 @@ class RelationConstraintLocator:
                         if s_lineage:
                             seen_lineages.add(s_lineage)
 
-                    synergy_boost += 0.04 * s_rel * s_src * lineage_factor
+                    rel_factor = 1.0 if _check_node_relation(node, s) == "support" else 0.5
+                    synergy_boost += 0.04 * s_rel * s_src * lineage_factor * rel_factor
 
                 synergy_boost = min(0.12, synergy_boost)
 
@@ -888,7 +898,10 @@ class RuptureProbe:
 
             if used_llm_bridge:
                 is_deterministic = False
+                # 強い条件: deterministic_replay=True、replay_snapshot_hash が有効、または is_deterministic=True
                 if getattr(bridge, "deterministic_replay", False) or getattr(bridge, "is_deterministic", False):
+                    is_deterministic = True
+                elif getattr(bridge, "replay_snapshot_hash", getattr(bridge, "snapshot_hash", "none")) != "none":
                     is_deterministic = True
                 elif getattr(bridge, "seed", None) is not None and getattr(bridge, "temperature", 0.0) == 0.0:
                     is_deterministic = True
@@ -924,19 +937,29 @@ class RuptureProbe:
         # =============================================================
 
         # -------------------------------------------------------------
-        # 0. 束内部のアクション対立・亀裂検査
+        # 0. 束内部の関係対立・亀裂検査 (Internal Fissure Probing)
         # -------------------------------------------------------------
-        # 束を構成する支援ノードの中に代表ノードと異なるアクションを持つものが混在する場合、
-        # 内部で緊張関係（tension）が生じているため安易に survive とせず保留（ξ として保持）
+        # 束を構成する支援ノードと代表ノードとの関係性を _check_node_relation で評価。
+        # 明示的な関係を優先し、文字列完全一致ではなく関係モデルに基づいて亀裂を検出する。
+        # - contradict: 破断 (break)
+        # - support / inferred_support 以外 (independent, unknown 等): 保留 (unresolved / ξ)
         if node is not None and supporting_nodes:
             for sn in supporting_nodes:
-                if (sn.action_template.get("type") != node.action_template.get("type") or
-                    sn.action_template.get("payload") != node.action_template.get("payload")):
+                rel = _check_node_relation(node, sn)
+                if rel == "contradict":
+                    return RuptureResult(
+                        bundle=bundle,
+                        verdict="break",
+                        opposing_strength=1.5,
+                        rupture_reason=f"束内部における対立・矛盾関係（ノード {sn.id} との対立・破綻）",
+                        rupture_effect=rupture_effect,
+                    )
+                elif rel != "support":
                     return RuptureResult(
                         bundle=bundle,
                         verdict="unresolved",
                         opposing_strength=0.8,
-                        rupture_reason=f"束内部におけるアクション対立・競合（ノード {sn.id} との不整合、ξ として残存）",
+                        rupture_reason=f"束内部における関係の未確定（ノード {sn.id} との関係: {rel}、ξ として残存）",
                         rupture_effect=rupture_effect,
                     )
 
@@ -1036,9 +1059,12 @@ class RuptureProbe:
         # -------------------------------------------------------------
         # 3. 生存判定 (Survive)
         # -------------------------------------------------------------
+        # 支援ノードの承認実績を根拠とする場合、明示的 support のみを有効とし、
+        # 暗黙の推論関係 (inferred_support) 単独での survive は認めず ξ として慎重に保持する
         eligible_supporting_nodes = [
             sn for sn in supporting_nodes
             if is_support_node_eligible(sn, ctx.efp.query_text, cfg, ctx.current_time)
+            and (node is not None and _check_node_relation(node, sn) == "support")
         ]
         has_proven_track_record = (
             (node is not None and node.approval_count >= cfg.min_survive_approvals) or
