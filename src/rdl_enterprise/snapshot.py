@@ -73,6 +73,44 @@ class ReplayToken:
         return self.compute_conditions_hash()
 
 
+@dataclass(frozen=True)
+class CounterfactualMBView:
+    r"""
+    反実仮想推論における不変な知識境界ビュー (BASE v2.0 §4.2)
+    介入によって確定した M_B (または M_B \ bundle) の状態を暗号論的に固定する。
+    """
+    mb_content_hash: str
+    node_ids: Tuple[str, ...]
+    excluded_node_ids: Tuple[str, ...]
+    domain: Optional[str] = None
+    view_hash: str = ""
+
+    @classmethod
+    def from_nodes(
+        cls,
+        available_nodes: List[Any],
+        excluded_node_ids: List[str],
+        mb_content_hash: str = "unknown",
+        domain: Optional[str] = None,
+    ) -> "CounterfactualMBView":
+        n_ids = tuple(sorted([getattr(n, "id", str(n)) for n in available_nodes]))
+        ex_ids = tuple(sorted(list(excluded_node_ids)))
+        payload = {
+            "mb_content_hash": mb_content_hash,
+            "node_ids": list(n_ids),
+            "excluded_node_ids": list(ex_ids),
+            "domain": domain or "",
+        }
+        v_hash = hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+        return cls(
+            mb_content_hash=mb_content_hash,
+            node_ids=n_ids,
+            excluded_node_ids=ex_ids,
+            domain=domain,
+            view_hash=v_hash,
+        )
+
+
 @dataclass
 class CounterfactualInput:
     r"""
@@ -82,10 +120,37 @@ class CounterfactualInput:
     """
     efp: BusinessInput
     replay_token: ReplayToken
+    mb_view: Optional[CounterfactualMBView] = None             # 不変な知識境界ビュー (view_hash付き)
     excluded_node_ids: List[str] = field(default_factory=list)
     available_nodes: List[Any] = field(default_factory=list)  # MBNode 群
     domain: Optional[str] = None
     constructed_prompt_context: Optional[str] = None
+
+    def __post_init__(self):
+        if self.mb_view is None:
+            self.mb_view = CounterfactualMBView.from_nodes(
+                available_nodes=self.available_nodes,
+                excluded_node_ids=self.excluded_node_ids,
+                domain=self.domain,
+            )
+        elif not self.excluded_node_ids and self.mb_view.excluded_node_ids:
+            self.excluded_node_ids = list(self.mb_view.excluded_node_ids)
+
+
+@dataclass(frozen=True)
+class InterpretationTrace:
+    r"""
+    推論作用の完全監査証跡 (BASE v2.0 §4.2)
+    事前に固定した解釈可能条件 (context_hash) と、
+    外生固定条件集合 K (conditions_hash)、および知識境界ビュー (view_hash) を束ねる。
+    """
+    context_hash: str
+    conditions_hash: str
+    prediction_hash: str
+    mb_view_hash: str = ""
+    timestamp: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+    provider_response_id: Optional[str] = None
+    trace_id: str = ""
 
 
 @dataclass
@@ -99,6 +164,7 @@ class InterpretationPrediction:
     domain: Optional[str] = None
     expected_outcome: str = "resolve" # "resolve" | "need_input" | "escalate"
     replay_token: Optional[ReplayToken] = None # 反実仮想再演・同一条件証跡 K
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -461,6 +527,7 @@ class CaseSnapshot:
         is_canary: bool = False,
         frozen_node_snapshot: Optional[Any] = None,
         frozen_context: Optional[FrozenInterpretationContext] = None,
+        actual_replay_token: Optional[ReplayToken] = None,
     ):
         self.efp = efp
         self.f_pred = f_pred
@@ -469,6 +536,8 @@ class CaseSnapshot:
         self.is_canary = is_canary
         self.frozen_node_snapshot = frozen_node_snapshot
         self.frozen_context = frozen_context
+        # F を実際に生んだ推論作用証跡 K_actual
+        self.actual_replay_token = actual_replay_token or getattr(f_pred, "replay_token", None)
         self.status = CaseStatus.PENDING
         self.efp_prime: Optional[FeedbackResult] = None
         self.f_prime: Optional[SubsequentInterpretation] = None  # 純粋な後続作用解釈 F'

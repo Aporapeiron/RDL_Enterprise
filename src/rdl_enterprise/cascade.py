@@ -220,35 +220,64 @@ class InterpCascade:
         # -------------------------------------------------------------
         if self.llm_bridge:
             actual_token = replay_token
+            pred_metadata: Dict[str, Any] = {}
             if replay_token is not None:
                 # 反実仮想再演 (Counterfactual Replay): 外生固定条件集合 K の下での再演
-                # BASE v2.0: 唯一の介入変数 (M_B \ bundle の有無) を CounterfactualInput として明示伝達
-                from rdl_enterprise.snapshot import CounterfactualInput
+                # BASE v2.0: 唯一の介入変数 (M_B \ bundle の有無) を CounterfactualMBView & CounterfactualInput として明示伝達
+                from rdl_enterprise.snapshot import CounterfactualInput, CounterfactualMBView
+                mb_hash = getattr(self.mb_graph, "content_hash", lambda: "unknown")()
+                mb_view = CounterfactualMBView.from_nodes(
+                    available_nodes=eligible_nodes,
+                    excluded_node_ids=list(exclude_set),
+                    mb_content_hash=mb_hash,
+                    domain=target_domain,
+                )
                 cf_input = CounterfactualInput(
                     efp=efp,
                     replay_token=replay_token,
+                    mb_view=mb_view,
                     excluded_node_ids=list(exclude_set),
                     available_nodes=eligible_nodes,
                     domain=target_domain,
                 )
+                cf_applied = False
                 if hasattr(self.llm_bridge, "resolve_counterfactual") and callable(self.llm_bridge.resolve_counterfactual):
                     try:
                         llm_res = self.llm_bridge.resolve_counterfactual(efp, replay_token, counterfactual_input=cf_input)
+                        cf_applied = True
                     except TypeError:
                         try:
                             llm_res = self.llm_bridge.resolve_counterfactual(efp, replay_token)
+                            cf_applied = False
                         except TypeError:
-                            llm_res = self.llm_bridge.resolve_counterfactual(cf_input)
+                            try:
+                                llm_res = self.llm_bridge.resolve_counterfactual(cf_input)
+                                cf_applied = True
+                            except TypeError:
+                                llm_res = self.llm_bridge.resolve_counterfactual(efp)
+                                cf_applied = False
                 elif hasattr(self.llm_bridge, "resolve_replay") and callable(self.llm_bridge.resolve_replay):
                     try:
                         llm_res = self.llm_bridge.resolve_replay(efp, replay_token, counterfactual_input=cf_input)
+                        cf_applied = True
                     except TypeError:
                         try:
                             llm_res = self.llm_bridge.resolve_replay(efp, replay_token)
+                            cf_applied = False
                         except TypeError:
-                            llm_res = self.llm_bridge.resolve_replay(efp)
+                            try:
+                                llm_res = self.llm_bridge.resolve_replay(cf_input)
+                                cf_applied = True
+                            except TypeError:
+                                llm_res = self.llm_bridge.resolve_replay(efp)
+                                cf_applied = False
                 else:
                     llm_res = self.llm_bridge.resolve(efp)
+                    cf_applied = False
+
+                pred_metadata["counterfactual_verified"] = cf_applied
+                pred_metadata["mb_view_hash"] = mb_view.view_hash
+                pred_metadata["conditions_hash"] = getattr(replay_token, "conditions_hash", "")
             else:
                 # 通常推論 (Normal Resolve): 通常の未知案件解釈作用
                 if hasattr(self.llm_bridge, "resolve_with_trace") and callable(self.llm_bridge.resolve_with_trace):
@@ -287,6 +316,7 @@ class InterpCascade:
                 domain=efp.category or "unknown",
                 expected_outcome=outcome,
                 replay_token=actual_token,
+                metadata=pred_metadata,
             )
 
         # LLM未設定のデフォルトフォールバック（人間に聞く）

@@ -2328,6 +2328,170 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
         bundle.auxiliary.constraint_signal = 0.25
         self.assertEqual(bundle.auxiliary_constraint_signal, 0.25)
 
+    def test_runtime_e2e_k_actual_trace_connection_to_probe(self):
+        """EnterpriseRuntime の通常運用経路で dispatch_ticket() の actual_replay_token が feedback 経由で Probe まで届くこと (BASE v2.0 §4.2)"""
+        from rdl_enterprise.runtime import EnterpriseRuntime
+        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.snapshot import ReplayToken, BusinessInput
+
+        runtime = EnterpriseRuntime()
+        actual_token = ReplayToken(
+            token_id="tok_runtime_actual_777",
+            model_name="claude-3-opus",
+            seed=12345,
+            sampling_params={"temperature": 0.0},
+        )
+
+        class RuntimeTraceBridge:
+            def __init__(self):
+                self.received_replay_tokens = []
+            def can_replay(self):
+                return True
+            def resolve_with_trace(self, efp):
+                return {"type": "direct_reply", "payload": "runtime_llm_reply"}, actual_token
+            def resolve_counterfactual(self, efp, replay_token, counterfactual_input=None):
+                self.received_replay_tokens.append(replay_token)
+                return {"type": "direct_reply", "payload": "runtime_counterfactual_reply"}
+
+        bridge = RuntimeTraceBridge()
+        runtime.cascade.llm_bridge = bridge
+
+        # 1. 参照ノードをグラフに事前登録（Level 3 へフォールバック推論させるため、ノードのトリガーはマッチさせず、あるいは matched_node_id を持たせる）
+        node_b = MBNode(
+            id="node_billing_special",
+            domain="billing",
+            trigger_pattern={"exact_keys": ["完全一致のみ_別キー"]},
+            action_template={"type": "direct_reply", "payload": "runtime_llm_reply"},
+            confidence=0.8,
+            approval_count=5,
+        )
+        runtime.mb_graph.add_or_update(node_b)
+
+        # 未知チケットを受信し、dispatch_ticket() で Level 3 推論を実行
+        efp = BusinessInput(
+            ticket_id="ticket_rt_001",
+            user_id="user_test",
+            category="billing",
+            query_text="契約更新の特別措置について教えてください",
+        )
+        dispatch_res = runtime.dispatch_ticket(efp)
+        snap = runtime.pending_snapshots[efp.ticket_id]
+
+        # Level 3 推論で決定された後、ノードが評価対象として関連付けられる
+        snap.f_pred.matched_node_id = "node_billing_special"
+
+        from rdl_enterprise.snapshot import FeedbackResult
+        feedback = FeedbackResult(
+            user_resolved=True,
+            human_approved=True,
+            feedback_comment="承認済み",
+        )
+        res_feedback = runtime.resolve_ticket_feedback(
+            ticket_id="ticket_rt_001",
+            feedback=feedback,
+        )
+
+        # RuptureProbe の反実仮想再演で、CaseSnapshot に保存されていた actual_replay_token が bridge に届いたこと
+        self.assertGreaterEqual(len(bridge.received_replay_tokens), 1)
+        self.assertEqual(bridge.received_replay_tokens[0].token_id, "tok_runtime_actual_777")
+        self.assertEqual(bridge.received_replay_tokens[0].conditions_hash, actual_token.conditions_hash)
+
+    def test_level3_fail_closed_contract_without_counterfactual_input_verification(self):
+        """CounterfactualInput の受理・介入証跡がない外部推論器は fail-closed で rupture_effect = None (ξ) となること"""
+        from rdl_enterprise.cascade import InterpCascade
+        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.constraint import RuptureProbe, ConstraintBundle, ConstraintContext
+        from rdl_enterprise.snapshot import ReplayToken
+
+        class LegacyBridgeWithoutInterventionTrace:
+            """CounterfactualInput を受け取れず、is_mb_dependent フラグもない旧仕様 bridge"""
+            def __init__(self):
+                self.call_count = 0
+            def can_replay(self):
+                return True
+            def resolve(self, efp):
+                return {"type": "direct_reply", "payload": "legacy_base"}
+            def resolve_replay(self, efp, replay_token=None):
+                self.call_count += 1
+                # 介入引数を受け取っていないのに、内部で勝手に揺らいだり変化したりする
+                return {"type": "direct_reply", "payload": f"legacy_reply_{self.call_count}"}
+
+        graph = MBGraph()
+        bridge = LegacyBridgeWithoutInterventionTrace()
+        cascade = InterpCascade(graph, llm_bridge=bridge)
+        node = MBNode(
+            id="n_legacy",
+            domain="general",
+            trigger_pattern={"exact_keys": ["レガシー"]},
+            action_template={"type": "direct_reply", "payload": "x"},
+            confidence=0.8,
+            approval_count=10,
+        )
+        graph.add_or_update(node)
+
+        bundle = ConstraintBundle(node_ids=["n_legacy"], locus_type="strong", constraint_score=0.8)
+        probe = RuptureProbe()
+        efp = _make_efp("未知クエリ", category="general")
+        ctx = ConstraintContext(efp=efp, current_time=datetime.utcnow(), llm_bridge=bridge)
+
+        res = probe.probe(bundle, graph, ctx)
+
+        # 介入証跡がないため、Fail-Closed により rupture_effect は None (ξ) にフォールバックする
+        self.assertIsNone(res.rupture_effect)
+        self.assertFalse(res.intervention_verified)
+
+    def test_rupture_result_audit_view_hashes_and_conditions_hash(self):
+        """RuptureResult に conditions_hash, base_mb_view_hash, cut_mb_view_hash が監査証跡として正しく刻印されること"""
+        from rdl_enterprise.cascade import InterpCascade
+        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.constraint import RuptureProbe, ConstraintBundle, ConstraintContext
+
+        received_cf_inputs = []
+
+        class VerifiedInterventionBridge:
+            def can_replay(self):
+                return True
+            def resolve(self, efp):
+                return {"type": "direct_reply", "payload": "base_output"}
+            def resolve_counterfactual(self, efp, replay_token, counterfactual_input=None):
+                received_cf_inputs.append(counterfactual_input)
+                if counterfactual_input and len(counterfactual_input.available_nodes) > 0:
+                    return {"type": "direct_reply", "payload": "with_mb"}
+                return {"type": "direct_reply", "payload": "without_mb"}
+
+        graph = MBGraph()
+        n1 = MBNode(
+            id="n_audit_1",
+            domain="general",
+            trigger_pattern={"exact_keys": ["監査キー"]},
+            action_template={"type": "direct_reply", "payload": "x"},
+            confidence=0.8,
+            approval_count=10,
+        )
+        graph.add_or_update(n1)
+
+        bridge = VerifiedInterventionBridge()
+        bundle = ConstraintBundle(node_ids=["n_audit_1"], locus_type="strong", constraint_score=0.8)
+        probe = RuptureProbe()
+        efp = _make_efp("未知クエリ", category="general")
+        ctx = ConstraintContext(efp=efp, current_time=datetime.utcnow(), llm_bridge=bridge)
+
+        res = probe.probe(bundle, graph, ctx)
+
+        # 1. 介入が正しく実証されていること
+        self.assertTrue(res.intervention_verified)
+        self.assertIsNotNone(res.rupture_effect)
+
+        # 2. 外生固定条件 K の conditions_hash が記録されていること
+        self.assertIsNotNone(res.conditions_hash)
+        self.assertIsInstance(res.conditions_hash, str)
+        self.assertGreater(len(res.conditions_hash), 0)
+
+        # 3. 切断前後の M_B ビューハッシュが記録され、かつ互いに異なること (介入の不変証跡)
+        self.assertIsNotNone(res.base_mb_view_hash)
+        self.assertIsNotNone(res.cut_mb_view_hash)
+        self.assertNotEqual(res.base_mb_view_hash, res.cut_mb_view_hash)
+
 
 if __name__ == "__main__":
     unittest.main()

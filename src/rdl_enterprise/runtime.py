@@ -391,6 +391,10 @@ class EnterpriseRuntime:
 
         if eval_matched_node is not None:
             try:
+                actual_token = getattr(snapshot, "actual_replay_token", None)
+                if actual_token is None and snapshot.f_pred is not None:
+                    actual_token = getattr(snapshot.f_pred, "replay_token", None)
+
                 ctx = ConstraintContext(
                     efp=snapshot.efp,
                     current_time=mb_eval_time,
@@ -398,6 +402,8 @@ class EnterpriseRuntime:
                     active_domain=snapshot.efp.category,
                     config=constraint_cfg,  # 凍結された設定を使用
                     frozen_context=frozen_ctx,  # 完全同一の凍結推論器を伝播
+                    llm_bridge=self.cascade.llm_bridge,
+                    actual_replay_token=actual_token,
                 )
                 locator = RelationConstraintLocator(constraint_cfg)
                 # 局所評価で旧ノードの拘束束 C_old を取得 (凍結時刻 t で評価)

@@ -234,6 +234,11 @@ class RuptureResult:
     opposing_strength: float  # 反証拘束の強さ（add_heat の重みとして使用）
     rupture_reason: str = ""
     rupture_effect: Optional[float] = None  # 束切断摂動による F の変化量 Δ(F_base, F_without) ∈ [0, 1] (None = 未測定)
+    # --- 反実仮想監査証跡 (BASE v2.0 §4.2) ---
+    conditions_hash: Optional[str] = None       # 外生固定条件 K の意味的決定性ハッシュ
+    base_mb_view_hash: Optional[str] = None     # 切断前 M_B の view_hash
+    cut_mb_view_hash: Optional[str] = None      # 切断後 M_B \ bundle の view_hash
+    intervention_verified: bool = False         # Level 3 で M_B 介入が実証されたか
 
 
 # ---------------------------------------------------------------------------
@@ -1052,6 +1057,24 @@ class RuptureProbe:
         rupture_effect: Optional[float] = None
         f_base = None
         f_without = None
+        conditions_hash: Optional[str] = None
+        base_view_hash: Optional[str] = None
+        cut_view_hash: Optional[str] = None
+        intervention_verified: bool = False
+
+        def _make_result(verdict: str, opposing_strength: float, rupture_reason: str = "") -> RuptureResult:
+            return RuptureResult(
+                bundle=bundle,
+                verdict=verdict,
+                opposing_strength=opposing_strength,
+                rupture_reason=rupture_reason,
+                rupture_effect=rupture_effect,
+                conditions_hash=conditions_hash,
+                base_mb_view_hash=base_view_hash,
+                cut_mb_view_hash=cut_view_hash,
+                intervention_verified=intervention_verified,
+            )
+
         try:
             if ctx.frozen_context is not None and hasattr(ctx.frozen_context, "create_isolated_cascade"):
                 cascade_base = ctx.frozen_context.create_isolated_cascade()
@@ -1114,7 +1137,18 @@ class RuptureProbe:
             )
 
             # Level 3 で外部推論器 (llm_bridge) が呼び出された場合:
-            used_llm_bridge = bridge is not None and (f_base.cost_tier == 3 or f_without.cost_tier == 3)
+            used_llm_bridge = bridge is not None and (
+                (f_base is not None and f_base.cost_tier == 3) or
+                (f_without is not None and f_without.cost_tier == 3)
+            )
+
+            # 監査証跡情報の抽出 (BASE v2.0 §4.2)
+            base_verified = getattr(f_base, "metadata", {}).get("counterfactual_verified", False) if f_base else False
+            cut_verified = getattr(f_without, "metadata", {}).get("counterfactual_verified", False) if f_without else False
+            base_view_hash = getattr(f_base, "metadata", {}).get("mb_view_hash", None) if f_base else None
+            cut_view_hash = getattr(f_without, "metadata", {}).get("mb_view_hash", None) if f_without else None
+            conditions_hash = getattr(replay_token_K, "conditions_hash", None) if replay_token_K else None
+            intervention_verified = bool(base_verified and cut_verified)
 
             if used_llm_bridge:
                 # 1. リプレイ能力・反実仮想契約の検証
@@ -1122,7 +1156,7 @@ class RuptureProbe:
                     rupture_effect = None
                 else:
                     # 2. 外生条件同一性の実証と内生的変化の測定 (BASE v2.0: Counterfactual Replay Contract)
-                    if f_base.cost_tier == 3 and f_without.cost_tier == 3:
+                    if f_base and f_without and f_base.cost_tier == 3 and f_without.cost_tier == 3:
                         is_mb_dependent = (
                             getattr(bridge, "is_mb_dependent", False)
                             or hasattr(bridge, "build_prompt_with_mb")
@@ -1139,39 +1173,50 @@ class RuptureProbe:
                                 # 外生条件同一性が実証され、かつ M_B 切断による影響もなし
                                 rupture_effect = 0.0
                         else:
-                            # M_B 依存プロンプトの場合: 同一 K の下で生じた内生的出力差を計算
-                            diff = 0.0
-                            if f_base.action_type != f_without.action_type:
-                                diff += 0.4
-                            if f_base.content != f_without.content:
-                                diff += 0.4
-                            diff += 0.2 * abs(f_base.confidence - f_without.confidence)
-                            rupture_effect = min(1.0, round(diff, 4))
+                            # M_B 依存プロンプト/介入の場合:
+                            # 【Fail-Closed 検査】CounterfactualInput を受理した証跡がない、かつ is_mb_dependent でもない場合、
+                            # 介入が行われていないのに rupture_effect を算出することを禁止する (None = ξ)
+                            if not intervention_verified and not getattr(bridge, "received_counterfactual_input", False) and not getattr(bridge, "is_mb_dependent", False):
+                                rupture_effect = None
+                            else:
+                                diff = 0.0
+                                if f_base.action_type != f_without.action_type:
+                                    diff += 0.4
+                                if f_base.content != f_without.content:
+                                    diff += 0.4
+                                diff += 0.2 * abs(f_base.confidence - f_without.confidence)
+                                rupture_effect = min(1.0, round(diff, 4))
                     else:
                         # 片方が Level 3 でもう片方がローカル階層（切断によってフォールバック等が発生）
                         diff = 0.0
-                        if f_base.action_type != f_without.action_type:
-                            diff += 0.4
-                        if f_base.matched_node_id != f_without.matched_node_id:
-                            diff += 0.3
-                        diff += 0.2 * abs(f_base.confidence - f_without.confidence)
-                        if f_base.content != f_without.content:
-                            diff += 0.1
+                        if f_base and f_without:
+                            if f_base.action_type != f_without.action_type:
+                                diff += 0.4
+                            if f_base.matched_node_id != f_without.matched_node_id:
+                                diff += 0.3
+                            diff += 0.2 * abs(f_base.confidence - f_without.confidence)
+                            if f_base.content != f_without.content:
+                                diff += 0.1
                         rupture_effect = min(1.0, round(diff, 4))
             else:
                 # ローカル決定的推論 (Level 0 - Level 2、または bridge なしの決定的フォールバック):
                 # 決定的な再実行による変化量測定
                 diff = 0.0
-                if f_base.action_type != f_without.action_type:
-                    diff += 0.4
-                if f_base.matched_node_id != f_without.matched_node_id:
-                    diff += 0.3
-                diff += 0.2 * abs(f_base.confidence - f_without.confidence)
-                if f_base.content != f_without.content:
-                    diff += 0.1
+                if f_base and f_without:
+                    if f_base.action_type != f_without.action_type:
+                        diff += 0.4
+                    if f_base.matched_node_id != f_without.matched_node_id:
+                        diff += 0.3
+                    diff += 0.2 * abs(f_base.confidence - f_without.confidence)
+                    if f_base.content != f_without.content:
+                        diff += 0.1
                 rupture_effect = min(1.0, round(diff, 4))
         except Exception:
             rupture_effect = None
+            base_view_hash = None
+            cut_view_hash = None
+            conditions_hash = None
+            intervention_verified = False
 
         # =============================================================
         # Phase 2: 破断・妥当性判定 (Verdict Probing: survive / break / unresolved)
@@ -1188,32 +1233,26 @@ class RuptureProbe:
             for sn in supporting_nodes:
                 rel = _check_node_relation(node, sn)
                 if rel == "contradict":
-                    return RuptureResult(
-                        bundle=bundle,
+                    return _make_result(
                         verdict="break",
                         opposing_strength=1.5,
                         rupture_reason=f"束内部における対立・矛盾関係（ノード {sn.id} との対立・破綻）",
-                        rupture_effect=rupture_effect,
                     )
                 elif rel != "support":
-                    return RuptureResult(
-                        bundle=bundle,
+                    return _make_result(
                         verdict="unresolved",
                         opposing_strength=0.8,
                         rupture_reason=f"束内部における関係の未確定（ノード {sn.id} との関係: {rel}、ξ として残存）",
-                        rupture_effect=rupture_effect,
                     )
 
         # -------------------------------------------------------------
         # 1. 赤信号検査（時間減衰・反証拒絶による直接破断）
         # -------------------------------------------------------------
         if bundle.freshness < cfg.rupture_freshness_threshold:
-            return RuptureResult(
-                bundle=bundle,
+            return _make_result(
                 verdict="break",
                 opposing_strength=1.0 + (1.0 - bundle.freshness),
                 rupture_reason=f"freshness 低下による破断 (freshness={bundle.freshness:.3f} < {cfg.rupture_freshness_threshold})",
-                rupture_effect=rupture_effect,
             )
 
         if node is not None:
@@ -1222,22 +1261,18 @@ class RuptureProbe:
                 rejection_ratio = node.rejection_count / total
                 if rejection_ratio >= cfg.rupture_rejection_ratio_threshold:
                     opposing = 1.0 + rejection_ratio
-                    return RuptureResult(
-                        bundle=bundle,
+                    return _make_result(
                         verdict="break",
                         opposing_strength=opposing,
                         rupture_reason=f"rejection 比率超過による破断 (ratio={rejection_ratio:.2f} >= {cfg.rupture_rejection_ratio_threshold})",
-                        rupture_effect=rupture_effect,
                     )
 
         # 構造的橋だがソースが極端に弱い場合（単一障害点かつ根拠薄弱）
         if bundle.is_structural_bridge and bundle.source_strength < 0.3:
-            return RuptureResult(
-                bundle=bundle,
+            return _make_result(
                 verdict="unresolved",
                 opposing_strength=0.5,
                 rupture_reason="構造的橋だがソース拘束が弱い（未回収関係 ξ として保持）",
-                rupture_effect=rupture_effect,
             )
 
         # -------------------------------------------------------------
@@ -1265,8 +1300,7 @@ class RuptureProbe:
                        other.action_template.get("payload") != node.action_template.get("payload"):
                         other_bundle_any = locator.locate_bundle_for_node(mb_graph, other, ctx_expanded)
                         if other_bundle_any.constraint_score >= node_bundle_any.constraint_score:
-                            return RuptureResult(
-                                bundle=bundle,
+                            return _make_result(
                                 verdict="break",
                                 opposing_strength=1.5,
                                 rupture_reason=(
@@ -1274,7 +1308,6 @@ class RuptureProbe:
                                     f"({other.id}: C_rel={other_bundle_any.constraint_score:.2f} >= "
                                     f"{node_bundle_any.constraint_score:.2f})が露出"
                                 ),
-                                rupture_effect=rupture_effect,
                             )
 
         # -------------------------------------------------------------
@@ -1285,8 +1318,7 @@ class RuptureProbe:
             f_without.matched_node_id not in bundle.node_ids and
             f_without.action_type != f_base.action_type and
             f_without.confidence >= f_base.confidence):
-            return RuptureResult(
-                bundle=bundle,
+            return _make_result(
                 verdict="break",
                 opposing_strength=1.8,
                 rupture_reason=(
@@ -1294,7 +1326,6 @@ class RuptureProbe:
                     f"({f_without.matched_node_id}: conf={f_without.confidence:.2f} >= {f_base.confidence:.2f}) "
                     f"との潜在衝突が露出して破断"
                 ),
-                rupture_effect=rupture_effect,
             )
 
         # -------------------------------------------------------------
@@ -1313,21 +1344,17 @@ class RuptureProbe:
             (eligible_supporting_nodes and any(s.approval_count >= cfg.min_survive_approvals for s in eligible_supporting_nodes))
         )
         if has_proven_track_record and bundle.relevance >= cfg.min_survive_relevance:
-            return RuptureResult(
-                bundle=bundle,
+            return _make_result(
                 verdict="survive",
                 opposing_strength=0.0,
                 rupture_reason="",
-                rupture_effect=rupture_effect,
             )
 
         # -------------------------------------------------------------
         # 4. デフォルト: 未検査・耐性未確認 (Unresolved)
         # -------------------------------------------------------------
-        return RuptureResult(
-            bundle=bundle,
+        return _make_result(
             verdict="unresolved",
             opposing_strength=0.5,
             rupture_reason="十分な承認実績・摂動耐性の未確認による保留（ξ として残存）",
-            rupture_effect=rupture_effect,
         )
