@@ -24,6 +24,15 @@ class CommitmentOrigin(str, Enum):
     TEST_FIXTURE = "test_fixture"         # テスト用明示コミット
 
 
+class IntegrityError(Exception):
+    """
+    データ整合性・改ざん検知例外 (B5 Zero Trust: 完全性検証失敗)
+    保存済み content_hash と復元後実効ハッシュの不一致、またはスナップショットハッシュの不整合時に送出。
+    ※ Checksum (完全性・改ざん検出) であり、電子署名等の Authenticity (真正性) とは区別される。
+    """
+    pass
+
+
 @dataclass(frozen=True)
 class CommitmentRecord:
     """
@@ -44,6 +53,98 @@ class CommitmentRecord:
             "evidence_at": self.evidence_at,
             "lineage": self.lineage,
         }
+
+    @classmethod
+    def from_dict_strict(
+        cls,
+        rec_dict: Any,
+        outer_origin: Optional[str] = None,
+        outer_committed_at: Optional[str] = None,
+    ) -> "CommitmentRecord":
+        """
+        直列化データから CommitmentRecord を厳格復元・検証 (P0)。
+        (B5 Zero Trust: 欠損・未知origin・タイムスタンプ不正・外側フィールド不整合を即座に拒絶)
+        """
+        if not isinstance(rec_dict, dict):
+            raise ValueError(f"commitment_record は辞書型である必要があります: {type(rec_dict)}")
+
+        origin = rec_dict.get("origin")
+        committed_at = rec_dict.get("committed_at")
+        actor = rec_dict.get("actor")
+
+        if not origin or not isinstance(origin, str) or not origin.strip():
+            raise ValueError("commitment_record.origin は必須の非空文字列です")
+        if not committed_at or not isinstance(committed_at, str) or not committed_at.strip():
+            raise ValueError("commitment_record.committed_at は必須の非空文字列です")
+        if not actor or not isinstance(actor, str) or not actor.strip():
+            raise ValueError("commitment_record.actor は必須の非空文字列です")
+
+        # 1. origin が CommitmentOrigin の正当な定義値であるかを検証
+        valid_origins = {o.value for o in CommitmentOrigin}
+        if origin not in valid_origins:
+            raise ValueError(f"無効または未知の commitment origin: '{origin}'。有効値: {valid_origins}")
+
+        # 2. committed_at が有効な ISO-8601 時刻文字列であるかを検証
+        try:
+            datetime.fromisoformat(committed_at.replace("Z", "+00:00"))
+        except (ValueError, TypeError) as e:
+            raise ValueError(f"commitment_record.committed_at は有効な ISO-8601 時刻文字列である必要があります: '{committed_at}' ({e})")
+
+        # 3. evidence_at の検証（指定されている場合）
+        evidence_at = rec_dict.get("evidence_at")
+        if evidence_at is not None:
+            if not isinstance(evidence_at, str) or not evidence_at.strip():
+                raise ValueError("commitment_record.evidence_at は非空の文字列である必要があります")
+            try:
+                datetime.fromisoformat(evidence_at.replace("Z", "+00:00"))
+            except (ValueError, TypeError) as e:
+                raise ValueError(f"commitment_record.evidence_at は有効な ISO-8601 時刻文字列である必要があります: '{evidence_at}' ({e})")
+
+        lineage = rec_dict.get("lineage")
+
+        # 4. 外側フィールド（commitment_origin, committed_at）との厳格一致検証
+        if outer_origin is not None and outer_origin != origin:
+            raise ValueError(
+                f"commitment_record の origin ('{origin}') と外側フィールド commitment_origin ('{outer_origin}') が不一致です"
+            )
+        if outer_committed_at is not None and outer_committed_at != committed_at:
+            raise ValueError(
+                f"commitment_record の committed_at ('{committed_at}') と外側フィールド committed_at ('{outer_committed_at}') が不一致です"
+            )
+
+        return cls(
+            origin=origin,
+            committed_at=committed_at,
+            actor=actor,
+            evidence_at=evidence_at,
+            lineage=lineage,
+        )
+
+
+@dataclass(frozen=True)
+class LegacySnapshot:
+    """
+    レガシーデータスナップショット (BASE v2.0 §4.2 / B5 Zero Trust: 移行データの真正性検証)
+    移行対象のデータペイロードと期待されるハッシュ値を保持。
+    """
+    source_version: str
+    raw_payload: Dict[str, Any]
+    expected_source_hash: Optional[str] = None
+
+    def compute_hash(self) -> str:
+        serialized = json.dumps(self.raw_payload, sort_keys=True, ensure_ascii=False)
+        return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True)
+class MigrationContext:
+    """
+    移行実行権威コンテキスト (BASE v2.0 §4.2: 移行検証責任者と権威・能力の明示)
+    """
+    verifier_id: str
+    role: str  # "admin", "manager", "migration_officer"
+    capability: str = "legacy_migration"
+    timestamp: Optional[str] = None
 
 
 class ReadOnlyDict(dict):
@@ -183,7 +284,6 @@ class MBNode:
         commitment_origin: Optional[str] = None,
         committed_at: Optional[str] = None,
         commitment_record: Optional[Dict[str, Any]] = None,
-        _internal_commitment: Optional[CommitmentRecord] = None,
     ):
         self.is_frozen = False
         self.id = id
@@ -202,16 +302,12 @@ class MBNode:
         self.node_relations = node_relations if node_relations is not None else {}
 
         # 【Commitment Authenticity (BASE v2.0 §4.2: Description != Commitment)】
-        # 外部からの直接引数 (commitment_origin, committed_at, commitment_record) による
-        # コミットメント状態の自己生成・捏造（Constructor Forgery）を厳格に遮断。
-        # 正当な CommitmentRecord インスタンスを伴う内部呼び出し (_internal_commitment)
-        # または MBGraph.commit_node() のみを正規ルートとして承認する。
-        if isinstance(_internal_commitment, CommitmentRecord):
-            self._commitment_record: Optional[CommitmentRecord] = _internal_commitment
-        elif _internal_commitment is not None:
-            raise TypeError("内部コミットメントには CommitmentRecord インスタンスが必要です")
-        else:
-            self._commitment_record = None
+        # 公開コンストラクタはいかなる引数を用いてもコミットメント状態を自己生成・偽装できません。
+        # 外部引数 (commitment_origin, committed_at, commitment_record) は安全のため無視・無効化されます。
+        # _internal_commitment 等のバイパス引数も完全撤去。
+        # コミットメントの確立は MBGraph.commit_node() または厳格検証済みデシリアライザのみが
+        # object.__setattr__ を介して行います。
+        object.__setattr__(self, "_commitment_record", None)
 
         def _to_iso(val: Any) -> Optional[str]:
             if val is None:
@@ -307,8 +403,8 @@ class MBNode:
     def __setattr__(self, name: str, value: Any):
         if getattr(self, "is_frozen", False) and name != "is_frozen":
             raise RuntimeError(f"MBNode(id={getattr(self, 'id', '')}) は凍結(frozen)されています。属性 '{name}' の変更は禁止されています。")
-        if name in ("commitment_origin", "committed_at", "commitment_record"):
-            raise AttributeError(f"属性 '{name}' は読み取り専用です。コミットメントの変更は commit_node() を経由してください。")
+        if name in ("commitment_origin", "committed_at", "commitment_record", "_commitment_record"):
+            raise AttributeError(f"属性 '{name}' は変更できません。コミットメントの変更・確立は MBGraph.commit_node() を経由してください。")
         super().__setattr__(name, value)
 
     def __delattr__(self, name: str):
@@ -584,7 +680,7 @@ class MBGraph:
             evidence_at=node.last_support_at,
             lineage=node.source_lineage,
         )
-        node._commitment_record = rec
+        object.__setattr__(node, "_commitment_record", rec)
 
         self.add_or_update(node)
         return node
@@ -688,12 +784,21 @@ class MBGraph:
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any], allow_uncommitted: bool = False) -> "MBGraph":
+    def from_dict(
+        cls,
+        data: Dict[str, Any],
+        verify_hash: bool = True,
+        allow_uncommitted: bool = False,
+    ) -> "MBGraph":
         """
         辞書データから MBGraph を復元。
-        (BASE v2.0 §4.2: 暗黙的コミット昇格の全廃・フェイルクローズ)
-        allow_uncommitted=False (デフォルト) の場合、未コミットのノードが存在すれば
-        add_or_update() で ValueError を送出して安全に遮断する。
+        (BASE v2.0 §4.2 / B5 Zero Trust: 暗黙的コミット昇格の全廃・直列化データ真正性検証・完全性照合)
+
+        - commitment_record の存在時は CommitmentRecord.from_dict_strict() で厳格検証。
+        - allow_uncommitted=False (デフォルト) の場合、未コミットのノードが存在すれば
+          add_or_update() で ValueError を送出して安全に遮断。
+        - verify_hash=True (デフォルト) の場合、保存された content_hash と復元後グラフの
+          content_hash() を厳格照合し、改ざん検出時は IntegrityError を送出。
         """
         graph = cls(
             m0=data.get("m0", 3.0),
@@ -704,27 +809,25 @@ class MBGraph:
             node_dict = dict(ndict)
             node_frozen = node_dict.pop("is_frozen", False)
 
-            # 構造化コミットメント証跡の復元
-            rec_dict = node_dict.pop("commitment_record", None)
+            # 構造化コミットメント証跡の厳格復元 (P0: serialized-data forgery 排除)
             rec = None
-            if rec_dict and isinstance(rec_dict, dict):
-                rec = CommitmentRecord(
-                    origin=rec_dict.get("origin", "unknown"),
-                    committed_at=rec_dict.get("committed_at", datetime.utcnow().isoformat()),
-                    actor=rec_dict.get("actor", "system"),
-                    evidence_at=rec_dict.get("evidence_at"),
-                    lineage=rec_dict.get("lineage"),
+            if "commitment_record" in node_dict and node_dict["commitment_record"] is not None:
+                rec = CommitmentRecord.from_dict_strict(
+                    node_dict.pop("commitment_record"),
+                    outer_origin=node_dict.get("commitment_origin"),
+                    outer_committed_at=node_dict.get("committed_at"),
                 )
-            elif node_dict.get("commitment_origin") and node_dict.get("committed_at"):
-                rec = CommitmentRecord(
-                    origin=node_dict["commitment_origin"],
-                    committed_at=node_dict["committed_at"],
-                    actor=node_dict.get("source_id") or "system",
-                    evidence_at=node_dict.get("last_support_at"),
-                    lineage=node_dict.get("source_lineage"),
+            elif node_dict.get("commitment_origin") or node_dict.get("committed_at"):
+                # 外側フィールドのみで commitment_record が欠落しているものは完全性違反として拒絶
+                raise ValueError(
+                    f"ノード '{nid}' は commitment_record を欠いており、出所証跡が不完全です。"
+                    f"外部属性のみによる自己申告コミットメントは拒絶されます。"
                 )
 
-            node = MBNode(**node_dict, _internal_commitment=rec)
+            node = MBNode(**node_dict)
+            if rec is not None:
+                object.__setattr__(node, "_commitment_record", rec)
+
             if node_frozen:
                 node.freeze()
 
@@ -734,35 +837,82 @@ class MBGraph:
             else:
                 graph.add_or_update(node)
 
+        # ハッシュ完全性検証 (P1: Load-time Content Hash Integrity Verification)
+        if verify_hash and "content_hash" in data and data["content_hash"] is not None:
+            expected_hash = data["content_hash"]
+            actual_hash = graph.content_hash()
+            if actual_hash != expected_hash:
+                raise IntegrityError(
+                    f"M_B 整合性検証失敗 (Content Hash Mismatch): "
+                    f"保存されたハッシュ '{expected_hash}' に対し、復元データの実効ハッシュは '{actual_hash}' です。"
+                    f"データが保存後に改ざんまたは不整合を起こしています。"
+                )
+
         if data.get("is_frozen", False):
             graph.freeze()
         return graph
 
     def migrate_legacy_nodes(
         self,
-        source_version: str,
-        migrated_by: str,
+        snapshot: Optional[Any] = None,
+        context: Optional[Any] = None,
+        source_version: Optional[str] = None,
+        migrated_by: Optional[str] = None,
         source_hash: Optional[str] = None,
     ) -> int:
         """
-        レガシー・未コミットノードを正統なコミットメントとして昇格・移行する明示的ゲートウェイ (P2)。
-        (BASE v2.0 §4.2: 暗黙的昇格の全廃、明示的来歴・検証責任者の記録義務付け)
+        レガシー・未コミットノードを実検証を経て正統コミットメントへ昇格する明示的ゲートウェイ (P2)。
+        (BASE v2.0 §4.2 / B5 Zero Trust: 実データハッシュ照合・検証責任者権威チェック)
 
-        すべての未コミットノードに対し:
-        - origin: CommitmentOrigin.MIGRATION_VERIFIED
-        - actor: migrated_by
-        - lineage: f"migration:{source_version}:{migrated_by}" (+ hash if provided)
-        - committed_at: 現在時刻
-        - 支持証拠時刻: 極性ルールに従い設定
+        引数は以下の2パターンに対応:
+        パターンA (厳格真正性検証):
+          migrate_legacy_nodes(snapshot: LegacySnapshot, context: MigrationContext)
+        パターンB (後方互換宣言型):
+          migrate_legacy_nodes(source_version: str, migrated_by: str, source_hash: Optional[str] = None)
         """
         if self.is_frozen:
             raise RuntimeError(f"MBGraph (version={self.version}) は凍結(frozen)されています。移行は禁止されています。")
 
+        # 引数の柔軟な正規化
+        actual_snapshot = snapshot if snapshot is not None else source_version
+        actual_context = context if context is not None else migrated_by
+
+        if isinstance(actual_snapshot, LegacySnapshot) and isinstance(actual_context, MigrationContext):
+            snap = actual_snapshot
+            ctx = actual_context
+        elif isinstance(actual_snapshot, str) and isinstance(actual_context, str):
+            # 後方互換ラッパー
+            snap = LegacySnapshot(
+                source_version=actual_snapshot,
+                raw_payload={"uncommitted_nodes": [n.to_dict() for n in self.nodes.values() if not n.is_committed]},
+                expected_source_hash=source_hash,
+            )
+            ctx = MigrationContext(verifier_id=actual_context, role="admin")
+        else:
+            raise TypeError("migrate_legacy_nodes には (LegacySnapshot, MigrationContext) または (source_version: str, migrated_by: str) を指定してください")
+
+        # 1. 移行権威・ロールの検証 (admin, manager, migration_officer のみを許可)
+        allowed_roles = {"admin", "manager", "migration_officer"}
+        if ctx.role not in allowed_roles:
+            raise PermissionError(
+                f"移行権威不足: Role '{ctx.role}' (actor: '{ctx.verifier_id}') は "
+                f"レガシー移行を実行する権限がありません。許可ロール: {allowed_roles}"
+            )
+        if ctx.capability != "legacy_migration":
+            raise PermissionError(f"移行ケイパビリティ不足: '{ctx.capability}'")
+
+        # 2. 実データハッシュの照合 (Integrity Check)
+        computed_hash = snap.compute_hash()
+        if snap.expected_source_hash is not None:
+            if computed_hash != snap.expected_source_hash:
+                raise IntegrityError(
+                    f"レガシースナップショットのハッシュ不一致: "
+                    f"期待値 '{snap.expected_source_hash}' vs 実効値 '{computed_hash}'"
+                )
+
         migrated_count = 0
-        now_iso = datetime.utcnow().isoformat()
-        lineage = f"migration:{source_version}:{migrated_by}"
-        if source_hash:
-            lineage += f":{source_hash}"
+        now_iso = (ctx.timestamp or datetime.utcnow().isoformat())
+        lineage = f"migration:{snap.source_version}:{ctx.verifier_id}:{computed_hash[:12]}"
 
         uncommitted_nodes = [n for n in self.nodes.values() if not n.is_committed]
         for node in uncommitted_nodes:
@@ -773,11 +923,11 @@ class MBGraph:
             rec = CommitmentRecord(
                 origin=CommitmentOrigin.MIGRATION_VERIFIED.value,
                 committed_at=now_iso,
-                actor=migrated_by,
+                actor=ctx.verifier_id,
                 evidence_at=node.last_support_at,
                 lineage=lineage,
             )
-            node._commitment_record = rec
+            object.__setattr__(node, "_commitment_record", rec)
             if was_frozen:
                 node.freeze()
             migrated_count += 1

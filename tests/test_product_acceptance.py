@@ -548,7 +548,7 @@ class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
         4. 認可された権威コミットまたは経験沈澱 (origin='experience') を経て初めて、活性化拘束・鮮度回復が認められる
         """
         from datetime import datetime, timezone
-        from rdl_enterprise.mb_graph import MBGraph, MBNode, CommitmentOrigin
+        from rdl_enterprise.mb_graph import MBGraph, MBNode, CommitmentOrigin, CommitmentRecord, IntegrityError, LegacySnapshot, MigrationContext
         from rdl_enterprise.authority import AuthorityContext
         from rdl_enterprise.constraint import RelationConstraintLocator, ConstraintContext
         from rdl_enterprise.snapshot import BusinessInput
@@ -597,13 +597,25 @@ class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
         with self.assertRaises(ValueError):
             graph.add_or_update(forged_node)
 
-        # 属性イミュータビリティ検査: コミットメント属性の直接代入は AttributeError で拒絶されること (P1)
+        # _internal_commitment 引数の完全撤去検査 (新P0)
+        with self.assertRaises(TypeError):
+            MBNode(
+                id="node_internal_forged",
+                domain="security",
+                trigger_pattern={"exact_keys": ["内部偽装"]},
+                action_template={"type": "direct_reply", "payload": "evil"},
+                _internal_commitment=CommitmentRecord(origin="authority", committed_at="2026-09-01T00:00:00Z", actor="hacker"),
+            )
+
+        # 属性イミュータビリティ検査: コミットメント属性および _commitment_record の直接代入は AttributeError で拒絶されること (P0-P1)
         with self.assertRaises(AttributeError):
             desc_node.commitment_origin = "authority"
         with self.assertRaises(AttributeError):
             desc_node.committed_at = "2026-09-01T00:00:00Z"
         with self.assertRaises(AttributeError):
             desc_node.commitment_record = {}
+        with self.assertRaises(AttributeError):
+            desc_node._commitment_record = CommitmentRecord(origin="authority", committed_at="2026-09-01T00:00:00Z", actor="hacker")
 
         # Cascade レベルでも未コミット記述ノードは推論・活性化サブグラフから 100% 排除されること
         from rdl_enterprise.cascade import InterpCascade
@@ -677,7 +689,39 @@ class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
         h2 = graph.content_hash()
         self.assertNotEqual(h1, h2)
 
-        # 6. デシリアライズ・復元のフェイルクローズ検査 (P0) & 明示的移行ゲートウェイ (P2)
+        # 6. CommitmentRecord.from_dict_strict 厳格検証検査 (P0: Serialized-data forgery 排除)
+        # (a) 必須フィールド欠損
+        with self.assertRaises(ValueError):
+            CommitmentRecord.from_dict_strict({"actor": "someone"})
+        # (b) 未知の origin
+        with self.assertRaises(ValueError):
+            CommitmentRecord.from_dict_strict({"origin": "bogus", "committed_at": "2026-09-01T00:00:00Z", "actor": "someone"})
+        # (c) 不正な ISO-8601 時刻文字列
+        with self.assertRaises(ValueError):
+            CommitmentRecord.from_dict_strict({"origin": "authority", "committed_at": "invalid_date", "actor": "someone"})
+        # (d) 外側フィールドとの不一致
+        with self.assertRaises(ValueError):
+            CommitmentRecord.from_dict_strict(
+                {"origin": "authority", "committed_at": "2026-09-01T00:00:00Z", "actor": "someone"},
+                outer_origin="experience",
+            )
+
+        # 7. ロード時 content_hash 完全性照合検査 (P1: Load-time Integrity Verification)
+        saved_dict = graph.to_dict()
+        self.assertIn("content_hash", saved_dict)
+        # 正常時はロード成功
+        loaded_ok = MBGraph.from_dict(saved_dict, verify_hash=True)
+        self.assertEqual(loaded_ok.content_hash(), saved_dict["content_hash"])
+
+        # ペイロード改変＋旧ハッシュ残存（改ざん）時は IntegrityError で即座にロード拒絶
+        tampered_saved = dict(saved_dict)
+        tampered_saved["nodes"] = dict(saved_dict["nodes"])
+        tampered_saved["nodes"]["node_desc_candidate"] = dict(saved_dict["nodes"]["node_desc_candidate"])
+        tampered_saved["nodes"]["node_desc_candidate"]["action_template"] = {"type": "direct_reply", "payload": "tampered_evil"}
+        with self.assertRaises(IntegrityError):
+            MBGraph.from_dict(tampered_saved, verify_hash=True)
+
+        # 8. デシリアライズ・復元のフェイルクローズ検査 (P0) & 明示的移行ゲートウェイ (P2)
         uncommitted_data = {
             "version": "v1.0",
             "nodes": {
@@ -693,10 +737,33 @@ class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
         with self.assertRaises(ValueError):
             MBGraph.from_dict(uncommitted_data, allow_uncommitted=False)
 
-        # allow_uncommitted=True で読み込み後、明示的移行ゲートウェイ migrate_legacy_nodes() を呼ぶことで正統コミット化
+        # allow_uncommitted=True で読み込み後、真正な LegacySnapshot + MigrationContext を用いた移行検証
         legacy_graph = MBGraph.from_dict(uncommitted_data, allow_uncommitted=True)
         self.assertFalse(legacy_graph.get("n_uncommitted").is_committed)
-        migrated_count = legacy_graph.migrate_legacy_nodes(source_version="v0.9", migrated_by="sec_admin")
+
+        snap = LegacySnapshot(
+            source_version="v0.9",
+            raw_payload=uncommitted_data,
+            expected_source_hash=LegacySnapshot("v0.9", uncommitted_data).compute_hash(),
+        )
+
+        # (a) 権限外アクターによる移行試行は PermissionError
+        unauth_mig_ctx = MigrationContext(verifier_id="guest_user", role="guest")
+        with self.assertRaises(PermissionError):
+            legacy_graph.migrate_legacy_nodes(snapshot=snap, context=unauth_mig_ctx)
+
+        # (b) ハッシュ不一致（改ざんスナップショット）による移行試行は IntegrityError
+        tampered_snap = LegacySnapshot(
+            source_version="v0.9",
+            raw_payload=uncommitted_data,
+            expected_source_hash="0000000000000000000000000000000000000000000000000000000000000000",
+        )
+        auth_mig_ctx = MigrationContext(verifier_id="sec_admin", role="admin")
+        with self.assertRaises(IntegrityError):
+            legacy_graph.migrate_legacy_nodes(snapshot=tampered_snap, context=auth_mig_ctx)
+
+        # (c) 正当な Snapshot + Context による検証済み移行の成功
+        migrated_count = legacy_graph.migrate_legacy_nodes(snapshot=snap, context=auth_mig_ctx)
         self.assertEqual(migrated_count, 1)
         migrated_node = legacy_graph.get("n_uncommitted")
         self.assertTrue(migrated_node.is_committed)
