@@ -72,6 +72,7 @@ class ConstraintContext:
     config: ConstraintConfig = field(default_factory=ConstraintConfig)
     frozen_context: Optional[Any] = None  # FrozenInterpretationContext（完全同一解釈器を伝播）
     llm_bridge: Optional[Any] = None      # 外部推論器 (LLM Bridge: Counterfactual Replay用)
+    actual_replay_token: Optional[Any] = None # 事前予測 F を実際に形成した外生固定条件 K_actual
 
 
 # ---------------------------------------------------------------------------
@@ -101,70 +102,117 @@ class BundleAuxiliary:
     independent_sources: List[str] = field(default_factory=list)  # 観測された独立ソース群
 
 
-@dataclass
 class ConstraintBundle:
     """
     「関係の束」として表現した拘束位置。
-    確定拘束（core）と未確定関係（auxiliary ξ）を二層構造として保持する。
+    確定拘束（core: BundleCore）と未確定関係（auxiliary: BundleAuxiliary）のみを
+    唯一の実体 (canonical source of truth) として保持する。
 
     BASE v2.0: 強い場所とは「そこを外す・反転する・揺らすと、
     現在の解釈可能域が大きく変わる場所」。
     """
-    node_ids: List[str]           # 束を構成する確定ノード群（複数可）
-    locus_type: str               # "strong" | "bridge" | "authority" | "source"
-    constraint_score: float       # 現在の問い・時点・位置における確定拘束強度 ∈ [0, 1]
-
-    # 各拘束断面の値（内訳）
-    relevance: float = 0.0        # 現在の問いへの適合
-    freshness: float = 0.0        # 時間的新鮮さ
-    authority_weight: float = 0.0 # 制度的権限
-    source_strength: float = 0.0  # ソース拘束（承認比率）
-    convergence: float = 0.0      # 複数独立関係の収束一致 (core_convergence)
-
-    is_structural_bridge: bool = False  # 構造的に唯一の接続橋か
-    inferred_node_ids: List[str] = field(default_factory=list)  # 暗黙・推論支援ノード群 (auxiliary / ξ evidence)
-    auxiliary_constraint_signal: float = 0.0                    # 推論支援ノード群から立ち上がる潜在シグナル ∈ [0, 1]
-    auxiliary_convergence_signal: float = 0.0                   # 推論支援ノード群から立ち上がる潜在収束シグナル ∈ [0, 1]
-
-    core: Optional[BundleCore] = None
-    auxiliary: Optional[BundleAuxiliary] = None
-
-    def __post_init__(self):
-        if self.core is None:
+    def __init__(
+        self,
+        node_ids: Optional[List[str]] = None,
+        locus_type: str = "strong",
+        constraint_score: float = 0.0,
+        core: Optional[BundleCore] = None,
+        auxiliary: Optional[BundleAuxiliary] = None,
+        relevance: float = 0.0,
+        freshness: float = 0.0,
+        authority_weight: float = 0.0,
+        source_strength: float = 0.0,
+        convergence: float = 0.0,
+        is_structural_bridge: bool = False,
+        inferred_node_ids: Optional[List[str]] = None,
+        auxiliary_constraint_signal: float = 0.0,
+        auxiliary_convergence_signal: float = 0.0,
+        observation_count: int = 0,
+        independent_sources: Optional[List[str]] = None,
+    ):
+        if core is not None:
+            self.core = core
+        else:
             self.core = BundleCore(
-                node_ids=list(self.node_ids),
-                constraint_score=self.constraint_score,
-                convergence=self.convergence,
-                relevance=self.relevance,
-                freshness=self.freshness,
-                authority_weight=self.authority_weight,
-                source_strength=self.source_strength,
+                node_ids=list(node_ids or []),
+                constraint_score=constraint_score,
+                convergence=convergence,
+                relevance=relevance,
+                freshness=freshness,
+                authority_weight=authority_weight,
+                source_strength=source_strength,
             )
-        if self.auxiliary is None:
+        if auxiliary is not None:
+            self.auxiliary = auxiliary
+        else:
             self.auxiliary = BundleAuxiliary(
-                inferred_node_ids=list(self.inferred_node_ids),
-                constraint_signal=self.auxiliary_constraint_signal,
-                convergence_signal=self.auxiliary_convergence_signal,
+                inferred_node_ids=list(inferred_node_ids or []),
+                constraint_signal=auxiliary_constraint_signal,
+                convergence_signal=auxiliary_convergence_signal,
+                observation_count=observation_count,
+                independent_sources=list(independent_sources or []),
             )
+        self.locus_type = locus_type
+        self.is_structural_bridge = is_structural_bridge
+
+    # --- 確定拘束 (core) への完全委譲プロパティ ---
+    @property
+    def node_ids(self) -> List[str]:
+        return self.core.node_ids
+
+    @property
+    def constraint_score(self) -> float:
+        return self.core.constraint_score
 
     @property
     def core_constraint_score(self) -> float:
-        """確定拘束強度 (確定束ノードのみで算出)"""
-        return self.core.constraint_score if self.core else self.constraint_score
+        return self.core.constraint_score
+
+    @property
+    def convergence(self) -> float:
+        return self.core.convergence
 
     @property
     def core_convergence(self) -> float:
-        """確定収束度 (確定束ノードのみで算出)"""
-        return self.core.convergence if self.core else self.convergence
+        return self.core.convergence
+
+    @property
+    def relevance(self) -> float:
+        return self.core.relevance
+
+    @property
+    def freshness(self) -> float:
+        return self.core.freshness
+
+    @property
+    def authority_weight(self) -> float:
+        return self.core.authority_weight
+
+    @property
+    def source_strength(self) -> float:
+        return self.core.source_strength
+
+    # --- 未回収関係 (auxiliary ξ) への完全委譲プロパティ ---
+    @property
+    def inferred_node_ids(self) -> List[str]:
+        return self.auxiliary.inferred_node_ids
+
+    @property
+    def auxiliary_constraint_signal(self) -> float:
+        return self.auxiliary.constraint_signal
+
+    @property
+    def auxiliary_convergence_signal(self) -> float:
+        return self.auxiliary.convergence_signal
 
     def primary_node_id(self) -> Optional[str]:
         """代表ノード ID（最初の要素）"""
-        return self.node_ids[0] if self.node_ids else None
+        return self.core.node_ids[0] if self.core.node_ids else None
 
     @property
     def supporting_node_ids(self) -> List[str]:
         """束に含まれる確定支援ノード群（代表ノード以外）"""
-        return self.node_ids[1:] if len(self.node_ids) > 1 else []
+        return self.core.node_ids[1:] if len(self.core.node_ids) > 1 else []
 
 
 # ---------------------------------------------------------------------------
@@ -1028,9 +1076,14 @@ class RuptureProbe:
                     constraint_evaluation_time=ctx.current_time,
                 )
             # 外生固定条件集合 K (ReplayToken) の初期化・キャプチャ
+            # 【最優先】事後採取ではなく、実際の事前予測 F を生んだ外生固定条件 K_actual を再利用
             bridge = getattr(cascade_base, "llm_bridge", None)
             replay_token_K = None
-            if bridge is not None:
+            if getattr(ctx, "actual_replay_token", None) is not None:
+                replay_token_K = ctx.actual_replay_token
+            elif ctx.frozen_context is not None and getattr(ctx.frozen_context, "actual_replay_token", None) is not None:
+                replay_token_K = ctx.frozen_context.actual_replay_token
+            elif bridge is not None:
                 if hasattr(bridge, "capture_counterfactual_context") and callable(bridge.capture_counterfactual_context):
                     try:
                         replay_token_K = bridge.capture_counterfactual_context(ctx.efp)
@@ -1070,7 +1123,11 @@ class RuptureProbe:
                 else:
                     # 2. 外生条件同一性の実証と内生的変化の測定 (BASE v2.0: Counterfactual Replay Contract)
                     if f_base.cost_tier == 3 and f_without.cost_tier == 3:
-                        is_mb_dependent = getattr(bridge, "is_mb_dependent", False) or hasattr(bridge, "build_prompt_with_mb")
+                        is_mb_dependent = (
+                            getattr(bridge, "is_mb_dependent", False)
+                            or hasattr(bridge, "build_prompt_with_mb")
+                            or hasattr(bridge, "resolve_counterfactual")
+                        )
                         if not is_mb_dependent:
                             # M_B に依存しない固定質問の場合、同一 K であれば完全に同一出力となるべき
                             if (f_base.action_type != f_without.action_type or

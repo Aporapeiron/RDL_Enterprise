@@ -2144,6 +2144,190 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
         # ブーストは core_constraint_score のみから算出されるため、inferred の有無でブースト量が増殖しない
         self.assertAlmostEqual(pred.confidence, min(1.0, n_main.confidence + single_core_score * 0.2), places=4)
 
+    def test_level3_counterfactual_input_transfers_mb_intervention(self):
+        """Level 3 counterfactual 再演時に CounterfactualInput (M_B と M_B \\ bundle の差異) が明示伝達されること"""
+        from rdl_enterprise.cascade import InterpCascade
+        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.constraint import RuptureProbe, ConstraintBundle, ConstraintContext
+        from rdl_enterprise.snapshot import ReplayToken, CounterfactualInput
+
+        received_cf_inputs = []
+
+        class MBInterventionBridge:
+            def __init__(self):
+                self.can_replay_flag = True
+            def can_replay(self):
+                return True
+            def resolve(self, efp):
+                return {"type": "direct_reply", "payload": "base_output"}
+            def resolve_counterfactual(self, efp, replay_token, counterfactual_input=None):
+                received_cf_inputs.append(counterfactual_input)
+                # available_nodes の有無によってプロンプト/出力を実際に変化させる (内生的変化)
+                if counterfactual_input and len(counterfactual_input.available_nodes) > 0:
+                    return {"type": "direct_reply", "payload": f"with_nodes_{len(counterfactual_input.available_nodes)}"}
+                return {"type": "direct_reply", "payload": "cut_without_nodes"}
+
+        graph = MBGraph()
+        n1 = MBNode(
+            id="n1",
+            domain="general",
+            trigger_pattern={"exact_keys": ["キー1"]},
+            action_template={"type": "direct_reply", "payload": "x"},
+            confidence=0.8,
+            approval_count=10,
+        )
+        graph.add_or_update(n1)
+
+        bridge = MBInterventionBridge()
+        bundle = ConstraintBundle(node_ids=["n1"], locus_type="strong", constraint_score=0.8)
+        probe = RuptureProbe()
+        efp = _make_efp("未知クエリ", category="general")
+        ctx = ConstraintContext(efp=efp, current_time=datetime.utcnow(), llm_bridge=bridge)
+
+        res = probe.probe(bundle, graph, ctx)
+
+        # 2回の counterfactual 呼び出し (f_base と f_without) で CounterfactualInput が渡されたこと
+        self.assertEqual(len(received_cf_inputs), 2)
+        cf_base, cf_cut = received_cf_inputs[0], received_cf_inputs[1]
+
+        # f_base: 除外ノードなし、n1 が利用可能
+        self.assertEqual(cf_base.excluded_node_ids, [])
+        self.assertEqual(len(cf_base.available_nodes), 1)
+        self.assertEqual(cf_base.available_nodes[0].id, "n1")
+
+        # f_cut: n1 が除外ノード、利用可能ノードは 0
+        self.assertEqual(cf_cut.excluded_node_ids, ["n1"])
+        self.assertEqual(len(cf_cut.available_nodes), 0)
+
+        # M_B 切断という唯一の内生的介入変数により出力差分 (0.4) が正しく rupture_effect として測定されたこと
+        self.assertIsNotNone(res.rupture_effect)
+        self.assertAlmostEqual(res.rupture_effect, 0.4, places=2)
+
+    def test_resolve_emits_actual_replay_token_and_probe_reuses_it(self):
+        """resolve() 自体から排出された actual ReplayToken が prediction に封入され RuptureProbe で再利用されること"""
+        from rdl_enterprise.cascade import InterpCascade
+        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.constraint import RuptureProbe, ConstraintBundle, ConstraintContext
+        from rdl_enterprise.snapshot import ReplayToken
+
+        actual_token = ReplayToken(
+            token_id="tok_actual_123",
+            model_name="test-model",
+            seed=999,
+        )
+
+        class TraceEmittingBridge:
+            def __init__(self):
+                self.received_replay_tokens = []
+            def can_replay(self):
+                return True
+            def resolve(self, efp):
+                # 作用の実行証跡として actual_token を排出
+                return {
+                    "type": "direct_reply",
+                    "payload": "trace_output",
+                    "replay_token": actual_token,
+                }
+            def resolve_counterfactual(self, efp, replay_token, counterfactual_input=None):
+                self.received_replay_tokens.append(replay_token)
+                return {"type": "direct_reply", "payload": "trace_output"}
+
+        graph = MBGraph()
+        bridge = TraceEmittingBridge()
+        cascade = InterpCascade(graph, llm_bridge=bridge)
+        efp = _make_efp("未知クエリ", category="general")
+
+        # 1. 通常推論で actual_token が prediction.replay_token に格納されること
+        pred = cascade.interpret(efp)
+        self.assertEqual(pred.replay_token, actual_token)
+        self.assertEqual(pred.replay_token.token_id, "tok_actual_123")
+
+        # 2. その actual_token を固定した ConstraintContext で RuptureProbe を実行
+        node_x = MBNode(
+            id="n_x",
+            domain="general",
+            trigger_pattern={"exact_keys": ["テストキー"]},
+            action_template={"type": "direct_reply", "payload": "x"},
+            confidence=0.8,
+            approval_count=10,
+        )
+        graph.add_or_update(node_x)
+        bundle = ConstraintBundle(node_ids=["n_x"], locus_type="strong", constraint_score=0.8)
+        probe = RuptureProbe()
+
+        ctx = ConstraintContext(
+            efp=efp,
+            current_time=datetime.utcnow(),
+            llm_bridge=bridge,
+            actual_replay_token=pred.replay_token,  # F を生んだ証跡をそのまま固定
+        )
+        res = probe.probe(bundle, graph, ctx)
+
+        # プローブ内の反実仮想再演で、実際に pred.replay_token (actual_token) が再利用されたこと
+        self.assertGreaterEqual(len(bridge.received_replay_tokens), 1)
+        self.assertEqual(bridge.received_replay_tokens[0].token_id, "tok_actual_123")
+
+    def test_replay_token_separates_token_id_and_conditions_hash(self):
+        """token_id が異なっていても外生条件 K が同一なら conditions_hash が一致すること"""
+        from rdl_enterprise.snapshot import ReplayToken
+
+        token_a = ReplayToken(
+            token_id="tok_uuid_111",
+            model_name="claude-3-5-sonnet",
+            seed=42,
+            sampling_params={"temperature": 0.0},
+        )
+        token_b = ReplayToken(
+            token_id="tok_uuid_222",
+            model_name="claude-3-5-sonnet",
+            seed=42,
+            sampling_params={"temperature": 0.0},
+        )
+        token_c = ReplayToken(
+            token_id="tok_uuid_111",
+            model_name="claude-3-5-sonnet",
+            seed=43,  # 異なる seed (異なる外生条件)
+            sampling_params={"temperature": 0.0},
+        )
+
+        # token_id は異なる
+        self.assertNotEqual(token_a.token_id, token_b.token_id)
+        # 外生条件集合 K の意味的ハッシュは完全に一致する
+        self.assertEqual(token_a.conditions_hash, token_b.conditions_hash)
+        self.assertEqual(token_a.compute_hash(), token_b.compute_hash())
+
+        # 条件が異なればハッシュも異なる
+        self.assertNotEqual(token_a.conditions_hash, token_c.conditions_hash)
+
+    def test_constraint_bundle_canonical_storage_delegates_completely(self):
+        """ConstraintBundle の canonical storage が core と auxiliary に一本化され乖離不能であること"""
+        from rdl_enterprise.constraint import ConstraintBundle, BundleCore, BundleAuxiliary
+
+        bundle = ConstraintBundle(
+            node_ids=["n_main"],
+            constraint_score=0.75,
+            convergence=0.6,
+            inferred_node_ids=["n_inf"],
+            auxiliary_constraint_signal=0.1,
+        )
+
+        # 実体は core と auxiliary のみ
+        self.assertIsInstance(bundle.core, BundleCore)
+        self.assertIsInstance(bundle.auxiliary, BundleAuxiliary)
+
+        # core を直接更新した場合、bundle のプロパティも直ちに追従（二重保持の乖離なし）
+        bundle.core.constraint_score = 0.92
+        self.assertEqual(bundle.constraint_score, 0.92)
+        self.assertEqual(bundle.core_constraint_score, 0.92)
+
+        bundle.core.convergence = 0.88
+        self.assertEqual(bundle.convergence, 0.88)
+        self.assertEqual(bundle.core_convergence, 0.88)
+
+        # auxiliary を直接更新した場合、bundle のプロパティも直ちに追従
+        bundle.auxiliary.constraint_signal = 0.25
+        self.assertEqual(bundle.auxiliary_constraint_signal, 0.25)
+
 
 if __name__ == "__main__":
     unittest.main()

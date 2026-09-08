@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional, Tuple, List
 from enum import Enum
 from datetime import datetime
 import copy
@@ -45,10 +45,12 @@ class ReplayToken:
     created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
     provenance: Dict[str, Any] = field(default_factory=dict)
 
-    def compute_hash(self) -> str:
-        """外生条件集合 K の決定性ハッシュ"""
+    def compute_conditions_hash(self) -> str:
+        """
+        外生条件集合 K そのものの意味的決定性ハッシュ (token_id や created_at は除外)。
+        K1 と K2 の外生条件が同一であれば、token_id (UUID) が異なっていても同じハッシュになる。
+        """
         payload = {
-            "token_id": self.token_id,
             "model_name": self.model_name,
             "provider": self.provider,
             "system_prompt_version": self.system_prompt_version,
@@ -60,6 +62,30 @@ class ReplayToken:
         }
         raw = json.dumps(payload, sort_keys=True)
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+    @property
+    def conditions_hash(self) -> str:
+        """外生固定条件 K の意味的決定性ハッシュ"""
+        return self.compute_conditions_hash()
+
+    def compute_hash(self) -> str:
+        """外生条件集合 K の決定性ハッシュ (後方互換用)"""
+        return self.compute_conditions_hash()
+
+
+@dataclass
+class CounterfactualInput:
+    r"""
+    Level 3 外部推論器 (LLM Bridge) に渡す反実仮想推論入力 (BASE v2.0 §4.2)
+    外生固定条件集合 K (replay_token) を固定したまま、
+    M_B と M_B \ bundle の違い（内生的介入変数）を bridge に明示的に注入する。
+    """
+    efp: BusinessInput
+    replay_token: ReplayToken
+    excluded_node_ids: List[str] = field(default_factory=list)
+    available_nodes: List[Any] = field(default_factory=list)  # MBNode 群
+    domain: Optional[str] = None
+    constructed_prompt_context: Optional[str] = None
 
 
 @dataclass
@@ -218,6 +244,7 @@ class FrozenInterpretationContext:
     constraint_config: Optional[Any] = None               # ConstraintConfig
     # 関係拘束評価時刻（凍結：freshness 等の時刻断面が F と F' で同一になることを保証）
     constraint_evaluation_time: Optional[Any] = None      # datetime
+    actual_replay_token: Optional[ReplayToken] = None     # F を実際に形成した外生固定条件 K_actual
     context_hash: str = ""
     is_frozen: bool = False
 

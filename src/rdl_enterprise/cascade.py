@@ -222,28 +222,52 @@ class InterpCascade:
             actual_token = replay_token
             if replay_token is not None:
                 # 反実仮想再演 (Counterfactual Replay): 外生固定条件集合 K の下での再演
+                # BASE v2.0: 唯一の介入変数 (M_B \ bundle の有無) を CounterfactualInput として明示伝達
+                from rdl_enterprise.snapshot import CounterfactualInput
+                cf_input = CounterfactualInput(
+                    efp=efp,
+                    replay_token=replay_token,
+                    excluded_node_ids=list(exclude_set),
+                    available_nodes=eligible_nodes,
+                    domain=target_domain,
+                )
                 if hasattr(self.llm_bridge, "resolve_counterfactual") and callable(self.llm_bridge.resolve_counterfactual):
-                    llm_res = self.llm_bridge.resolve_counterfactual(efp, replay_token)
+                    try:
+                        llm_res = self.llm_bridge.resolve_counterfactual(efp, replay_token, counterfactual_input=cf_input)
+                    except TypeError:
+                        try:
+                            llm_res = self.llm_bridge.resolve_counterfactual(efp, replay_token)
+                        except TypeError:
+                            llm_res = self.llm_bridge.resolve_counterfactual(cf_input)
                 elif hasattr(self.llm_bridge, "resolve_replay") and callable(self.llm_bridge.resolve_replay):
                     try:
-                        llm_res = self.llm_bridge.resolve_replay(efp, replay_token)
+                        llm_res = self.llm_bridge.resolve_replay(efp, replay_token, counterfactual_input=cf_input)
                     except TypeError:
-                        llm_res = self.llm_bridge.resolve_replay(efp)
+                        try:
+                            llm_res = self.llm_bridge.resolve_replay(efp, replay_token)
+                        except TypeError:
+                            llm_res = self.llm_bridge.resolve_replay(efp)
                 else:
                     llm_res = self.llm_bridge.resolve(efp)
             else:
                 # 通常推論 (Normal Resolve): 通常の未知案件解釈作用
-                llm_res = self.llm_bridge.resolve(efp)
-                if hasattr(self.llm_bridge, "capture_counterfactual_context") and callable(self.llm_bridge.capture_counterfactual_context):
-                    try:
-                        actual_token = self.llm_bridge.capture_counterfactual_context(efp)
-                    except Exception:
-                        actual_token = None
-                elif hasattr(self.llm_bridge, "create_replay_token") and callable(self.llm_bridge.create_replay_token):
-                    try:
-                        actual_token = self.llm_bridge.create_replay_token()
-                    except Exception:
-                        actual_token = None
+                if hasattr(self.llm_bridge, "resolve_with_trace") and callable(self.llm_bridge.resolve_with_trace):
+                    llm_res, actual_token = self.llm_bridge.resolve_with_trace(efp)
+                else:
+                    llm_res = self.llm_bridge.resolve(efp)
+                    # 1. resolve() 自体から排出された実際の推論証跡 K_actual を最優先採用
+                    if isinstance(llm_res, dict) and "replay_token" in llm_res and llm_res["replay_token"] is not None:
+                        actual_token = llm_res["replay_token"]
+                    elif hasattr(self.llm_bridge, "capture_counterfactual_context") and callable(self.llm_bridge.capture_counterfactual_context):
+                        try:
+                            actual_token = self.llm_bridge.capture_counterfactual_context(efp)
+                        except Exception:
+                            actual_token = None
+                    elif hasattr(self.llm_bridge, "create_replay_token") and callable(self.llm_bridge.create_replay_token):
+                        try:
+                            actual_token = self.llm_bridge.create_replay_token()
+                        except Exception:
+                            actual_token = None
 
             base_conf = self.config.llm_default_confidence
             outcome = "need_input"
