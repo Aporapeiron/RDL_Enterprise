@@ -98,6 +98,7 @@ class ConstraintBundle:
     convergence: float = 0.0      # 複数独立関係の収束一致
 
     is_structural_bridge: bool = False  # 構造的に唯一の接続橋か
+    inferred_node_ids: List[str] = field(default_factory=list)  # 暗黙・推論支援ノード群 (auxiliary / ξ evidence)
 
     def primary_node_id(self) -> Optional[str]:
         """代表ノード ID（最初の要素）"""
@@ -105,7 +106,7 @@ class ConstraintBundle:
 
     @property
     def supporting_node_ids(self) -> List[str]:
-        """束に含まれる支援・共起ノード群（代表ノード以外）"""
+        """束に含まれる確定支援ノード群（代表ノード以外）"""
         return self.node_ids[1:] if len(self.node_ids) > 1 else []
 
 
@@ -188,6 +189,35 @@ def _check_node_relation(node: object, candidate: object) -> str:
 
     # action_type は同一だが payload が異なる（未指定）場合は inferred_support（推論された支援）
     return "inferred_support"
+
+
+def _is_deterministic_replay_capable(bridge: Optional[object]) -> bool:
+    """
+    LLM推論器が「同一推論作用の再生（deterministic replay）」を契約として保証できるかを検証。
+    BASE v2.0: 「同じモデル名」ではなく「同じ推論作用」を保証する問題。
+    単なる seed + temperature=0 のみでは外部provider揺らぎを排除できないため不可。
+    明示的な can_replay() 契約、deterministic_replay、または固定 response snapshot hash を要求。
+    """
+    if bridge is None:
+        return False
+
+    # 契約 1: can_replay() メソッドを実装している場合
+    if hasattr(bridge, "can_replay") and callable(bridge.can_replay):
+        try:
+            return bool(bridge.can_replay())
+        except Exception:
+            return False
+
+    # 契約 2: deterministic_replay=True または is_deterministic=True
+    if getattr(bridge, "deterministic_replay", False) or getattr(bridge, "is_deterministic", False):
+        return True
+
+    # 契約 3: 有効な replay_snapshot_hash が設定されている場合
+    snap = str(getattr(bridge, "replay_snapshot_hash", getattr(bridge, "snapshot_hash", "none")))
+    if snap and snap != "none":
+        return True
+
+    return False
 
 
 def _bigram_jaccard(a: str, b: str) -> float:
@@ -581,19 +611,25 @@ class RelationConstraintLocator:
             except Exception:
                 pass
 
-        # 【健全かつ同一方向の支援ノードのみ束化 (Effective Support Only: BASE v2.0 §4.2)】
+        # 【健全かつ同一方向の支援ノードの層別化 (Explicit vs Inferred Support: BASE v2.0 §4.2)】
         # 1. 支援ノード自身の健全性検査（陳腐化・拒絶多数・無関係ノードは除外）
         # 2. 関係性・整合性検査（明示的 contradict / independent の除外、payload 極性矛盾の除外）
+        # 3. レイヤー分離:
+        #    - effective_supporting_nodes: 明示的 support (確定支援ノード → bundle.node_ids)
+        #    - inferred_supporting_nodes: 暗黙 inferred_support (推論支援ノード → bundle.inferred_node_ids, auxiliary/ξ)
         effective_supporting_nodes = []
+        inferred_supporting_nodes = []
         for s in candidate_supporting_nodes:
             if not is_support_node_eligible(s, query, cfg, now):
                 continue
             n_rel = _check_node_relation(node, s)
-            if n_rel not in ("support", "inferred_support"):
-                continue
-            effective_supporting_nodes.append(s)
+            if n_rel == "support":
+                effective_supporting_nodes.append(s)
+            elif n_rel == "inferred_support":
+                inferred_supporting_nodes.append(s)
 
         bundle_node_ids = [node.id] + [s.id for s in effective_supporting_nodes]
+        inferred_node_ids = [s.id for s in inferred_supporting_nodes]
 
         # 束としての総合拘束強度 (Bundle Constraint Score: BASE v2.0 §4.2)
         # 代表ノード単体だけでなく、束に含まれる健全な支援ノード群がどれだけ強固に裏付けているかを相乗評価
@@ -603,25 +639,34 @@ class RelationConstraintLocator:
         if primary_lineage:
             seen_lineages.add(primary_lineage)
 
+        # 確定支援ノード群 (rel_factor = 1.0)
         for s in effective_supporting_nodes:
             s_rel = _compute_relevance(query, s.trigger_pattern)
             s_src = _compute_source_strength(s.approval_count, s.rejection_count)
-
-            # 系譜（Lineage）重複検査: 同一マニュアル・同一上流の複製ルールは相乗効果を抑制
             s_lineage = getattr(s, "source_lineage", None) or getattr(s, "source_id", None)
             if s_lineage and s_lineage in seen_lineages:
-                lineage_factor = 0.15  # 同一起源の複製は 15% のみ（水増し防止）
+                lineage_factor = 0.15
             else:
-                lineage_factor = 1.0   # 独立した関係源からの支持
+                lineage_factor = 1.0
                 if s_lineage:
                     seen_lineages.add(s_lineage)
+            synergy_boost += 0.04 * s_rel * s_src * lineage_factor * 1.0
 
-            # 明示的 support は 1.0、推論支援 (inferred_support) は 0.5 に抑制
-            rel_factor = 1.0 if _check_node_relation(node, s) == "support" else 0.5
-            synergy_boost += 0.04 * s_rel * s_src * lineage_factor * rel_factor
+        # 推論支援ノード群 (rel_factor = 0.5: 弱い拘束証拠として寄与)
+        for s in inferred_supporting_nodes:
+            s_rel = _compute_relevance(query, s.trigger_pattern)
+            s_src = _compute_source_strength(s.approval_count, s.rejection_count)
+            s_lineage = getattr(s, "source_lineage", None) or getattr(s, "source_id", None)
+            if s_lineage and s_lineage in seen_lineages:
+                lineage_factor = 0.15
+            else:
+                lineage_factor = 1.0
+                if s_lineage:
+                    seen_lineages.add(s_lineage)
+            synergy_boost += 0.04 * s_rel * s_src * lineage_factor * 0.5
 
         synergy_boost = min(0.12, synergy_boost)
-        conv = min(1.0, conv + 0.05 * len(effective_supporting_nodes))
+        conv = min(1.0, conv + 0.05 * len(effective_supporting_nodes) + 0.02 * len(inferred_supporting_nodes))
 
         bundle_score = min(1.0, score + synergy_boost)
 
@@ -635,6 +680,7 @@ class RelationConstraintLocator:
             source_strength=src,
             convergence=conv,
             is_structural_bridge=False,
+            inferred_node_ids=inferred_node_ids,
         )
 
     def locate(
@@ -733,15 +779,18 @@ class RelationConstraintLocator:
                                         break
 
                 effective_supporting_nodes = []
+                inferred_supporting_nodes = []
                 for s in candidate_supporting_nodes:
                     if not is_support_node_eligible(s, query, cfg, now):
                         continue
                     n_rel = _check_node_relation(node, s)
-                    if n_rel not in ("support", "inferred_support"):
-                        continue
-                    effective_supporting_nodes.append(s)
+                    if n_rel == "support":
+                        effective_supporting_nodes.append(s)
+                    elif n_rel == "inferred_support":
+                        inferred_supporting_nodes.append(s)
 
                 bundle_node_ids = [node.id] + [s.id for s in effective_supporting_nodes]
+                inferred_node_ids = [s.id for s in inferred_supporting_nodes]
 
                 synergy_boost = 0.0
                 seen_lineages = set()
@@ -761,8 +810,21 @@ class RelationConstraintLocator:
                         if s_lineage:
                             seen_lineages.add(s_lineage)
 
-                    rel_factor = 1.0 if _check_node_relation(node, s) == "support" else 0.5
-                    synergy_boost += 0.04 * s_rel * s_src * lineage_factor * rel_factor
+                    synergy_boost += 0.04 * s_rel * s_src * lineage_factor * 1.0
+
+                for s in inferred_supporting_nodes:
+                    s_rel = _compute_relevance(query, s.trigger_pattern)
+                    s_src = _compute_source_strength(s.approval_count, s.rejection_count)
+
+                    s_lineage = getattr(s, "source_lineage", None) or getattr(s, "source_id", None)
+                    if s_lineage and s_lineage in seen_lineages:
+                        lineage_factor = 0.15
+                    else:
+                        lineage_factor = 1.0
+                        if s_lineage:
+                            seen_lineages.add(s_lineage)
+
+                    synergy_boost += 0.04 * s_rel * s_src * lineage_factor * 0.5
 
                 synergy_boost = min(0.12, synergy_boost)
 
@@ -776,8 +838,9 @@ class RelationConstraintLocator:
                     freshness=d.get("freshness", 0.0),
                     authority_weight=d.get("authority_weight", 0.0),
                     source_strength=d.get("source_strength", 0.0),
-                    convergence=min(1.0, d.get("convergence", 0.0) + 0.05 * len(effective_supporting_nodes)),
+                    convergence=min(1.0, d.get("convergence", 0.0) + 0.05 * len(effective_supporting_nodes) + 0.02 * len(inferred_supporting_nodes)),
                     is_structural_bridge=False,
+                    inferred_node_ids=inferred_node_ids,
                 ))
 
         # --- (b) 構造的橋の高速検出 (O(M * keys)) ---
@@ -897,15 +960,8 @@ class RuptureProbe:
             used_llm_bridge = bridge is not None and (f_base.cost_tier == 3 or f_without.cost_tier == 3)
 
             if used_llm_bridge:
-                is_deterministic = False
-                # 強い条件: deterministic_replay=True、replay_snapshot_hash が有効、または is_deterministic=True
-                if getattr(bridge, "deterministic_replay", False) or getattr(bridge, "is_deterministic", False):
-                    is_deterministic = True
-                elif getattr(bridge, "replay_snapshot_hash", getattr(bridge, "snapshot_hash", "none")) != "none":
-                    is_deterministic = True
-                elif getattr(bridge, "seed", None) is not None and getattr(bridge, "temperature", 0.0) == 0.0:
-                    is_deterministic = True
-                if not is_deterministic:
+                # 明示的な決定論的リプレイ能力（Replay Contract）を検証
+                if not _is_deterministic_replay_capable(bridge):
                     rupture_effect = None
                 else:
                     diff = 0.0

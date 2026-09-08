@@ -820,7 +820,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
 
         graph = MBGraph()
         n1 = MBNode(id="node_pay_1", domain="finance", trigger_pattern={"exact_keys": ["請求書支払"]}, action_template={"type": "direct_reply", "payload": "A"})
-        n2 = MBNode(id="node_pay_2", domain="finance", trigger_pattern={"exact_keys": ["請求書支払", "振込"]}, action_template={"type": "direct_reply", "payload": "B"})
+        n2 = MBNode(id="node_pay_2", domain="finance", trigger_pattern={"exact_keys": ["請求書支払", "振込"]}, action_template={"type": "direct_reply", "payload": "A"})
         n3 = MBNode(id="node_pay_3", domain="finance", trigger_pattern={"exact_keys": ["経費精算"]}, action_template={"type": "direct_reply", "payload": "C"})
         n4 = MBNode(id="node_hr_1", domain="hr", trigger_pattern={"exact_keys": ["有給休暇"]}, action_template={"type": "direct_reply", "payload": "D"})
 
@@ -1706,11 +1706,13 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
         ctx = ConstraintContext(efp=efp, active_domain="finance")
 
         bundle = locator.locate_bundle_for_node(graph, n_main, ctx)
-        self.assertIn("n_inferred", bundle.node_ids)
+        # inferred_support は bundle.node_ids (確定束) ではなく bundle.inferred_node_ids (推論束) に分離されること
+        self.assertNotIn("n_inferred", bundle.node_ids)
+        self.assertIn("n_inferred", bundle.inferred_node_ids)
 
         probe = RuptureProbe()
         result = probe.probe(bundle, graph, ctx)
-        # inferred_support は関係が未確定なため、Probe では unresolved (ξ) に留まること
+        # 代表ノードが未承認 (0) であり、inferred_support は単独で survive を支えないため unresolved に留まること
         self.assertEqual(result.verdict, "unresolved")
 
     def test_llm_bridge_identity_includes_replay_snapshot_hash(self):
@@ -1755,6 +1757,115 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
         # replay_snapshot_hash が有効な bridge は決定性ありとみなされ、rupture_effect が実測されること
         efp = _make_efp("PC手配", category="it")
         ctx = ConstraintContext(efp=efp, active_domain="it", frozen_context=frozen_ctx)
+        bundle = ConstraintBundle(node_ids=["n1"], locus_type="strong", constraint_score=0.8, freshness=0.9, relevance=0.8)
+        probe = RuptureProbe()
+        res = probe.probe(bundle, graph, ctx)
+        self.assertIsNotNone(res.rupture_effect)
+
+    def test_inferred_support_separated_in_bundle_does_not_break_healthy_bundle(self):
+        """健全な代表ノードがある場合、inferred_support が存在しても内部亀裂で道連れにならず survive すること"""
+        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.constraint import RelationConstraintLocator, RuptureProbe, ConstraintContext
+
+        graph = MBGraph()
+        # 代表ノード: 健全 (approval_count = 15)
+        n_main = MBNode(
+            id="n_main_healthy",
+            domain="finance",
+            trigger_pattern={"exact_keys": ["請求書支払"]},
+            action_template={"type": "direct_reply", "payload": "請求書支払の手順です"},
+            approval_count=15,
+        )
+        # 支援候補: 未指定だが同一 action_type (payload 違い -> inferred_support)
+        n_aux = MBNode(
+            id="n_aux_inferred",
+            domain="finance",
+            trigger_pattern={"exact_keys": ["請求書支払", "振込"]},
+            action_template={"type": "direct_reply", "payload": "振込支払の手順です"},
+            approval_count=5,
+        )
+        graph.add_or_update(n_main)
+        graph.add_or_update(n_aux)
+
+        locator = RelationConstraintLocator()
+        efp = _make_efp("請求書支払", category="finance")
+        ctx = ConstraintContext(efp=efp, active_domain="finance")
+
+        bundle = locator.locate_bundle_for_node(graph, n_main, ctx)
+        # 確定束 (node_ids) には n_main のみ、推論束 (inferred_node_ids) に n_aux が分離されていること
+        self.assertEqual(bundle.node_ids, ["n_main_healthy"])
+        self.assertEqual(bundle.inferred_node_ids, ["n_aux_inferred"])
+
+        probe = RuptureProbe()
+        result = probe.probe(bundle, graph, ctx)
+        # inferred_support の存在によって内部亀裂にならず、代表ノードの実績により正常に survive すること
+        self.assertEqual(result.verdict, "survive")
+
+    def test_level3_rejects_plain_seed_without_replay_contract(self):
+        """単なる seed/temperature=0 のみで can_replay も snapshot もない推論器は、決定性保証なしとして rupture_effect=None とすること"""
+        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.constraint import RuptureProbe, ConstraintBundle, ConstraintContext
+        from rdl_enterprise.snapshot import FrozenInterpretationContext
+
+        class PlainSeedBridge:
+            def __init__(self):
+                self.model_name = "gpt-4"
+                self.seed = 12345
+                self.temperature = 0.0
+                # can_replay なし、replay_snapshot_hash なし、deterministic_replay なし
+            def resolve(self, efp):
+                return {"type": "direct_reply", "payload": "plain_seed_reply"}
+
+        graph = MBGraph()
+        n = MBNode(id="n1", domain="cs", trigger_pattern={"exact_keys": ["契約解除"]}, action_template={"type": "direct_reply", "payload": "解約手順"})
+        graph.add_or_update(n)
+        graph.freeze()
+
+        bridge = PlainSeedBridge()
+        frozen_ctx = FrozenInterpretationContext(
+            mb_version="v1",
+            mb_content_hash="hash1",
+            frozen_mb=graph,
+            llm_bridge=bridge,
+            target_domain="cs",
+        )
+        efp = _make_efp("契約解除の特例", category="cs")
+        ctx = ConstraintContext(efp=efp, active_domain="cs", frozen_context=frozen_ctx)
+        bundle = ConstraintBundle(node_ids=["n1"], locus_type="strong", constraint_score=0.8, freshness=0.9, relevance=0.8)
+        probe = RuptureProbe()
+        res = probe.probe(bundle, graph, ctx)
+        # リプレイ能力の契約がないため None (ξ) として安全側に倒す
+        self.assertIsNone(res.rupture_effect)
+
+    def test_level3_accepts_can_replay_contract(self):
+        """can_replay() -> True メソッド契約を持つ推論器は決定性ありと認定され、rupture_effect が実測されること"""
+        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.constraint import RuptureProbe, ConstraintBundle, ConstraintContext
+        from rdl_enterprise.snapshot import FrozenInterpretationContext
+
+        class ReplayableBridge:
+            def __init__(self):
+                self.model_name = "custom-llm"
+            def can_replay(self):
+                return True
+            def resolve(self, efp):
+                return {"type": "direct_reply", "payload": "replayed_contract_reply"}
+
+        graph = MBGraph()
+        n = MBNode(id="n1", domain="cs", trigger_pattern={"exact_keys": ["契約解除"]}, action_template={"type": "direct_reply", "payload": "解約手順"})
+        graph.add_or_update(n)
+        graph.freeze()
+
+        bridge = ReplayableBridge()
+        frozen_ctx = FrozenInterpretationContext(
+            mb_version="v1",
+            mb_content_hash="hash1",
+            frozen_mb=graph,
+            llm_bridge=bridge,
+            target_domain="cs",
+        )
+        efp = _make_efp("契約解除の特例", category="cs")
+        ctx = ConstraintContext(efp=efp, active_domain="cs", frozen_context=frozen_ctx)
         bundle = ConstraintBundle(node_ids=["n1"], locus_type="strong", constraint_score=0.8, freshness=0.9, relevance=0.8)
         probe = RuptureProbe()
         res = probe.probe(bundle, graph, ctx)

@@ -98,6 +98,7 @@ class LLMBridgeIdentity:
     seed: Optional[int] = None
     deterministic_replay: bool = False
     replay_snapshot_hash: str = "none"
+    can_replay: bool = False
 
     @classmethod
     def from_bridge(cls, bridge: Optional[Any]) -> "LLMBridgeIdentity":
@@ -109,7 +110,19 @@ class LLMBridgeIdentity:
         seed = getattr(bridge, "seed", None)
         det_replay = bool(getattr(bridge, "deterministic_replay", False))
         snapshot_hash = str(getattr(bridge, "replay_snapshot_hash", getattr(bridge, "snapshot_hash", "none")))
-        cfg_str = f"{m_name}:{temp}:{sp_ver}:{seed}:{det_replay}:{snapshot_hash}"
+
+        can_rep = False
+        if hasattr(bridge, "can_replay") and callable(bridge.can_replay):
+            try:
+                can_rep = bool(bridge.can_replay())
+            except Exception:
+                can_rep = False
+        elif det_replay and snapshot_hash != "none":
+            can_rep = True
+        elif getattr(bridge, "is_deterministic", False):
+            can_rep = True
+
+        cfg_str = f"{m_name}:{temp}:{sp_ver}:{seed}:{det_replay}:{snapshot_hash}:{can_rep}"
         c_hash = hashlib.sha256(cfg_str.encode("utf-8")).hexdigest()[:16]
         return cls(
             model_name=str(m_name),
@@ -119,6 +132,7 @@ class LLMBridgeIdentity:
             seed=seed,
             deterministic_replay=det_replay,
             replay_snapshot_hash=snapshot_hash,
+            can_replay=can_rep,
         )
 
 
