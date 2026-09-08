@@ -117,7 +117,9 @@ graph TD
 * **証拠極性の分離（Evidence Polarity Separation: 支持 vs 反証）**:
   * 証拠タイムスタンプを肯定的支持証拠（`last_support_at`）と否定的反証証拠（`last_opposing_at`）に分離。
   * 失敗・差し戻し（FAILURE / REJECTED）は `last_opposing_at` を更新し、`last_support_at` は保存されるため、失敗によって既存拘束 $C_{rel}$ の支持鮮度（`freshness`）が不当に上昇する逆転現象を根絶。
-  * 過去の反証実績は $M_B$ 内部の「歴史的反証拘束シグナル（`historical_opposing_signal`）」として蓄積・計算され、破断検査（`RuptureProbe`）の内部亀裂判定に用いられる。
+  * **厳格なフォールバック排除（Strict Polarity Isolation）**: `constraint.py` における支持鮮度（`freshness`）の計算は、すべて `last_support_at` のみから算出され、`last_updated` への暗黙フォールバック（対向のみノードが `last_opposing_at` 経由で支持鮮度を得る抜け穴）を完全に排除。`last_support_at` が未指定（`None`）のノードは即座に `freshness = 0.0` として計算される。
+  * **フェイルクローズなレガシー移行 & セッター遮断**: 旧データ取り込み時、実績ゼロ（`success=0, failure=0`）のノードに対して勝手に `last_support_at` を捏造することを禁止（公理 B5）。起源不明のタイムスタンプは `legacy_evidence_at`（$\xi$）として保持し、支持鮮度には寄与させない。またレガシーセッター（`@last_evidence_at.setter`, `@last_updated.setter`）は `AttributeError` を送出する読み取り専用プロパティとし、極性曖昧な代入を型・契約レベルで遮断。
+  * **設定化された反証破断検査（Rupture Probe Thresholds）**: 過去の反証実績は $M_B$ 内部の「歴史的反証拘束シグナル（`historical_opposing_signal`）」として蓄積・計算され、`ConstraintConfig` の明示パラメータ（`rupture_opposing_freshness_threshold: 0.7`, `rupture_opposing_signal_threshold: 1.2`, `rupture_opposing_support_freshness_cap: 0.5`）に基づいて破断検査（`RuptureProbe`）の内部亀裂判定に用いられる。
   * ※ 外界後続入力 $EFP'$ の拘束 $C'$ と、過去の反証履歴（$M_B$ 状態）は厳格に分離され、$C'$ に歴史的反証シグナルを混同しない（SPEC公理整合）。
 
 ### 3.4 権威的方針注入（Authority Injection）の分離
@@ -183,7 +185,7 @@ $H_{total} \ge \theta_{eff}$ に達した瞬間、巡航相（Cruise）から再
 | **Test 10** | TIMEOUTの観測保留 | タイムアウト案件（UNKNOWN）において、ノードの `failure_count` や `confidence` が悪化せず、`unresolved_count` として観測保留記録されること。 |
 | **Test 11** | キャッシュ移行の起源明示 | 旧形式キャッシュのインポート時に `source_mb_version` の明示を義務付け、現行バージョンへの不当な自己昇格が防止されること。 |
 | **Test 12** | 意味的鮮度と残差の分離 | タイムアウト案件（UNKNOWN）において、ノードの `last_evidence_at` および `content_hash` が保存され、不当な鮮度リフレッシュが発生しないこと。 |
-| **Test 13** | 証拠極性分離と反証シグナル | 失敗・差し戻し発生時に `last_opposing_at` が更新され、`last_support_at` は保存されて支持鮮度の上昇が防止されること。また歴史的反証シグナルが破断検査に反映され、$C'$ と分離されること。 |
+| **Test 13** | 証拠極性分離と反証シグナル | 失敗・差し戻し発生時に `last_opposing_at` が更新され、`last_support_at` は保存されて支持鮮度の上昇が防止されること。支持鮮度は `last_support_at` のみから算出され対向のみノードで 0.0 となること、レガシーセッターへの代入が `AttributeError` となること、実績ゼロのレガシーノードで極性捏造を行わないこと、歴史的反証シグナルが破断検査に反映され $C'$ と分離されること。 |
 
 ---
 

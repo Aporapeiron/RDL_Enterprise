@@ -30,9 +30,13 @@ def _make_node(
     failure_count: int = 0,
     rejection_count: int = 0,
     last_updated: str = None,
+    last_support_at: str = None,
+    last_opposing_at: str = None,
 ) -> MBNode:
-    if last_updated is None:
-        last_updated = datetime.utcnow().isoformat()
+    if last_support_at is None and last_updated is not None:
+        last_support_at = last_updated
+    elif last_support_at is None and last_updated is None:
+        last_support_at = datetime.utcnow().isoformat()
     return MBNode(
         id=node_id,
         domain=domain,
@@ -44,7 +48,8 @@ def _make_node(
         approval_count=approval_count,
         failure_count=failure_count,
         rejection_count=rejection_count,
-        last_updated=last_updated,
+        last_support_at=last_support_at,
+        last_opposing_at=last_opposing_at,
     )
 
 
@@ -1076,7 +1081,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
             action_template={"type": "direct_reply", "payload": "再起動手順"},
             confidence=0.6,
             approval_count=0,
-            last_updated=now.isoformat(),
+            last_support_at=now.isoformat(),
         )
         # 支援ノードA: 承認数100だが、500日前の更新（freshness < 0.2 で陳腐化）
         n_stale = MBNode(

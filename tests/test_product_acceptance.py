@@ -363,7 +363,7 @@ class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
 
         # 過去の証拠更新時刻（100日前）に設定
         stale_evidence_time = (datetime.now(timezone.utc) - timedelta(days=100)).isoformat()
-        node.last_evidence_at = stale_evidence_time
+        node.last_support_at = stale_evidence_time
         node.last_observed_at = None
         initial_unresolved = node.unresolved_count
 
@@ -432,8 +432,9 @@ class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
         self.assertEqual(node.failure_count, 1)
         self.assertEqual(node.rejection_count, 1)
         self.assertIsNotNone(node.last_opposing_at)
+        opposing_at_after_failure = node.last_opposing_at
 
-        # 支持極性 (SUPPORT) は不変（100日前のまま）であること
+        # 支持極性 (SUPPORT) は不変（250日前のまま）であること
         self.assertEqual(node.last_support_at, stale_support_time)
 
         # 失敗により支持鮮度 (Core freshness) が不当に上昇していないことの確認！
@@ -451,7 +452,7 @@ class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
 
         # 観測タイムスタンプのみ更新され、支持証拠・反証証拠のタイムスタンプは保存されること
         self.assertEqual(node.last_support_at, stale_support_time)
-        self.assertEqual(node.last_opposing_at, bundle_after_failure.core.opposing_freshness and node.last_opposing_at)
+        self.assertEqual(node.last_opposing_at, opposing_at_after_failure)
 
         # 3. 成功確認 (SUCCESS) による支持証拠の更新
         efp_q3 = BusinessInput("T_POLARITY_03", "U3", "workflow", "稟議申請の方法")
@@ -462,6 +463,42 @@ class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
         self.assertNotEqual(node.last_support_at, stale_support_time)
         bundle_after_success = locator.locate_bundle_for_node(runtime.mb_graph, node, ctx_before)
         self.assertGreater(bundle_after_success.freshness, 0.9)
+
+        # 4. 対向のみノード (last_support_at=None, last_opposing_at=now) のフォールバック遮断検査
+        opposing_only_node = MBNode(
+            id="node_opposing_only",
+            domain="workflow",
+            trigger_pattern={"exact_keys": ["テスト失敗案件"]},
+            action_template={"type": "direct_reply", "payload": "NG"},
+            last_support_at=None,
+            last_opposing_at=datetime.now(timezone.utc).isoformat(),
+        )
+        bundle_opp_only = locator.locate_bundle_for_node(runtime.mb_graph, opposing_only_node, ctx_before)
+        # フォールバック抜け穴が塞がれ、支持鮮度が厳格に 0.0 であること！
+        self.assertEqual(bundle_opp_only.freshness, 0.0)
+        self.assertGreater(bundle_opp_only.opposing_freshness, 0.9)
+
+        # 5. 読み取り専用セッター契約検査 (AttributeError 送出)
+        with self.assertRaises(AttributeError):
+            node.last_evidence_at = datetime.now(timezone.utc).isoformat()
+        with self.assertRaises(AttributeError):
+            node.last_updated = datetime.now(timezone.utc).isoformat()
+
+        # 6. 実績ゼロのレガシーノードのフェイルクローズ検査 (勝手な正極性捏造の排除)
+        legacy_node = MBNode(
+            id="node_legacy_unverified",
+            domain="workflow",
+            trigger_pattern={"exact_keys": ["レガシー案件"]},
+            action_template={"type": "direct_reply", "payload": "legacy"},
+            last_updated="2026-09-01T00:00:00Z",
+            success_count=0,
+            failure_count=0,
+            approval_count=0,
+            rejection_count=0,
+        )
+        self.assertIsNone(legacy_node.last_support_at)
+        self.assertIsNone(legacy_node.last_opposing_at)
+        self.assertEqual(legacy_node.legacy_evidence_at, "2026-09-01T00:00:00Z")
 
 
 if __name__ == "__main__":

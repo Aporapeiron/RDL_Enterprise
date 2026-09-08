@@ -19,7 +19,8 @@
       "approval_count": 0,
       "rejection_count": 0,
       "created_at": "2026-09-07T00:00:00Z",
-      "last_updated": "2026-09-07T00:00:00Z"
+      "last_updated": "2026-09-07T00:00:00Z",
+      "last_support_at": "2026-09-07T00:00:00Z"
     },
     "node_wifi_setup": {
       "id": "node_wifi_setup",
@@ -39,7 +40,8 @@
       "approval_count": 0,
       "rejection_count": 0,
       "created_at": "2026-09-07T00:00:00Z",
-      "last_updated": "2026-09-07T00:00:00Z"
+      "last_updated": "2026-09-07T00:00:00Z",
+      "last_support_at": "2026-09-07T00:00:00Z"
     },
     "node_vpn_general": {
       "id": "node_vpn_general",
@@ -59,7 +61,8 @@
       "approval_count": 0,
       "rejection_count": 0,
       "created_at": "2026-09-07T00:00:00Z",
-      "last_updated": "2026-09-07T00:00:00Z"
+      "last_updated": "2026-09-07T00:00:00Z",
+      "last_support_at": "2026-09-07T00:00:00Z"
     },
     "node_admin_privilege": {
       "id": "node_admin_privilege",
@@ -79,7 +82,8 @@
       "approval_count": 0,
       "rejection_count": 0,
       "created_at": "2026-09-07T00:00:00Z",
-      "last_updated": "2026-09-07T00:00:00Z"
+      "last_updated": "2026-09-07T00:00:00Z",
+      "last_support_at": "2026-09-07T00:00:00Z"
     },
     "node_workflow_app": {
       "id": "node_workflow_app",
@@ -99,7 +103,8 @@
       "approval_count": 3,
       "rejection_count": 0,
       "created_at": "2026-09-07T00:00:00Z",
-      "last_updated": "2026-09-07T00:00:00Z"
+      "last_updated": "2026-09-07T00:00:00Z",
+      "last_support_at": "2026-09-07T00:00:00Z"
     }
   }
 }

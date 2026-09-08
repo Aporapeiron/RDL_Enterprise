@@ -188,12 +188,12 @@ class MBNode:
                 # 失敗・拒絶実績のみが存在する場合は OPPOSE 証拠として移行
                 self.last_opposing_at = legacy_val
             else:
-                # 実績ゼロで起源極性が不明な初期ノード（seedなど）は極性を捏造せず legacy_evidence_at / last_support_at へ安全に配置
-                # ※初期ノードは作成時コミット（正の初期知識）とみなし last_support_at を設定
-                self.last_support_at = legacy_val
+                # 実績ゼロで起源極性が不明なレガシーノード:
+                # 極性を捏造せず legacy_evidence_at (ξ) としてのみ保持し、last_support_at / last_opposing_at は None のままとする
+                pass
             self.legacy_evidence_at = legacy_val
 
-        # 新規作成時（いずれも未指定）の初期化:
+        # 新規作成時（legacy も polarity も未指定）の初期化（作成時コミットメント）:
         if self.last_support_at is None and self.last_opposing_at is None and self.legacy_evidence_at is None:
             self.last_support_at = self.created_at
 
@@ -212,9 +212,10 @@ class MBNode:
 
     @last_evidence_at.setter
     def last_evidence_at(self, value: Any):
-        iso_val = value.isoformat() if isinstance(value, datetime) else str(value)
-        # 後方互換代入: 既存コードやテストからの代入時は支持証拠時刻として反映
-        self.last_support_at = iso_val
+        raise AttributeError(
+            "last_evidence_at は読み取り専用です。極性に応じた更新 "
+            "(record_success, record_failure, record_unresolved, last_support_at, last_opposing_at) を使用してください。"
+        )
 
     @property
     def last_updated(self) -> str:
@@ -223,10 +224,10 @@ class MBNode:
 
     @last_updated.setter
     def last_updated(self, value: Any):
-        if isinstance(value, datetime):
-            self.last_support_at = value.isoformat()
-        else:
-            self.last_support_at = str(value)
+        raise AttributeError(
+            "last_updated は読み取り専用です。極性に応じた更新 "
+            "(record_success, record_failure, record_unresolved, last_support_at, last_opposing_at) を使用してください。"
+        )
 
     def __setattr__(self, name: str, value: Any):
         if getattr(self, "is_frozen", False) and name != "is_frozen":

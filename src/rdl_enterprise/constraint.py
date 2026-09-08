@@ -46,6 +46,9 @@ class ConstraintConfig:
     # 破断検査（RuptureProbe）パラメータ
     rupture_freshness_threshold: float = 0.2     # freshness がこれ未満なら break 候補
     rupture_rejection_ratio_threshold: float = 0.4  # rejection_count / total がこれ以上なら break 候補
+    rupture_opposing_freshness_threshold: float = 0.7   # 反証証拠がこれより新鮮
+    rupture_opposing_signal_threshold: float = 1.2      # 蓄積反証シグナルがこれを超過
+    rupture_opposing_support_freshness_cap: float = 0.5 # 支持証拠鮮度がこれ未満
 
     # 生存判定 (Survive) のための摂動・実績閾値
     # (B4/B5: 検査していない・実績が希薄なものは survive と呼ばず unresolved とする)
@@ -664,7 +667,7 @@ def is_support_node_eligible(
     if s_rel < 0.3:
         return False
 
-    support_time = getattr(support_node, "last_support_at", None) or getattr(support_node, "last_updated", None)
+    support_time = getattr(support_node, "last_support_at", None)
     s_fresh = _compute_freshness(support_time, cfg.freshness_half_life_days, now)
     if s_fresh < cfg.rupture_freshness_threshold:
         return False
@@ -715,7 +718,7 @@ class RelationConstraintLocator:
         rel = _compute_relevance(query, node.trigger_pattern)
 
         # 支持証拠鮮度 (Core freshness): last_support_at 由来
-        support_time = getattr(node, "last_support_at", None) or getattr(node, "last_updated", None)
+        support_time = getattr(node, "last_support_at", None)
         fresh = _compute_freshness(support_time, cfg.freshness_half_life_days, now)
 
         # 反証証拠鮮度 & 歴史的反証拘束シグナル (Opposing Signal)
@@ -878,7 +881,7 @@ class RelationConstraintLocator:
 
         for n in nodes:
             rel = _compute_relevance(query, n.trigger_pattern)
-            support_time = getattr(n, "last_support_at", None) or getattr(n, "last_updated", None)
+            support_time = getattr(n, "last_support_at", None)
             fresh = _compute_freshness(support_time, cfg.freshness_half_life_days, now)
             auth = _compute_authority_weight(n.authority_level)
             src = _compute_source_strength(n.approval_count, n.rejection_count)
@@ -995,7 +998,7 @@ class RelationConstraintLocator:
             keys = node.trigger_pattern.get("exact_keys", [])
             rel = _compute_relevance(query, node.trigger_pattern)
 
-            support_time = getattr(node, "last_support_at", None) or getattr(node, "last_updated", None)
+            support_time = getattr(node, "last_support_at", None)
             fresh = _compute_freshness(support_time, cfg.freshness_half_life_days, now)
 
             opp_time = getattr(node, "last_opposing_at", None)
@@ -1509,14 +1512,20 @@ class RuptureProbe:
                     )
 
         # 蓄積された歴史的反証シグナル (historical_opposing_signal) による破断検査
-        # 過去の反証が新鮮（opposing_freshness > 0.7）かつ支持証拠が陳腐（freshness < 0.5）で、
-        # 反証シグナルが閾値(1.2)を超過している場合は内部亀裂として破断判定する
-        if getattr(bundle, "historical_opposing_signal", 0.0) > 1.2 and bundle.freshness < 0.5:
+        # 過去の反証が新鮮（opposing_freshness > cfg.rupture_opposing_freshness_threshold）かつ
+        # 支持証拠が陳腐（freshness < cfg.rupture_opposing_support_freshness_cap）で、
+        # 反証シグナルが閾値(cfg.rupture_opposing_signal_threshold)を超過している場合は内部亀裂として破断判定する
+        if (
+            getattr(bundle, "opposing_freshness", 0.0) > cfg.rupture_opposing_freshness_threshold
+            and getattr(bundle, "historical_opposing_signal", 0.0) > cfg.rupture_opposing_signal_threshold
+            and bundle.freshness < cfg.rupture_opposing_support_freshness_cap
+        ):
             return _make_result(
                 verdict="break",
                 opposing_strength=1.0 + bundle.historical_opposing_signal,
                 rupture_reason=(
                     f"蓄積反証シグナル超過による破断 (opposing_signal={bundle.historical_opposing_signal:.2f}, "
+                    f"opposing_freshness={getattr(bundle, 'opposing_freshness', 0.0):.2f}, "
                     f"support_freshness={bundle.freshness:.2f})"
                 ),
             )
