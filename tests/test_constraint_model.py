@@ -1510,8 +1510,134 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
         self.assertNotIn("n_explicit_contradict", bundle.node_ids)
         self.assertNotIn("n_polarity_contra", bundle.node_ids)
 
+    def test_level2_respects_skip_constraint_boost(self):
+        """Level 2 推論時に skip_constraint_boost=True で _constraint_boost がスキップされること (再帰防止)"""
+        from rdl_enterprise.cascade import InterpCascade, CascadeConfig
+        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.snapshot import BusinessInput
+
+        graph = MBGraph()
+        # Level 2 の bigram マッチとなるノード (完全一致キーではなく部分的一致)
+        node = MBNode(
+            id="n_l2",
+            domain="finance",
+            trigger_pattern={"exact_keys": ["定期代精算申請"]},
+            action_template={"type": "direct_reply", "payload": "定期代の申請です"},
+            confidence=0.5,
+            approval_count=10,
+        )
+        graph.add_or_update(node)
+
+        cascade = InterpCascade(graph, config=CascadeConfig(level2_threshold=0.3))
+        efp = _make_efp("定期代精算の手順を教えて", category="finance")
+
+        # skip_constraint_boost=False (通常): boost が加算される
+        pred_normal = cascade.interpret(efp, skip_constraint_boost=False)
+        self.assertEqual(pred_normal.cost_tier, 2)
+
+        # skip_constraint_boost=True: boost が加算されず 0.0
+        pred_skip = cascade.interpret(efp, skip_constraint_boost=True)
+        self.assertEqual(pred_skip.cost_tier, 2)
+        # boost がスキップされたため confidence は通常時以下
+        self.assertLessEqual(pred_skip.confidence, pred_normal.confidence)
+
+    def test_explicit_unknown_relation_excluded_from_bundle(self):
+        """明示的に unknown と指定されたノードが支援束から除外されること (B4/B5: ξとして保持)"""
+        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.constraint import RelationConstraintLocator, ConstraintContext, _check_node_relation
+
+        graph = MBGraph()
+        n_main = MBNode(
+            id="n_primary",
+            domain="sales",
+            trigger_pattern={"exact_keys": ["値引き申請"]},
+            action_template={"type": "direct_reply", "payload": "値引き承認手順"},
+            node_relations={"n_unknown_cand": "unknown"},
+            approval_count=10,
+        )
+        n_unknown_cand = MBNode(
+            id="n_unknown_cand",
+            domain="sales",
+            trigger_pattern={"exact_keys": ["値引き申請"]},
+            action_template={"type": "direct_reply", "payload": "値引き承認手順"},
+            approval_count=10,
+        )
+        graph.add_or_update(n_main)
+        graph.add_or_update(n_unknown_cand)
+
+        # _check_node_relation が "unknown" を返すこと
+        self.assertEqual(_check_node_relation(n_main, n_unknown_cand), "unknown")
+
+        locator = RelationConstraintLocator()
+        efp = _make_efp("値引き申請", category="sales")
+        ctx = ConstraintContext(efp=efp, active_domain="sales")
+
+        bundle = locator.locate_bundle_for_node(graph, n_main, ctx)
+        self.assertEqual(bundle.primary_node_id(), "n_primary")
+        self.assertNotIn("n_unknown_cand", bundle.node_ids)
+
+    def test_level3_cut_requires_deterministic_replay(self):
+        """Level 3 (LLM Bridge) において決定性保証がない場合は切断変化量を None (ξ) とすること"""
+        from rdl_enterprise.cascade import InterpCascade, CascadeConfig
+        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.constraint import RuptureProbe, ConstraintBundle, ConstraintContext
+        from rdl_enterprise.snapshot import FrozenInterpretationContext
+
+        class NonDeterministicMockBridge:
+            def __init__(self):
+                self.call_count = 0
+            def resolve(self, efp):
+                self.call_count += 1
+                return {"type": f"reply_{self.call_count}", "payload": f"content_{self.call_count}"}
+
+        class DeterministicMockBridge:
+            def __init__(self):
+                self.deterministic_replay = True
+            def resolve(self, efp):
+                return {"type": "direct_reply", "payload": "fixed_deterministic_response"}
+
+        # 1. 非決定性 Bridge の場合: rupture_effect は None (測定不能)
+        graph = MBGraph()
+        # 束ノードを登録 (完全一致キー)
+        n_cut = MBNode(id="n_cut_me", domain="hr", trigger_pattern={"exact_keys": ["特殊照会"]}, action_template={"type": "direct_reply", "payload": "A"}, approval_count=5)
+        graph.add_or_update(n_cut)
+        graph.freeze()
+
+        bridge_non_det = NonDeterministicMockBridge()
+        frozen_ctx_non_det = FrozenInterpretationContext(
+            mb_version="v1",
+            mb_content_hash="hash1",
+            frozen_mb=graph,
+            llm_bridge=bridge_non_det,
+            target_domain="hr",
+        )
+        efp = _make_efp("特殊照会", category="hr")
+        ctx_non_det = ConstraintContext(efp=efp, active_domain="hr", frozen_context=frozen_ctx_non_det)
+
+        bundle = ConstraintBundle(node_ids=["n_cut_me"], locus_type="strong", constraint_score=0.8, freshness=0.9, relevance=0.8)
+        probe = RuptureProbe()
+
+        res_non_det = probe.probe(bundle, graph, ctx_non_det)
+        # 非決定性 bridge により Level 3 予測の再現性が保証されないため None
+        self.assertIsNone(res_non_det.rupture_effect)
+
+        # 2. 決定性 Bridge (deterministic_replay=True) の場合: rupture_effect が実測される
+        bridge_det = DeterministicMockBridge()
+        frozen_ctx_det = FrozenInterpretationContext(
+            mb_version="v1",
+            mb_content_hash="hash1",
+            frozen_mb=graph,
+            llm_bridge=bridge_det,
+            target_domain="hr",
+        )
+        ctx_det = ConstraintContext(efp=efp, active_domain="hr", frozen_context=frozen_ctx_det)
+        res_det = probe.probe(bundle, graph, ctx_det)
+        self.assertIsNotNone(res_det.rupture_effect)
+        self.assertGreater(res_det.rupture_effect, 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
 

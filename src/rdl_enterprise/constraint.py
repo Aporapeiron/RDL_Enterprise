@@ -168,6 +168,8 @@ def _check_node_relation(node: object, candidate: object) -> str:
         return "contradict"
     if n_rel == "independent" or c_rel == "independent":
         return "independent"
+    if n_rel == "unknown" or c_rel == "unknown":
+        return "unknown"
     if n_rel == "support" or c_rel == "support":
         return "support"
 
@@ -878,16 +880,42 @@ class RuptureProbe:
             f_base = cascade_base.interpret(ctx.efp, skip_constraint_boost=True)
             f_without = cascade_cut.interpret(ctx.efp, exclude_node_ids=bundle.node_ids, skip_constraint_boost=True)
 
-            # 除去摂動による F の変化量 (rupture_effect: Δ(F_base, F_without)) を定量化
-            diff = 0.0
-            if f_base.action_type != f_without.action_type:
-                diff += 0.4
-            if f_base.matched_node_id != f_without.matched_node_id:
-                diff += 0.3
-            diff += 0.2 * abs(f_base.confidence - f_without.confidence)
-            if f_base.content != f_without.content:
-                diff += 0.1
-            rupture_effect = min(1.0, round(diff, 4))
+            # Level 3 で外部推論器 (llm_bridge) が呼び出された場合:
+            # 同一seed / 同一response snapshot / deterministic replay 等の決定性が保証されない限り、
+            # 外部LLMの揺らぎや内部状態変化と切断効果を分離できないため、変化量を測定不能 (None = ξ) とする。
+            bridge = getattr(cascade_base, "llm_bridge", None)
+            used_llm_bridge = bridge is not None and (f_base.cost_tier == 3 or f_without.cost_tier == 3)
+
+            if used_llm_bridge:
+                is_deterministic = False
+                if getattr(bridge, "deterministic_replay", False) or getattr(bridge, "is_deterministic", False):
+                    is_deterministic = True
+                elif getattr(bridge, "seed", None) is not None and getattr(bridge, "temperature", 0.0) == 0.0:
+                    is_deterministic = True
+                if not is_deterministic:
+                    rupture_effect = None
+                else:
+                    diff = 0.0
+                    if f_base.action_type != f_without.action_type:
+                        diff += 0.4
+                    if f_base.matched_node_id != f_without.matched_node_id:
+                        diff += 0.3
+                    diff += 0.2 * abs(f_base.confidence - f_without.confidence)
+                    if f_base.content != f_without.content:
+                        diff += 0.1
+                    rupture_effect = min(1.0, round(diff, 4))
+            else:
+                # ローカル決定的推論 (Level 0 - Level 2、または bridge なしの決定的フォールバック):
+                # 決定的な再実行による変化量測定
+                diff = 0.0
+                if f_base.action_type != f_without.action_type:
+                    diff += 0.4
+                if f_base.matched_node_id != f_without.matched_node_id:
+                    diff += 0.3
+                diff += 0.2 * abs(f_base.confidence - f_without.confidence)
+                if f_base.content != f_without.content:
+                    diff += 0.1
+                rupture_effect = min(1.0, round(diff, 4))
         except Exception:
             rupture_effect = None
 

@@ -198,7 +198,11 @@ class InterpCascade:
                         best_node = node
 
         if best_node and best_score >= self.config.level2_threshold:
-            boost = self._constraint_boost(best_node, efp)
+            boost = (
+                0.0
+                if skip_constraint_boost
+                else self._constraint_boost(best_node, efp)
+            )
             base_c = min(self.config.level2_max_confidence,
                          best_node.confidence * (0.6 + best_score) + boost)
             return _build_prediction(best_node, base_c, cost_tier=2)
