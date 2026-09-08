@@ -858,8 +858,11 @@ class RelationConstraintLocator:
         evaluated_nodes.sort(key=lambda x: x[0], reverse=True)
         primary = evaluated_nodes[0]
         primary_score, primary_rel, primary_fresh, primary_auth, primary_src, primary_lin, primary_node = primary
+        
+        core_lineages: set = set()
+        aux_lineages: set = set()
         if primary_lin:
-            seen_lineages.add(primary_lin)
+            core_lineages.add(primary_lin)
 
         # L 内部の関係分離 (BASE v2.0 §4.2):
         # - core_node_ids: primary + 明示的 support (確定拘束ノード)
@@ -877,15 +880,18 @@ class RelationConstraintLocator:
 
         for score, rel, fresh, auth, src, lin, n in evaluated_nodes[1:]:
             rel_type = _check_node_relation(primary_node, n)
-            lin_factor = 0.2 if (lin and lin in seen_lineages) else 1.0
-            if lin:
-                seen_lineages.add(lin)
 
             if rel_type == "support":
                 core_node_ids.append(n.id)
+                lin_factor = 0.2 if (lin and lin in core_lineages) else 1.0
+                if lin:
+                    core_lineages.add(lin)
                 core_synergy_mass += 0.03 * rel * src * lin_factor
             elif rel_type == "inferred_support":
                 inferred_node_ids.append(n.id)
+                lin_factor = 0.2 if (lin and lin in aux_lineages) else 1.0
+                if lin:
+                    aux_lineages.add(lin)
                 aux_synergy_signal += 0.02 * rel * src * lin_factor
             # contradict や unknown は core にも auxiliary にも入れず除外
 
@@ -893,9 +899,11 @@ class RelationConstraintLocator:
         aux_signal = min(0.50, aux_synergy_signal + 0.05 * len(inferred_node_ids))
         core_score = min(1.0, primary_score + core_synergy_mass)
 
-        # 独立ソース系統数に基づく収束度
-        core_conv = min(1.0, 0.4 + 0.15 * len(seen_lineages))
-        aux_conv = min(0.5, 0.02 * len(inferred_node_ids))
+        # 【P1: core_convergence / auxiliary_convergence_signal の完全独立性 (BASE v2.0 §4.2)】
+        # core_conv は確定拘束 (primary + 明示的 support) の独立系統数のみから算出
+        # aux_conv は推論関係 (inferred_support) の独立系統数およびノード数から算出
+        core_conv = min(1.0, 0.4 + 0.15 * len(core_lineages))
+        aux_conv = min(0.5, 0.05 * len(aux_lineages) + 0.02 * len(inferred_node_ids))
 
         return ConstraintBundle(
             node_ids=core_node_ids,  # primary + 明示的 support のみ
@@ -1309,6 +1317,37 @@ class RuptureProbe:
             else:
                 intervention_verified = False
 
+            def _calc_prediction_diff(f_a, f_b) -> float:
+                if not f_a or not f_b:
+                    return 0.0
+                d = 0.0
+                if f_a.action_type != f_b.action_type:
+                    d += 0.4
+                if getattr(f_a, "matched_node_id", None) != getattr(f_b, "matched_node_id", None):
+                    d += 0.3
+                d += 0.2 * abs(f_a.confidence - f_b.confidence)
+                if f_a.content != f_b.content:
+                    d += 0.1 if getattr(f_a, "matched_node_id", None) is not None else 0.4
+                return min(1.0, round(d, 4))
+
+            def _run_single_node_ablation(target_cascade, target_token) -> List[str]:
+                if len(bundle.node_ids) <= 1:
+                    return list(bundle.node_ids)
+                verified = []
+                for single_nid in bundle.node_ids:
+                    try:
+                        f_single_cut = target_cascade.interpret(
+                            ctx.efp,
+                            exclude_node_ids=[single_nid],
+                            skip_constraint_boost=True,
+                            replay_token=target_token,
+                        )
+                        if _calc_prediction_diff(f_base, f_single_cut) > 0:
+                            verified.append(single_nid)
+                    except Exception:
+                        pass
+                return verified
+
             if used_llm_bridge:
                 # 1. リプレイ能力・反実仮想契約の検証
                 if not _is_deterministic_replay_capable(bridge):
@@ -1340,70 +1379,25 @@ class RuptureProbe:
                             if not intervention_verified and not getattr(bridge, "received_counterfactual_input", False):
                                 rupture_effect = None
                             else:
-                                diff = 0.0
-                                if f_base.action_type != f_without.action_type:
-                                    diff += 0.4
-                                if f_base.content != f_without.content:
-                                    diff += 0.4
-                                diff += 0.2 * abs(f_base.confidence - f_without.confidence)
-                                rupture_effect = min(1.0, round(diff, 4))
+                                rupture_effect = _calc_prediction_diff(f_base, f_without)
                                 if rupture_effect > 0:
                                     # 束集合レベル検証 (set-level verification: BASE v2.0 §4.2)
                                     effect_verified_bundle_ids = list(bundle.node_ids)
-                                    # 単一ノード束ならそのノード自体が個別効果を持つ
-                                    if len(bundle.node_ids) == 1:
-                                        effect_verified_node_ids = list(bundle.node_ids)
-                                    else:
-                                        # 複数ノード束の場合の単一ノード摂動 (Single-Node Ablation / Leave-One-Out)
-                                        for single_nid in bundle.node_ids:
-                                            try:
-                                                f_single_cut = cascade_cut.interpret(
-                                                    ctx.efp,
-                                                    exclude_node_ids=[single_nid],
-                                                    skip_constraint_boost=True,
-                                                    replay_token=replay_token_K,
-                                                )
-                                                s_diff = 0.0
-                                                if f_base.action_type != f_single_cut.action_type:
-                                                    s_diff += 0.4
-                                                if f_base.content != f_single_cut.content:
-                                                    s_diff += 0.4
-                                                s_diff += 0.2 * abs(f_base.confidence - f_single_cut.confidence)
-                                                if round(s_diff, 4) > 0:
-                                                    effect_verified_node_ids.append(single_nid)
-                                            except Exception:
-                                                pass
+                                    # 単一ノード摂動検証 (Leave-One-Out Single-Node Ablation: BASE v2.0 §4.2)
+                                    effect_verified_node_ids = _run_single_node_ablation(cascade_cut, replay_token_K)
                     else:
                         # 片方が Level 3 でもう片方がローカル階層（切断によってフォールバック等が発生）
-                        diff = 0.0
-                        if f_base and f_without:
-                            if f_base.action_type != f_without.action_type:
-                                diff += 0.4
-                            if f_base.matched_node_id != f_without.matched_node_id:
-                                diff += 0.3
-                            diff += 0.2 * abs(f_base.confidence - f_without.confidence)
-                            if f_base.content != f_without.content:
-                                diff += 0.1
-                        rupture_effect = min(1.0, round(diff, 4))
+                        rupture_effect = _calc_prediction_diff(f_base, f_without)
                         if rupture_effect > 0:
                             effect_verified_bundle_ids = list(bundle.node_ids)
-                            effect_verified_node_ids = list(bundle.node_ids)
+                            effect_verified_node_ids = _run_single_node_ablation(cascade_cut, replay_token_K)
             else:
                 # ローカル決定的推論 (Level 0 - Level 2、または bridge なしの決定的フォールバック):
                 # 決定的な再実行による変化量測定
-                diff = 0.0
-                if f_base and f_without:
-                    if f_base.action_type != f_without.action_type:
-                        diff += 0.4
-                    if f_base.matched_node_id != f_without.matched_node_id:
-                        diff += 0.3
-                    diff += 0.2 * abs(f_base.confidence - f_without.confidence)
-                    if f_base.content != f_without.content:
-                        diff += 0.1
-                rupture_effect = min(1.0, round(diff, 4))
+                rupture_effect = _calc_prediction_diff(f_base, f_without)
                 if rupture_effect > 0:
                     effect_verified_bundle_ids = list(bundle.node_ids)
-                    effect_verified_node_ids = list(bundle.node_ids)
+                    effect_verified_node_ids = _run_single_node_ablation(cascade_cut, None)
         except Exception:
             rupture_effect = None
             base_view_hash = None

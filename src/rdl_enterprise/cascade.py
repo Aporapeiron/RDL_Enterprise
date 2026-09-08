@@ -123,39 +123,48 @@ class InterpCascade:
         # 2. 直接適合シードノード (Seed Nodes: rel >= relevance_floor) の抽出
         seed_nodes = [n for score, n in scored_nodes if rel_map[n.id] >= relevance_floor]
 
-        # 3. グラフ関係伝播 (1-hop Relation Propagation)
-        # シードノードから明示的に support または共起している接続ノードを展開
+        # 3. グラフ関係伝播 (Directed & Weighted 1-hop Relation Propagation: BASE v2.0 §4.2)
+        # シードノードから明示的に support, authority 等で接続しているノードを展開
         activated_ids = set(n.id for n in seed_nodes)
+        edge_weight_map: Dict[str, float] = {n.id: 1.0 for n in seed_nodes}
         for sn in list(seed_nodes):
-            # (a) 明示的 node_relations の伝播 (support 関係)
+            # (a) 明示的 node_relations の伝播
             for target_id, rel_type in getattr(sn, "node_relations", {}).items():
-                if rel_type == "support" and target_id in node_map:
-                    activated_ids.add(target_id)
+                if target_id in node_map:
+                    if rel_type in ("support", "authority", "policy_authority"):
+                        activated_ids.add(target_id)
+                        edge_weight_map[target_id] = max(edge_weight_map.get(target_id, 0.0), 0.8)
+                    elif rel_type in ("inferred_support", "co_occurs"):
+                        if rel_map.get(target_id, 0.0) >= (relevance_floor * 0.5):
+                            activated_ids.add(target_id)
+                            edge_weight_map[target_id] = max(edge_weight_map.get(target_id, 0.0), 0.4)
             # (b) トリガー共起 (find_co_occurring_nodes) の伝播
             if hasattr(self.mb_graph, "find_co_occurring_nodes"):
                 co_nodes = self.mb_graph.find_co_occurring_nodes(sn, limit=3)
                 for cn in co_nodes:
                     if cn.id in node_map and rel_map.get(cn.id, 0.0) >= (relevance_floor * 0.5):
                         activated_ids.add(cn.id)
+                        edge_weight_map[cn.id] = max(edge_weight_map.get(cn.id, 0.0), 0.5)
 
         # 4. 活性化サブグラフの候補選別
         if activated_ids:
             candidates = [n for n in eligible_nodes if n.id in activated_ids]
-            # スコア降順に並べ替え
+            # スコア降順に並べ替え (伝播重みも加味)
             candidates.sort(
                 key=lambda n: (
                     rel_map[n.id] * 0.7 +
                     (n.approval_count / (n.approval_count + n.rejection_count + 1.0)) * 0.2 +
-                    _compute_authority_weight(n.authority_level) * 0.1
+                    _compute_authority_weight(n.authority_level) * 0.1 +
+                    edge_weight_map.get(n.id, 0.0) * 0.1
                 ),
                 reverse=True,
             )
             return candidates[:limit]
 
-        # シードノードが1件もない（完全未知クエリ）の場合:
-        # ドメイン境界内で最も高い authority / source を持つノード上位（最大 limit 個）をフォールバック選出
-        scored_nodes.sort(key=lambda x: x[0], reverse=True)
-        return [n for score, n in scored_nodes[:min(limit, len(scored_nodes))]]
+        # 【P0: 関連性皆無の完全未知クエリにおける無関係権威ノード注入の厳格禁止】
+        # 入力と関係する seed が存在しない場合、権威や承認数だけで無関係ノードをでっち上げず
+        # 空リストを返却して未回収関係 (ξ) として保持する (authority は relevance の代替ではない)。
+        return []
 
     def _finalize_prediction(
         self,
@@ -475,7 +484,11 @@ class InterpCascade:
 
             # 実際に注入・適用されたノード群 (applied_locus_ids) の特定
             applied_locus_ids = list(selected_locus_ids)
-            locus_basis = "context_selected"
+            if not selected_locus_ids:
+                locus_basis = "unresolved_selection"
+            else:
+                locus_basis = "context_selected"
+
             if isinstance(llm_res, dict):
                 if "applied_node_ids" in llm_res and llm_res["applied_node_ids"]:
                     applied_locus_ids = list(llm_res["applied_node_ids"])
@@ -544,6 +557,13 @@ class InterpCascade:
         )
         return self._finalize_prediction(fallback_pred, efp)
 
+    def sediment_level0(self, domain: str, query_text: str, node_id: str):
+        """
+        成功確認後に確定した判断を Level 0 キャッシュへ沈澱 (BASE v2.0 代謝閉ループ)
+        """
+        norm_q = self._normalize(query_text)
+        self.level0_cache[(domain or "general", norm_q)] = node_id
+
     def crystallize_rule(self, efp: BusinessInput, resolution_text: str, category: str, approved: bool = True):
         """
         LLMや人間によって解決された案件を、新しい Level 1 / Level 0 ノードとして M_B に定着（沈澱）させる
@@ -567,5 +587,5 @@ class InterpCascade:
         )
         self.mb_graph.add_or_update(new_node)
         # Level 0 キャッシュにも即座に登録（ドメイン境界付き）
-        self.level0_cache[(category, self._normalize(efp.query_text))] = new_id
+        self.sediment_level0(category, efp.query_text, new_id)
         return new_node

@@ -2173,7 +2173,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
         n1 = MBNode(
             id="n1",
             domain="general",
-            trigger_pattern={"exact_keys": ["キー1"]},
+            trigger_pattern={"exact_keys": ["キーワード1特例措置"]},
             action_template={"type": "direct_reply", "payload": "x"},
             confidence=0.8,
             approval_count=10,
@@ -2183,7 +2183,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
         bridge = MBInterventionBridge()
         bundle = ConstraintBundle(node_ids=["n1"], locus_type="strong", constraint_score=0.8)
         probe = RuptureProbe()
-        efp = _make_efp("未知クエリ", category="general")
+        efp = _make_efp("キーワード1の申請窓口について教えてください", category="general")
         ctx = ConstraintContext(efp=efp, current_time=datetime.utcnow(), llm_bridge=bridge)
 
         res = probe.probe(bundle, graph, ctx)
@@ -2358,11 +2358,11 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
         bridge = RuntimeTraceBridge()
         runtime.cascade.llm_bridge = bridge
 
-        # 1. 参照ノードをグラフに事前登録（Level 3 へフォールバック推論させるため、ノードのトリガーはマッチさせず、あるいは matched_node_id を持たせる）
+        # 1. 参照ノードをグラフに事前登録（Level 3 へフォールバック推論させるため、ノードのexact_keysはクエリに完全には含まれず、意味的・bigram関連性で関連付けられるようにする）
         node_b = MBNode(
             id="node_billing_special",
             domain="billing",
-            trigger_pattern={"exact_keys": ["完全一致のみ_別キー"]},
+            trigger_pattern={"exact_keys": ["特別契約更新制度"]},
             action_template={"type": "direct_reply", "payload": "runtime_llm_reply"},
             confidence=0.8,
             approval_count=5,

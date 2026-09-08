@@ -445,17 +445,25 @@ class EnterpriseRuntime:
             is_canary=snapshot.is_canary,
         )
 
-        # 学習ガバナンス：拘束検査および H 蓄積の完了後、成功確認案件のみ M_B へ昇格（沈澱）
+        # 学習ガバナンス：拘束検査および H 蓄積の完了後、成功確認案件のみ M_B へ昇格・沈澱
         # ※ Canary 期間中は候補 M_B' の Freeze 原則 (Identity Drift 防止) のため直接結晶化はスキップ
         promoted_to_mb = False
-        if not snapshot.is_canary and snapshot.status == CaseStatus.SUCCESS and snapshot.candidate_knowledge and not snapshot.is_authoritative:
-            target_cascade.crystallize_rule(
-                snapshot.efp,
-                snapshot.candidate_knowledge,
-                snapshot.efp.category or "general",
-                approved=True,
-            )
-            promoted_to_mb = True
+        if not snapshot.is_canary and snapshot.status == CaseStatus.SUCCESS and feedback.user_resolved and not feedback.human_rejected:
+            if snapshot.candidate_knowledge and not snapshot.is_authoritative:
+                target_cascade.crystallize_rule(
+                    snapshot.efp,
+                    snapshot.candidate_knowledge,
+                    snapshot.efp.category or "general",
+                    approved=True,
+                )
+                promoted_to_mb = True
+            elif pred.matched_node_id:
+                # 既知ルールやLLM解決で特定された既存ノードによる判断を Level 0 キャッシュへ沈澱 (最小代謝閉ループ: Tier 1/3 -> Tier 0)
+                target_cascade.sediment_level0(
+                    domain=snapshot.efp.category or "general",
+                    query_text=snapshot.efp.query_text,
+                    node_id=pred.matched_node_id,
+                )
 
         # 閾値判定および局所更新の分岐：
         canary_rolled_back = False

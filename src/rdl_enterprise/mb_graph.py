@@ -133,6 +133,7 @@ class MBNode:
         super().__setattr__("is_frozen", False)
         super().__setattr__("trigger_pattern", _deep_unfreeze_value(self.trigger_pattern))
         super().__setattr__("action_template", _deep_unfreeze_value(self.action_template))
+        super().__setattr__("node_relations", _deep_unfreeze_value(self.node_relations))
 
     def inertia(self) -> float:
         """
