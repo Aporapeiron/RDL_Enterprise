@@ -16,7 +16,7 @@ BASE v2.0 公理を実装層で体現する。
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Any
 import re
 
 
@@ -70,6 +70,7 @@ class ConstraintContext:
     mb_version: str = "prod"
     active_domain: Optional[str] = None
     config: ConstraintConfig = field(default_factory=ConstraintConfig)
+    frozen_context: Optional[Any] = None  # FrozenInterpretationContext（完全同一解釈器を伝播）
 
 
 # ---------------------------------------------------------------------------
@@ -117,11 +118,16 @@ class RuptureResult:
     """
     RuptureProbe による破断検査の結果。
     BASE v2.0: 強い = 正しい、ではなく「現在の構造を支えているか」を問う。
+
+    【変化量と判定の直交分離】
+    - rupture_effect: 束切断による F の変化量 Δ(F_base, F_without_bundle) ∈ [0, 1]（切ると変わる＝拘束が強い）
+    - verdict: survive | break | unresolved（切ると対立解釈が出る＝競合している）
     """
     bundle: ConstraintBundle
     verdict: str              # "survive" | "break" | "unresolved"
     opposing_strength: float  # 反証拘束の強さ（add_heat の重みとして使用）
     rupture_reason: str = ""
+    rupture_effect: float = 0.0  # 束切断摂動による F の変化量 Δ(F_base, F_without) ∈ [0, 1]
 
 
 # ---------------------------------------------------------------------------
@@ -322,7 +328,7 @@ def compute_efp_prime_constraint(
     # 4. 言明タイプ (claim_type) と情報源の適合性
     # - fact (確定事実・操作記録): 監査ログ (audit) や公式決定で最大拘束 (1.0)
     # - judgment (裁量意見): 管理者/監査であっても主観的意見は事実言明より控えめに評価
-    claim_type = getattr(prov, "claim_type", "general") if prov else "general"
+    claim_type = getattr(prov, "claim_type", None) if prov else None
     claim_factor = 1.0
     if claim_type == "fact":
         if getattr(prov, "source_type", "") == "audit" or getattr(prov, "channel", "") in ("audit_log", "official_doc"):
@@ -369,19 +375,28 @@ def compute_efp_prime_constraint(
             time_factor = 1.0
 
     # 制度的公式決定 (is_authoritative=True) の評価 (BASE v2.0 §4.2: 権限の無制限特権化の排除)
-    # - 確定事実・制度制定・公式規則 (fact / rule / policy) かつ管轄内・新鮮であれば最大拘束 1.0 を保証
-    # - 一般公式言明 (general) は 1.0 に固定せず上限 0.90 に抑制
-    # - 主観的裁量意見 (judgment) は claim_factor (0.80) により明確に減衰
+    # 1. 主観的裁量意見 (judgment) はどんな権限者・媒体であっても claim_factor (0.80) により明確に減衰
+    # 2. 一般公式言明 (general) は admin や official_doc であっても 1.0 に固定せず上限 0.90 に抑制
+    # 3. 関係種別 target_relation:
+    #    - "factual_report": 事実報告（制度制定・決裁権ではなく現場報告）の場合は 0.90
+    #    - "general_inquiry": 一般照会・意見の場合は 0.85
+    # 4. 確定事実・制度制定・公式規則 (fact / rule / policy) かつ管轄内・新鮮・関係整合であれば最大拘束 1.0 を保証
     if prov and getattr(prov, "is_authoritative", False):
-        if scope_factor >= 1.0 and time_factor >= 0.99:
+        target_rel = getattr(prov, "target_relation", None)
+        if claim_type == "judgment":
+            effective_score = auth_weight * scope_factor * claim_factor
+            c_prime = min(0.80, effective_score * time_factor)
+        elif claim_type == "general":
+            effective_score = auth_weight * scope_factor * 0.90
+            c_prime = min(0.90, effective_score * time_factor)
+        elif target_rel == "factual_report":
+            c_prime = min(0.90, auth_weight * scope_factor * 0.90 * time_factor)
+        elif target_rel == "general_inquiry":
+            c_prime = min(0.85, auth_weight * scope_factor * 0.85 * time_factor)
+        elif scope_factor >= 1.0 and time_factor >= 0.99:
+            # 確定事実・制度制定・公式規則 (fact / rule / policy) かつ管轄内
             if claim_type in ("fact", "rule", "policy") or getattr(prov, "channel", "") in ("official_doc", "audit_log") or getattr(prov, "source_type", "") in ("admin", "audit"):
-                if claim_type == "judgment":
-                    effective_score = auth_weight * scope_factor * claim_factor
-                    c_prime = min(1.0, effective_score * time_factor)
-                else:
-                    c_prime = 1.0
-            elif claim_type == "general":
-                c_prime = 0.90
+                c_prime = 1.0
             else:
                 effective_score = auth_weight * scope_factor * claim_factor
                 c_prime = min(1.0, effective_score * time_factor)
@@ -490,9 +505,9 @@ class RelationConstraintLocator:
 
         # 関連ノード（同一ドメイン内でトリガーキーを共有・支援する共起ルール群）を束ねる
         # BASE v2.0: 単一ノード属性ではなく「関係の束 (ConstraintBundle)」として拘束位置を表現
-        supporting_nodes = []
+        candidate_supporting_nodes = []
         if hasattr(mb_graph, "find_co_occurring_nodes"):
-            supporting_nodes = mb_graph.find_co_occurring_nodes(node, limit=4)
+            candidate_supporting_nodes = mb_graph.find_co_occurring_nodes(node, limit=4)
         elif hasattr(mb_graph, "list_nodes"):
             try:
                 my_keys = set(k.strip().lower() for k in keys)
@@ -501,13 +516,24 @@ class RelationConstraintLocator:
                         if other.id != node.id:
                             other_keys = set(k.strip().lower() for k in other.trigger_pattern.get("exact_keys", []))
                             if other_keys & my_keys:
-                                supporting_nodes.append(other)
-                                if len(supporting_nodes) >= 4:
+                                candidate_supporting_nodes.append(other)
+                                if len(candidate_supporting_nodes) >= 4:
                                     break
             except Exception:
                 pass
 
-        bundle_node_ids = [node.id] + [s.id for s in supporting_nodes]
+        # 【健全かつ同一方向の支援ノードのみ束化 (Effective Support Only: BASE v2.0 §4.2)】
+        # 1. 支援ノード自身の健全性検査（陳腐化・拒絶多数・無関係ノードは除外）
+        # 2. アクション整合性検査（代表ノードとアクションが対立・競合するノードは支援ノードではなく対立ノードとして除外）
+        effective_supporting_nodes = []
+        for s in candidate_supporting_nodes:
+            if not is_support_node_eligible(s, query, cfg, now):
+                continue
+            if s.action_template.get("type") != node.action_template.get("type"):
+                continue
+            effective_supporting_nodes.append(s)
+
+        bundle_node_ids = [node.id] + [s.id for s in effective_supporting_nodes]
 
         # 束としての総合拘束強度 (Bundle Constraint Score: BASE v2.0 §4.2)
         # 代表ノード単体だけでなく、束に含まれる健全な支援ノード群がどれだけ強固に裏付けているかを相乗評価
@@ -517,29 +543,23 @@ class RelationConstraintLocator:
         if primary_lineage:
             seen_lineages.add(primary_lineage)
 
-        eligible_support_count = 0
-        if supporting_nodes:
-            for s in supporting_nodes:
-                # 支援ノード自身の健全性検査（陳腐化・拒絶多数・無関係ノードは除外）
-                if not is_support_node_eligible(s, query, cfg, now):
-                    continue
-                eligible_support_count += 1
-                s_rel = _compute_relevance(query, s.trigger_pattern)
-                s_src = _compute_source_strength(s.approval_count, s.rejection_count)
+        for s in effective_supporting_nodes:
+            s_rel = _compute_relevance(query, s.trigger_pattern)
+            s_src = _compute_source_strength(s.approval_count, s.rejection_count)
 
-                # 系譜（Lineage）重複検査: 同一マニュアル・同一上流の複製ルールは相乗効果を抑制
-                s_lineage = getattr(s, "source_lineage", None) or getattr(s, "source_id", None)
-                if s_lineage and s_lineage in seen_lineages:
-                    lineage_factor = 0.15  # 同一起源の複製は 15% のみ（水増し防止）
-                else:
-                    lineage_factor = 1.0   # 独立した関係源からの支持
-                    if s_lineage:
-                        seen_lineages.add(s_lineage)
+            # 系譜（Lineage）重複検査: 同一マニュアル・同一上流の複製ルールは相乗効果を抑制
+            s_lineage = getattr(s, "source_lineage", None) or getattr(s, "source_id", None)
+            if s_lineage and s_lineage in seen_lineages:
+                lineage_factor = 0.15  # 同一起源の複製は 15% のみ（水増し防止）
+            else:
+                lineage_factor = 1.0   # 独立した関係源からの支持
+                if s_lineage:
+                    seen_lineages.add(s_lineage)
 
-                synergy_boost += 0.04 * s_rel * s_src * lineage_factor
+            synergy_boost += 0.04 * s_rel * s_src * lineage_factor
 
-            synergy_boost = min(0.12, synergy_boost)
-            conv = min(1.0, conv + 0.05 * eligible_support_count)
+        synergy_boost = min(0.12, synergy_boost)
+        conv = min(1.0, conv + 0.05 * len(effective_supporting_nodes))
 
         bundle_score = min(1.0, score + synergy_boost)
 
@@ -636,10 +656,9 @@ class RelationConstraintLocator:
                 locus_type = "source"
 
             if score > 0.0:
-                bundle_node_ids = [node.id]
-                supporting_nodes = []
+                candidate_supporting_nodes = []
                 if hasattr(mb_graph, "find_co_occurring_nodes"):
-                    supporting_nodes = mb_graph.find_co_occurring_nodes(node, limit=4)
+                    candidate_supporting_nodes = mb_graph.find_co_occurring_nodes(node, limit=4)
                 else:
                     my_keys = set(k.strip().lower() for k in node.trigger_pattern.get("exact_keys", []))
                     if my_keys:
@@ -647,11 +666,19 @@ class RelationConstraintLocator:
                             if other.id != node.id:
                                 other_keys = set(k.strip().lower() for k in other.trigger_pattern.get("exact_keys", []))
                                 if other_keys & my_keys:
-                                    supporting_nodes.append(other)
-                                    if len(supporting_nodes) >= 4:
+                                    candidate_supporting_nodes.append(other)
+                                    if len(candidate_supporting_nodes) >= 4:
                                         break
 
-                bundle_node_ids.extend(s.id for s in supporting_nodes)
+                effective_supporting_nodes = []
+                for s in candidate_supporting_nodes:
+                    if not is_support_node_eligible(s, query, cfg, now):
+                        continue
+                    if s.action_template.get("type") != node.action_template.get("type"):
+                        continue
+                    effective_supporting_nodes.append(s)
+
+                bundle_node_ids = [node.id] + [s.id for s in effective_supporting_nodes]
 
                 synergy_boost = 0.0
                 seen_lineages = set()
@@ -659,26 +686,21 @@ class RelationConstraintLocator:
                 if primary_lineage:
                     seen_lineages.add(primary_lineage)
 
-                eligible_support_count = 0
-                if supporting_nodes:
-                    for s in supporting_nodes:
-                        if not is_support_node_eligible(s, query, cfg, now):
-                            continue
-                        eligible_support_count += 1
-                        s_rel = _compute_relevance(query, s.trigger_pattern)
-                        s_src = _compute_source_strength(s.approval_count, s.rejection_count)
+                for s in effective_supporting_nodes:
+                    s_rel = _compute_relevance(query, s.trigger_pattern)
+                    s_src = _compute_source_strength(s.approval_count, s.rejection_count)
 
-                        s_lineage = getattr(s, "source_lineage", None) or getattr(s, "source_id", None)
-                        if s_lineage and s_lineage in seen_lineages:
-                            lineage_factor = 0.15
-                        else:
-                            lineage_factor = 1.0
-                            if s_lineage:
-                                seen_lineages.add(s_lineage)
+                    s_lineage = getattr(s, "source_lineage", None) or getattr(s, "source_id", None)
+                    if s_lineage and s_lineage in seen_lineages:
+                        lineage_factor = 0.15
+                    else:
+                        lineage_factor = 1.0
+                        if s_lineage:
+                            seen_lineages.add(s_lineage)
 
-                        synergy_boost += 0.04 * s_rel * s_src * lineage_factor
+                    synergy_boost += 0.04 * s_rel * s_src * lineage_factor
 
-                    synergy_boost = min(0.12, synergy_boost)
+                synergy_boost = min(0.12, synergy_boost)
 
                 bundle_score = min(1.0, score + synergy_boost)
 
@@ -690,7 +712,7 @@ class RelationConstraintLocator:
                     freshness=d.get("freshness", 0.0),
                     authority_weight=d.get("authority_weight", 0.0),
                     source_strength=d.get("source_strength", 0.0),
-                    convergence=min(1.0, d.get("convergence", 0.0) + 0.05 * eligible_support_count),
+                    convergence=min(1.0, d.get("convergence", 0.0) + 0.05 * len(effective_supporting_nodes)),
                     is_structural_bridge=False,
                 ))
 
@@ -868,17 +890,35 @@ class RuptureProbe:
         # -------------------------------------------------------------
         # 「この束を切断したとき、現在の解釈可能域がどう変わるか」
         # F_base = interp(M_B, EFP) vs F_without = interp(M_B \ bundle, EFP)
-        from rdl_enterprise.cascade import InterpCascade
-        cascade = InterpCascade(
-            mb_graph,
-            constraint_config=cfg,
-            constraint_evaluation_time=ctx.current_time,
-        )
+        # 【FrozenInterpretationContext 完全同一推論環境の保証】
+        # 本番 F 形成時と完全に同一の構成・キャッシュ C0・モデル Identity を用いて切断前後を比較
+        if ctx.frozen_context is not None and hasattr(ctx.frozen_context, "create_isolated_cascade"):
+            cascade = ctx.frozen_context.create_isolated_cascade()
+        else:
+            from rdl_enterprise.cascade import InterpCascade, CascadeConfig
+            cascade = InterpCascade(
+                mb_graph,
+                config=CascadeConfig(),
+                constraint_config=cfg,
+                constraint_evaluation_time=ctx.current_time,
+            )
         f_base = cascade.interpret(ctx.efp, skip_constraint_boost=True)
         f_without = cascade.interpret(ctx.efp, exclude_node_ids=bundle.node_ids, skip_constraint_boost=True)
 
+        # 除去摂動による F の変化量 (rupture_effect: Δ(F_base, F_without)) を定量化
+        # 切ると変わる＝この束が現在の解釈空間を決定づけている不可欠な拘束である証拠
+        diff = 0.0
+        if f_base.action_type != f_without.action_type:
+            diff += 0.4
+        if f_base.matched_node_id != f_without.matched_node_id:
+            diff += 0.3
+        diff += 0.2 * abs(f_base.confidence - f_without.confidence)
+        if f_base.content != f_without.content:
+            diff += 0.1
+        rupture_effect = min(1.0, round(diff, 4))
+
         # もし束を除去した結果、同一ドメイン内で異なるアクション（対立解釈）が同等以上の拘束で浮上した場合、
-        # 構造的に競合を抑え込んでいるだけの脆い状態であるため break
+        # 構造的に競合を抑え込んでいるだけの脆い状態であるため break (contested)
         if (f_without.matched_node_id and
             f_without.matched_node_id not in bundle.node_ids and
             f_without.action_type != f_base.action_type and
@@ -892,6 +932,7 @@ class RuptureProbe:
                     f"({f_without.matched_node_id}: conf={f_without.confidence:.2f} >= {f_base.confidence:.2f}) "
                     f"との潜在衝突が露出して破断"
                 ),
+                rupture_effect=rupture_effect,
             )
 
         # -------------------------------------------------------------
@@ -914,6 +955,7 @@ class RuptureProbe:
                 verdict="survive",
                 opposing_strength=0.0,
                 rupture_reason="",
+                rupture_effect=rupture_effect,
             )
 
         # -------------------------------------------------------------
@@ -925,4 +967,5 @@ class RuptureProbe:
             verdict="unresolved",
             opposing_strength=0.5,
             rupture_reason="十分な承認実績・摂動耐性の未確認による保留（ξ として残存）",
+            rupture_effect=rupture_effect,
         )

@@ -397,6 +397,7 @@ class EnterpriseRuntime:
                     mb_version=mb_ver,
                     active_domain=snapshot.efp.category,
                     config=constraint_cfg,  # 凍結された設定を使用
+                    frozen_context=frozen_ctx,  # 完全同一の凍結推論器を伝播
                 )
                 locator = RelationConstraintLocator(constraint_cfg)
                 # 局所評価で旧ノードの拘束束 C_old を取得 (凍結時刻 t で評価)

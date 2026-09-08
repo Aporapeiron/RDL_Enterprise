@@ -380,18 +380,19 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
         from rdl_enterprise.snapshot import RelationProvenance, FeedbackResult
         from rdl_enterprise.constraint import compute_efp_prime_constraint
 
-        # 公式記録・オラクル
+        # 公式記録・オラクル（確定規則・規程）
         fb_authoritative = FeedbackResult(
             user_resolved=False,
             provenance=RelationProvenance(
                 source_type="oracle",
                 is_authoritative=True,
                 channel="official_doc",
+                claim_type="rule",
             ),
         )
         self.assertEqual(compute_efp_prime_constraint(fb_authoritative), 1.0)
 
-        # 管理者の是正命令
+        # 管理者の是正命令（規程に基づく命令）
         fb_admin = FeedbackResult(
             user_resolved=False,
             correction_content="新制度条文第4条に基づく差し戻し",
@@ -399,6 +400,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
                 source_type="admin",
                 authority_level="human_only",
                 channel="admin_override",
+                claim_type="rule",
             ),
         )
         self.assertGreaterEqual(compute_efp_prime_constraint(fb_admin), 0.95)
@@ -1138,12 +1140,12 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
         self.assertGreater(bundle_indep.constraint_score, bundle_dup.constraint_score)
 
     def test_actual_bundle_removal_perturbation(self):
-        """実効的バンドル除去切断摂動: 束を切断したときに潜在対向ノードが露出すれば break と判定されること"""
+        """実効的バンドル除去切断摂動 (End-to-End完全無加工): 束を切断したときに潜在対向ノードが露出すれば break と判定されること"""
         from rdl_enterprise.mb_graph import MBGraph, MBNode
         from rdl_enterprise.constraint import RelationConstraintLocator, RuptureProbe, ConstraintContext
 
         graph = MBGraph()
-        # 既存バンドル（代表ノード: 振込を通常回答）
+        # 既存ノード（代表ノード: 振込を通常回答）
         n_normal = MBNode(
             id="n_normal",
             domain="finance",
@@ -1168,8 +1170,9 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
         efp = _make_efp("送金振込", category="finance")
         ctx = ConstraintContext(efp=efp, active_domain="finance")
 
+        # 完全無加工: Locator はアクションが対立する n_compliance を支援ノードから自然に除外する
         bundle = locator.locate_bundle_for_node(graph, n_normal, ctx)
-        bundle.node_ids = ["n_normal"]
+        self.assertEqual(bundle.node_ids, ["n_normal"])
 
         probe = RuptureProbe()
         result = probe.probe(bundle, graph, ctx)
@@ -1177,6 +1180,156 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
         # 実効的切断摂動により、潜在対向ノード n_compliance との衝突が露出し break すること
         self.assertEqual(result.verdict, "break")
         self.assertIn("実効的バンドル切断", result.rupture_reason)
+        # 束切断による F の変化量 (rupture_effect) が記録されていること
+        self.assertGreater(result.rupture_effect, 0.0)
+
+    def test_rupture_effect_quantified_and_distinguished_from_break(self):
+        """切ると変わる（拘束強度: rupture_effect）と切ると対向解釈が出る（競合: break）が直交して分離されること"""
+        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.constraint import RelationConstraintLocator, RuptureProbe, ConstraintContext
+
+        graph = MBGraph()
+        # 唯一の承認済み基盤ノード
+        n_pillar = MBNode(
+            id="n_pillar",
+            domain="hr",
+            trigger_pattern={"exact_keys": ["福利厚生申請"]},
+            action_template={"type": "direct_reply", "payload": "申請ポータルURL"},
+            confidence=0.85,
+            approval_count=10,
+        )
+        graph.add_or_update(n_pillar)
+
+        locator = RelationConstraintLocator()
+        efp = _make_efp("福利厚生申請", category="hr")
+        ctx = ConstraintContext(efp=efp, active_domain="hr")
+
+        bundle = locator.locate_bundle_for_node(graph, n_pillar, ctx)
+        probe = RuptureProbe()
+        result = probe.probe(bundle, graph, ctx)
+
+        # 切断によってフォールバック（ask_human）に縮退するため、変化量 rupture_effect は極めて高い（> 0.7）
+        self.assertGreaterEqual(result.rupture_effect, 0.7)
+        # しかし潜在対向解釈の露出ではないため break にはならず、健全な承認実績により survive すること
+        self.assertEqual(result.verdict, "survive")
+
+    def test_unhealthy_or_conflicting_nodes_excluded_from_bundle_ids(self):
+        """陳腐化・大量拒絶・アクション対立ノードが bundle.node_ids に最初から混入しないこと"""
+        from datetime import datetime, timezone, timedelta
+        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.constraint import RelationConstraintLocator, ConstraintContext
+
+        now = datetime(2026, 9, 1, 12, 0, 0, tzinfo=timezone.utc)
+        graph = MBGraph()
+        n_prim = MBNode(id="n_prim", domain="it", trigger_pattern={"exact_keys": ["パスワードリセット"]}, action_template={"type": "direct_reply", "payload": "A"}, approval_count=5, last_updated=now.isoformat())
+        # 陳腐化
+        n_stale = MBNode(id="n_stale", domain="it", trigger_pattern={"exact_keys": ["パスワードリセット"]}, action_template={"type": "direct_reply", "payload": "A"}, approval_count=5, last_updated=(now - timedelta(days=400)).isoformat())
+        # 大量拒絶
+        n_rej = MBNode(id="n_rej", domain="it", trigger_pattern={"exact_keys": ["パスワードリセット"]}, action_template={"type": "direct_reply", "payload": "A"}, approval_count=5, rejection_count=20, last_updated=now.isoformat())
+        # アクション対立
+        n_conflict = MBNode(id="n_conflict", domain="it", trigger_pattern={"exact_keys": ["パスワードリセット"]}, action_template={"type": "ask_human", "payload": "本人確認要"}, approval_count=5, last_updated=now.isoformat())
+        # 健全な支援ノード
+        n_healthy = MBNode(id="n_healthy", domain="it", trigger_pattern={"exact_keys": ["パスワードリセット", "SSO"]}, action_template={"type": "direct_reply", "payload": "A"}, approval_count=5, last_updated=now.isoformat())
+
+        graph.add_or_update(n_prim)
+        graph.add_or_update(n_stale)
+        graph.add_or_update(n_rej)
+        graph.add_or_update(n_conflict)
+        graph.add_or_update(n_healthy)
+
+        locator = RelationConstraintLocator()
+        efp = _make_efp("パスワードリセットのやり方", category="it")
+        ctx = ConstraintContext(efp=efp, current_time=now, active_domain="it")
+
+        bundle = locator.locate_bundle_for_node(graph, n_prim, ctx)
+        # 束には代表ノードと健全な支援ノードのみが含まれること
+        self.assertIn("n_prim", bundle.node_ids)
+        self.assertIn("n_healthy", bundle.node_ids)
+        self.assertNotIn("n_stale", bundle.node_ids)
+        self.assertNotIn("n_rej", bundle.node_ids)
+        self.assertNotIn("n_conflict", bundle.node_ids)
+
+    def test_frozen_context_identical_cascade_used_in_probe(self):
+        """RuptureProbe が ConstraintContext に渡された FrozenInterpretationContext の同一推論器を使用すること"""
+        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.constraint import RelationConstraintLocator, RuptureProbe, ConstraintContext
+        from rdl_enterprise.snapshot import FrozenInterpretationContext
+
+        graph = MBGraph()
+        n = MBNode(id="n1", domain="sales", trigger_pattern={"exact_keys": ["見積"]}, action_template={"type": "direct_reply", "payload": "見積回答"}, confidence=0.7, approval_count=5)
+        graph.add_or_update(n)
+
+        # 初期キャッシュに特定のエントリを持つ凍結コンテキスト
+        frozen_ctx = FrozenInterpretationContext(
+            mb_version="v1.0",
+            mb_content_hash=graph.content_hash(),
+            frozen_mb=graph,
+            target_domain="sales",
+            initial_level0_cache={("sales", "見積"): "n1"},
+        )
+
+        efp = _make_efp("見積", category="sales")
+        ctx = ConstraintContext(efp=efp, active_domain="sales", frozen_context=frozen_ctx)
+
+        locator = RelationConstraintLocator()
+        bundle = locator.locate_bundle_for_node(graph, n, ctx)
+
+        probe = RuptureProbe()
+        result = probe.probe(bundle, graph, ctx)
+        # 凍結コンテキストから正常に評価され survive となること
+        self.assertEqual(result.verdict, "survive")
+
+    def test_admin_general_claim_and_target_relation_pure_relativization(self):
+        """管理者や公式記録であっても general は 0.90、target_relation に応じて厳密に相対化されること"""
+        from rdl_enterprise.snapshot import FeedbackResult, RelationProvenance
+        from rdl_enterprise.constraint import compute_efp_prime_constraint
+
+        # 1. 管理者 (admin) による一般言明 (claim_type="general") は 1.0 ではなく 0.90 に抑制
+        prov_admin_gen = RelationProvenance(
+            source_type="admin",
+            is_authoritative=True,
+            authority_level="human_only",
+            channel="admin_override",
+            claim_type="general",
+        )
+        fb_admin_gen = FeedbackResult(user_resolved=False, human_rejected=True, provenance=prov_admin_gen)
+        self.assertAlmostEqual(compute_efp_prime_constraint(fb_admin_gen), 0.90, places=2)
+
+        # 2. 管理者による事実報告 (target_relation="factual_report") は制度制定権ではないため 0.90 に抑制
+        prov_admin_fact = RelationProvenance(
+            source_type="admin",
+            is_authoritative=True,
+            authority_level="human_only",
+            channel="admin_override",
+            claim_type="fact",
+            target_relation="factual_report",
+        )
+        fb_admin_fact = FeedbackResult(user_resolved=False, human_rejected=True, provenance=prov_admin_fact)
+        self.assertAlmostEqual(compute_efp_prime_constraint(fb_admin_fact), 0.90, places=2)
+
+        # 3. 管理者による一般照会 (target_relation="general_inquiry") は 0.85 に抑制
+        prov_admin_inq = RelationProvenance(
+            source_type="admin",
+            is_authoritative=True,
+            authority_level="human_only",
+            channel="admin_override",
+            claim_type="rule",
+            target_relation="general_inquiry",
+        )
+        fb_admin_inq = FeedbackResult(user_resolved=False, human_rejected=True, provenance=prov_admin_inq)
+        self.assertAlmostEqual(compute_efp_prime_constraint(fb_admin_inq), 0.85, places=2)
+
+        # 4. 管理者による正式な制度改定 (claim_type="rule", target_relation="rule_promulgation") のみ満額 1.0
+        prov_admin_rule = RelationProvenance(
+            source_type="admin",
+            is_authoritative=True,
+            authority_level="human_only",
+            channel="admin_override",
+            claim_type="rule",
+            target_relation="rule_promulgation",
+        )
+        fb_admin_rule = FeedbackResult(user_resolved=False, human_rejected=True, provenance=prov_admin_rule)
+        self.assertAlmostEqual(compute_efp_prime_constraint(fb_admin_rule), 1.0, places=2)
 
     def test_authoritative_general_claim_is_not_full_1_0(self):
         """公式機関による表明であっても claim_type="general"（一般広報等）は 1.0 に固定されず 0.90 に抑制されること"""

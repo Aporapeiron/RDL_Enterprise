@@ -47,8 +47,9 @@ class RelationProvenance:
     channel: str = "standard"           # "standard" | "official_doc" | "audit_log" | "admin_override" | "feedback"
     is_authoritative: bool = False      # 制度的公式記録・オラクル決定か
     authority_scope: Optional[str] = None # 管轄ドメイン・スコープ（例: "workflow", "hr", "security", "*"）
-    claim_type: str = "general"         # 言明タイプ（"fact" | "rule" | "judgment" | "policy" | "general"）
+    claim_type: Optional[str] = None   # 言明タイプ（"fact" | "rule" | "judgment" | "policy" | "general"）
     relation_type: Optional[str] = None # 関係性質（時間減衰半減期を決定: "historical_fact" | "current_state" | "policy" | "rule" | "ephemeral" など）
+    target_relation: Optional[str] = None # 具体的な関係種別（"rule_promulgation", "approval_authority", "factual_report", "general_inquiry" など）
 
 
 @dataclass
