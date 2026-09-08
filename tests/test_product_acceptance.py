@@ -500,6 +500,40 @@ class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
         self.assertIsNone(legacy_node.last_opposing_at)
         self.assertEqual(legacy_node.legacy_evidence_at, "2026-09-01T00:00:00Z")
 
+        # 7. mixed legacy history (success + failure) のフェイルクローズ検査 (両方混在時は極性推定を完全排除)
+        mixed_legacy_node = MBNode(
+            id="node_legacy_mixed",
+            domain="workflow",
+            trigger_pattern={"exact_keys": ["混在レガシー案件"]},
+            action_template={"type": "direct_reply", "payload": "mixed"},
+            last_updated="2026-09-01T00:00:00Z",
+            success_count=3,
+            failure_count=2,
+            approval_count=1,
+            rejection_count=1,
+        )
+        self.assertIsNone(mixed_legacy_node.last_support_at)
+        self.assertIsNone(mixed_legacy_node.last_opposing_at)
+        self.assertEqual(mixed_legacy_node.legacy_evidence_at, "2026-09-01T00:00:00Z")
+
+        bundle_mixed = locator.locate_bundle_for_node(runtime.mb_graph, mixed_legacy_node, ctx_before)
+        self.assertEqual(bundle_mixed.freshness, 0.0)
+        self.assertEqual(bundle_mixed.opposing_freshness, 0.0)
+
+        # 8. policy + failure / approval + failure 等の混在もフェイルクローズされること
+        policy_failed_node = MBNode(
+            id="node_policy_failed",
+            domain="workflow",
+            trigger_pattern={"exact_keys": ["ポリシー違反案件"]},
+            action_template={"type": "direct_reply", "payload": "policy_fail"},
+            authority_level="policy",
+            failure_count=1,
+            last_updated="2026-09-01T00:00:00Z",
+        )
+        self.assertIsNone(policy_failed_node.last_support_at)
+        self.assertIsNone(policy_failed_node.last_opposing_at)
+        self.assertEqual(policy_failed_node.legacy_evidence_at, "2026-09-01T00:00:00Z")
+
 
 if __name__ == "__main__":
     unittest.main()

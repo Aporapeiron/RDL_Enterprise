@@ -1102,7 +1102,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
             confidence=0.8,
             approval_count=100,
             rejection_count=80,
-            last_updated=now.isoformat(),
+            last_support_at=now.isoformat(),
         )
         graph.add_or_update(n_primary)
         graph.add_or_update(n_stale)
@@ -1238,7 +1238,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
         # 陳腐化
         n_stale = MBNode(id="n_stale", domain="it", trigger_pattern={"exact_keys": ["パスワードリセット"]}, action_template={"type": "direct_reply", "payload": "A"}, approval_count=5, last_updated=(now - timedelta(days=400)).isoformat())
         # 大量拒絶
-        n_rej = MBNode(id="n_rej", domain="it", trigger_pattern={"exact_keys": ["パスワードリセット"]}, action_template={"type": "direct_reply", "payload": "A"}, approval_count=5, rejection_count=20, last_updated=now.isoformat())
+        n_rej = MBNode(id="n_rej", domain="it", trigger_pattern={"exact_keys": ["パスワードリセット"]}, action_template={"type": "direct_reply", "payload": "A"}, approval_count=5, rejection_count=20, last_support_at=now.isoformat())
         # アクション対立
         n_conflict = MBNode(id="n_conflict", domain="it", trigger_pattern={"exact_keys": ["パスワードリセット"]}, action_template={"type": "ask_human", "payload": "本人確認要"}, approval_count=5, last_updated=now.isoformat())
         # 健全な支援ノード

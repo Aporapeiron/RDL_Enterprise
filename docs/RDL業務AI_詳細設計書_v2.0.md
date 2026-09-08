@@ -110,15 +110,16 @@ graph TD
 * **沈澱（Sedimentation）と観測保留（UNKNOWN ≠ FAILURE）の契約**:
   * 案件受付時（未確認時）にはライブ Level 0 キャッシュへ書き込まず、非同期ライフサイクルを経て `user_resolved == True` かつ `!human_rejected` が確認された段階で初めて `sediment_level0()` を呼び出す。
   * タイムアウトや未回収案件（UNKNOWN）は判断の誤り（FAILURE）ではなく未確定な未回収関係（$\xi$）の残存として扱い、ノード統計（`failure_count` / `confidence`）を悪化させず `unresolved_count` として独立記録。
-* **意味的証拠鮮度（`last_evidence_at`）と観測残差（`last_observed_at`）の直交分離**:
-  * 関係拘束スコア（`freshness`）の計算元には、肯定的・確定的な経験更新（成功・失敗・方針注入・結晶化）のタイムスタンプである `last_evidence_at` のみを用いる。
-  * タイムアウト等の観測不能（UNKNOWN）は観測時刻 `last_observed_at` のみを更新し、`last_evidence_at` は保存される（「未確認放置案件による不当な鮮度リフレッシュ」の完全遮断）。
-  * グラフ同一性（`content_hash`）には行動力学・時間拘束に直結する `last_evidence_at` を包含し、過渡的観測残差 $\xi$ である `last_observed_at` および `unresolved_count` は除外する。
+* **意味的証拠鮮度と観測残差（`last_observed_at`）の直交分離**:
+  * 監査用プロパティとして最新確定証拠時刻 `last_evidence_at = max(last_support_at, last_opposing_at)` を保持しつつ、関係拘束スコア（Core freshness）の計算には肯定的支持証拠時刻 `last_support_at` のみを用いる。
+  * 反証証拠時刻 `last_opposing_at` は対向鮮度および歴史的反証拘束シグナル（破断検査側）へと直交伝播させる。
+  * タイムアウト等の観測不能（UNKNOWN）は観測時刻 `last_observed_at` のみを更新し、`last_support_at` / `last_opposing_at` は保存される（「未確認放置案件による不当な鮮度リフレッシュ」の完全遮断）。
+  * グラフ同一性（`content_hash`）には行動力学・時間拘束に直結する `last_support_at` および `last_opposing_at` を包含し、過渡的観測残差 $\xi$ である `last_observed_at`、`unresolved_count`、`legacy_evidence_at` は除外する。
 * **証拠極性の分離（Evidence Polarity Separation: 支持 vs 反証）**:
   * 証拠タイムスタンプを肯定的支持証拠（`last_support_at`）と否定的反証証拠（`last_opposing_at`）に分離。
   * 失敗・差し戻し（FAILURE / REJECTED）は `last_opposing_at` を更新し、`last_support_at` は保存されるため、失敗によって既存拘束 $C_{rel}$ の支持鮮度（`freshness`）が不当に上昇する逆転現象を根絶。
   * **厳格なフォールバック排除（Strict Polarity Isolation）**: `constraint.py` における支持鮮度（`freshness`）の計算は、すべて `last_support_at` のみから算出され、`last_updated` への暗黙フォールバック（対向のみノードが `last_opposing_at` 経由で支持鮮度を得る抜け穴）を完全に排除。`last_support_at` が未指定（`None`）のノードは即座に `freshness = 0.0` として計算される。
-  * **フェイルクローズなレガシー移行 & セッター遮断**: 旧データ取り込み時、実績ゼロ（`success=0, failure=0`）のノードに対して勝手に `last_support_at` を捏造することを禁止（公理 B5）。起源不明のタイムスタンプは `legacy_evidence_at`（$\xi$）として保持し、支持鮮度には寄与させない。またレガシーセッター（`@last_evidence_at.setter`, `@last_updated.setter`）は `AttributeError` を送出する読み取り専用プロパティとし、極性曖昧な代入を型・契約レベルで遮断。
+  * **フェイルクローズなレガシー移行 & セッター遮断**: 旧データ取り込み時、支持実績のみのノードは `last_support_at`、反証実績のみのノードは `last_opposing_at` へ移行するが、実績ゼロまたは支持・反証の双方が混在するノード（最後の更新極性が不明なノード）に対しては勝手に極性を捏造することを禁止（公理 B5）。タイムスタンプは `legacy_evidence_at`（$\xi$）としてのみ保持し、支持鮮度・対向鮮度はともに `0.0` とする。またレガシーセッター（`@last_evidence_at.setter`, `@last_updated.setter`）は `AttributeError` を送出する読み取り専用プロパティとし、極性曖昧な代入を型・契約レベルで遮断。
   * **設定化された反証破断検査（Rupture Probe Thresholds）**: 過去の反証実績は $M_B$ 内部の「歴史的反証拘束シグナル（`historical_opposing_signal`）」として蓄積・計算され、`ConstraintConfig` の明示パラメータ（`rupture_opposing_freshness_threshold: 0.7`, `rupture_opposing_signal_threshold: 1.2`, `rupture_opposing_support_freshness_cap: 0.5`）に基づいて破断検査（`RuptureProbe`）の内部亀裂判定に用いられる。
   * ※ 外界後続入力 $EFP'$ の拘束 $C'$ と、過去の反証履歴（$M_B$ 状態）は厳格に分離され、$C'$ に歴史的反証シグナルを混同しない（SPEC公理整合）。
 

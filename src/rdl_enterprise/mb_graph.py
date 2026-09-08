@@ -177,19 +177,21 @@ class MBNode:
         self.last_observed_at = _to_iso(last_observed_at)
         self.legacy_evidence_at = _to_iso(legacy_evidence_at)
 
-        # レガシー移行処理 (B5: 極性の無断捏造禁止)
+        # レガシー移行処理 (B5: 極性の無断捏造禁止・混在履歴の完全フェイルクローズ)
         # last_updated または last_evidence_at が渡され、かつ last_support_at が未指定の場合:
         legacy_val = _to_iso(last_evidence_at if last_evidence_at is not None else last_updated)
         if legacy_val is not None and self.last_support_at is None and self.last_opposing_at is None:
-            if success_count > 0 or approval_count > 0 or authority_level == "policy":
-                # 明示的な成功・承認実績、または権威コミットが存在する場合のみ SUPPORT 証拠として移行
+            has_support = bool(success_count > 0 or approval_count > 0 or authority_level == "policy")
+            has_oppose = bool(failure_count > 0 or rejection_count > 0)
+            if has_support and not has_oppose:
+                # 明示的な成功・承認実績（または権威コミット）のみが存在する場合のみ SUPPORT 証拠として移行
                 self.last_support_at = legacy_val
-            elif failure_count > 0 or rejection_count > 0:
+            elif has_oppose and not has_support:
                 # 失敗・拒絶実績のみが存在する場合は OPPOSE 証拠として移行
                 self.last_opposing_at = legacy_val
             else:
-                # 実績ゼロで起源極性が不明なレガシーノード:
-                # 極性を捏造せず legacy_evidence_at (ξ) としてのみ保持し、last_support_at / last_opposing_at は None のままとする
+                # 両方混在（最後の更新極性が不明）、または実績ゼロ:
+                # 極性を一切捏造せず legacy_evidence_at (ξ) としてのみ保持し、last_support_at / last_opposing_at は None のままとする (Fail-Closed)
                 pass
             self.legacy_evidence_at = legacy_val
 
