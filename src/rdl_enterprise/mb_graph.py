@@ -3,7 +3,15 @@ import json
 import math
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
+from enum import Enum
 from typing import Optional, Dict, List, Any
+
+
+class EvidencePolarity(str, Enum):
+    """確定証拠の極性 (BASE v2.0 §4.2: evidence != supporting evidence)"""
+    SUPPORT = "support"
+    OPPOSE = "oppose"
+    UNRESOLVED = "unresolved"
 
 class ReadOnlyDict(dict):
     """凍結ノード内部の辞書不変性を担保する読み取り専用辞書"""
@@ -110,8 +118,10 @@ class MBNode:
     source_lineage: Optional[str] = None  # 上流系譜 (例: "manual_hr_v1", "policy_sec_2026")
     node_relations: Dict[str, str] = field(default_factory=dict) # 他ノードとの明示的関係: {node_id: "support" | "contradict" | "independent" | "unknown"}
     created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
-    last_evidence_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+    last_support_at: Optional[str] = None
+    last_opposing_at: Optional[str] = None
     last_observed_at: Optional[str] = None
+    legacy_evidence_at: Optional[str] = None
 
     def __init__(
         self,
@@ -131,8 +141,11 @@ class MBNode:
         source_lineage: Optional[str] = None,
         node_relations: Optional[Dict[str, str]] = None,
         created_at: Optional[str] = None,
-        last_evidence_at: Optional[str] = None,
+        last_support_at: Optional[str] = None,
+        last_opposing_at: Optional[str] = None,
         last_observed_at: Optional[str] = None,
+        legacy_evidence_at: Optional[str] = None,
+        last_evidence_at: Optional[str] = None,
         last_updated: Optional[str] = None,
     ):
         self.is_frozen = False
@@ -159,27 +172,61 @@ class MBNode:
             return str(val)
 
         self.created_at = _to_iso(created_at) or datetime.utcnow().isoformat()
-        raw_evidence = last_evidence_at if last_evidence_at is not None else last_updated
-        self.last_evidence_at = _to_iso(raw_evidence) or datetime.utcnow().isoformat()
+        self.last_support_at = _to_iso(last_support_at)
+        self.last_opposing_at = _to_iso(last_opposing_at)
         self.last_observed_at = _to_iso(last_observed_at)
+        self.legacy_evidence_at = _to_iso(legacy_evidence_at)
+
+        # レガシー移行処理 (B5: 極性の無断捏造禁止)
+        # last_updated または last_evidence_at が渡され、かつ last_support_at が未指定の場合:
+        legacy_val = _to_iso(last_evidence_at if last_evidence_at is not None else last_updated)
+        if legacy_val is not None and self.last_support_at is None and self.last_opposing_at is None:
+            if success_count > 0 or approval_count > 0 or authority_level == "policy":
+                # 明示的な成功・承認実績、または権威コミットが存在する場合のみ SUPPORT 証拠として移行
+                self.last_support_at = legacy_val
+            elif failure_count > 0 or rejection_count > 0:
+                # 失敗・拒絶実績のみが存在する場合は OPPOSE 証拠として移行
+                self.last_opposing_at = legacy_val
+            else:
+                # 実績ゼロで起源極性が不明な初期ノード（seedなど）は極性を捏造せず legacy_evidence_at / last_support_at へ安全に配置
+                # ※初期ノードは作成時コミット（正の初期知識）とみなし last_support_at を設定
+                self.last_support_at = legacy_val
+            self.legacy_evidence_at = legacy_val
+
+        # 新規作成時（いずれも未指定）の初期化:
+        if self.last_support_at is None and self.last_opposing_at is None and self.legacy_evidence_at is None:
+            self.last_support_at = self.created_at
+
         if is_frozen:
             self.is_frozen = True
 
     @property
+    def last_evidence_at(self) -> str:
+        """
+        後方互換・監査用プロパティ。
+        最後に何らかの確定証拠（支持または反証）が到来した最新時刻。
+        ※Core freshness（支持鮮度）の計算には直接使ってはならない。
+        """
+        candidates = [x for x in (self.last_support_at, self.last_opposing_at) if x]
+        return max(candidates) if candidates else self.created_at
+
+    @last_evidence_at.setter
+    def last_evidence_at(self, value: Any):
+        iso_val = value.isoformat() if isinstance(value, datetime) else str(value)
+        # 後方互換代入: 既存コードやテストからの代入時は支持証拠時刻として反映
+        self.last_support_at = iso_val
+
+    @property
     def last_updated(self) -> str:
-        """
-        後方互換用プロパティ。
-        意味的証拠の鮮度（last_evidence_at）を返し、freshness 計算に直接連動する。
-        観測不能・タイムアウトによる last_observed_at はここには反映されない。
-        """
+        """後方互換用プロパティ（last_evidence_at への委譲）"""
         return self.last_evidence_at
 
     @last_updated.setter
     def last_updated(self, value: Any):
         if isinstance(value, datetime):
-            self.last_evidence_at = value.isoformat()
+            self.last_support_at = value.isoformat()
         else:
-            self.last_evidence_at = str(value)
+            self.last_support_at = str(value)
 
     def __setattr__(self, name: str, value: Any):
         if getattr(self, "is_frozen", False) and name != "is_frozen":
@@ -244,7 +291,7 @@ class MBNode:
         if approved:
             self.approval_count += 1
         self.confidence = min(1.0, self.confidence + 0.05)
-        self.last_evidence_at = datetime.utcnow().isoformat()
+        self.last_support_at = datetime.utcnow().isoformat()
 
     def record_failure(self, rejected: bool = False):
         if self.is_frozen:
@@ -253,14 +300,14 @@ class MBNode:
         if rejected:
             self.rejection_count += 1
         self.confidence = max(0.1, self.confidence - 0.1)
-        self.last_evidence_at = datetime.utcnow().isoformat()
+        self.last_opposing_at = datetime.utcnow().isoformat()
 
     def record_unresolved(self):
         """
         観測不能・タイムアウト（UNKNOWN）の記録。
         判断が誤っていたわけではないため、failure_count や confidence は減衰させず、
         未回収関係（ξ）の滞留・未解決観測として独立にカウントする。
-        意味的証拠の更新（last_evidence_at）は行わず、観測タイムスタンプ（last_observed_at）のみを更新する。
+        意味的証拠の更新（last_support_at / last_opposing_at）は行わず、観測タイムスタンプ（last_observed_at）のみを更新する。
         """
         if self.is_frozen:
             raise RuntimeError(f"MBNode(id={self.id}) は凍結(frozen)されています。学習・統計更新は禁止されています。")
@@ -320,9 +367,9 @@ class MBGraph:
         """
         グラフの論理的・力学的実体に対する暗号論的ハッシュ (SHA-256)
         ノード構造、ルール、アクション定義に加え、慣性質量 ||M_B|| と κ に直結する
-        成功・失敗・承認・差し戻し回数、m0、および行動状態・時間拘束（freshness）に直結する
-        last_evidence_at を完全包含する。
-        （過渡的観測残差 ξ である created_at / last_observed_at / unresolved_count のみ除外）
+        成功・失敗・承認・差し戻し回数、m0、および行動状態・時間拘束（freshness / opposing）に直結する
+        last_support_at および last_opposing_at を完全包含する。
+        （過渡的観測残差 ξ である created_at / last_observed_at / unresolved_count / legacy_evidence_at のみ除外）
         """
         canonical_nodes = []
         for nid in sorted(self.nodes.keys()):
@@ -338,7 +385,8 @@ class MBGraph:
                 "failure_count": node.failure_count,
                 "approval_count": node.approval_count,
                 "rejection_count": node.rejection_count,
-                "last_evidence_at": node.last_evidence_at,
+                "last_support_at": node.last_support_at,
+                "last_opposing_at": node.last_opposing_at,
             }
             if getattr(node, "source_id", None) is not None:
                 n_dict["source_id"] = node.source_id

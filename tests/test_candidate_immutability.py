@@ -216,15 +216,21 @@ class TestCandidateImmutabilityAndBinding(unittest.TestCase):
         tampered2.m0 = 5.0
         self.assertNotEqual(tampered2.content_hash(), base_hash)
 
-        # last_evidence_at の改変（意味的証拠の更新時刻は freshness およびグラフ同一性に直結するためハッシュが変化）
-        tampered3 = MBGraph.from_dict(self.candidate_graph.to_dict())
-        tampered3.get("node_wf").last_evidence_at = "2020-01-01T00:00:00"
-        self.assertNotEqual(tampered3.content_hash(), base_hash)
+        # last_support_at の改変（支持証拠の更新時刻は freshness およびグラフ同一性に直結するためハッシュが変化）
+        tampered3a = MBGraph.from_dict(self.candidate_graph.to_dict())
+        tampered3a.get("node_wf").last_support_at = "2020-01-01T00:00:00"
+        self.assertNotEqual(tampered3a.content_hash(), base_hash)
 
-        # last_observed_at および unresolved_count の改変（過渡的観測残差 ξ であり、グラフ同一性には影響しないためハッシュ不変）
+        # last_opposing_at の改変（対向証拠の更新時刻も対向力学・破断感度およびグラフ同一性に直結するためハッシュが変化）
+        tampered3b = MBGraph.from_dict(self.candidate_graph.to_dict())
+        tampered3b.get("node_wf").last_opposing_at = "2026-05-01T00:00:00"
+        self.assertNotEqual(tampered3b.content_hash(), base_hash)
+
+        # last_observed_at, unresolved_count, legacy_evidence_at の改変（過渡的観測残差 ξ であり、グラフ同一性には影響しないためハッシュ不変）
         tampered4 = MBGraph.from_dict(self.candidate_graph.to_dict())
         tampered4.get("node_wf").last_observed_at = "2026-12-31T23:59:59"
         tampered4.get("node_wf").unresolved_count += 10
+        tampered4.get("node_wf").legacy_evidence_at = "2019-01-01T00:00:00"
         self.assertEqual(tampered4.content_hash(), base_hash)
 
     def test_canary_observations_do_not_pollute_prod_xi_obs_or_theta_eff(self):

@@ -395,6 +395,74 @@ class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
         self.assertNotEqual(node.last_evidence_at, initial_evidence_at)
         self.assertNotEqual(runtime.mb_graph.content_hash(), initial_hash)
 
+    def test_evidence_polarity_separation_and_historical_opposing_signal(self):
+        """受入条件 13 (P0-P1): 支持証拠と反証証拠の極性分離および歴史的反証シグナル (historical_opposing_signal) の独立性"""
+        from datetime import datetime, timezone, timedelta
+        from rdl_enterprise.constraint import RelationConstraintLocator, ConstraintContext
+        from rdl_enterprise.snapshot import FrozenInterpretationContext
+
+        runtime = EnterpriseRuntime(mb_graph=self.prod_graph)
+        node = runtime.mb_graph.get("node_wf_ringi")
+
+        # 過去の支持証拠時刻（250日前: half_life=90日なので約0.14）に設定、反証証拠は None
+        stale_support_time = (datetime.now(timezone.utc) - timedelta(days=250)).isoformat()
+        node.last_support_at = stale_support_time
+        node.last_opposing_at = None
+        node.last_observed_at = None
+
+        locator = RelationConstraintLocator()
+        efp_q = BusinessInput("T_POLARITY_01", "U1", "workflow", "稟議申請の方法")
+        ctx_before = ConstraintContext(
+            efp=efp_q,
+            current_time=datetime.now(timezone.utc),
+            mb_version=self.prod_graph.version,
+            active_domain="workflow",
+        )
+        bundle_before = locator.locate_bundle_for_node(runtime.mb_graph, node, ctx_before)
+        initial_support_freshness = bundle_before.freshness
+        initial_opposing_signal = bundle_before.historical_opposing_signal
+        self.assertLess(initial_support_freshness, 0.2)  # 250日前なので陳腐化
+        self.assertEqual(initial_opposing_signal, 0.0)  # 反証実績なし
+
+        # 1. 案件受付 -> 失敗・差し戻し (FAILURE / REJECTED)
+        runtime.dispatch_ticket(efp_q)
+        runtime.resolve_ticket_feedback("T_POLARITY_01", FeedbackResult(user_resolved=False, human_rejected=True))
+
+        # 反証極性 (OPPOSE) の記録確認
+        self.assertEqual(node.failure_count, 1)
+        self.assertEqual(node.rejection_count, 1)
+        self.assertIsNotNone(node.last_opposing_at)
+
+        # 支持極性 (SUPPORT) は不変（100日前のまま）であること
+        self.assertEqual(node.last_support_at, stale_support_time)
+
+        # 失敗により支持鮮度 (Core freshness) が不当に上昇していないことの確認！
+        bundle_after_failure = locator.locate_bundle_for_node(runtime.mb_graph, node, ctx_before)
+        self.assertEqual(bundle_after_failure.freshness, initial_support_freshness)
+
+        # 一方で歴史的反証シグナル (historical_opposing_signal) は大きく立ち上がっていること
+        self.assertGreater(bundle_after_failure.opposing_freshness, 0.9)
+        self.assertGreater(bundle_after_failure.historical_opposing_signal, 1.0)
+
+        # 2. タイムアウト (UNKNOWN) の観測保留
+        efp_q2 = BusinessInput("T_POLARITY_02", "U2", "workflow", "稟議申請の方法")
+        runtime.dispatch_ticket(efp_q2)
+        runtime.expire_pending_tickets(["T_POLARITY_02"])
+
+        # 観測タイムスタンプのみ更新され、支持証拠・反証証拠のタイムスタンプは保存されること
+        self.assertEqual(node.last_support_at, stale_support_time)
+        self.assertEqual(node.last_opposing_at, bundle_after_failure.core.opposing_freshness and node.last_opposing_at)
+
+        # 3. 成功確認 (SUCCESS) による支持証拠の更新
+        efp_q3 = BusinessInput("T_POLARITY_03", "U3", "workflow", "稟議申請の方法")
+        runtime.dispatch_ticket(efp_q3)
+        runtime.resolve_ticket_feedback("T_POLARITY_03", FeedbackResult(user_resolved=True, human_approved=True))
+
+        # 支持極性 (SUPPORT) が現在時刻に更新され、Core freshness が回復すること
+        self.assertNotEqual(node.last_support_at, stale_support_time)
+        bundle_after_success = locator.locate_bundle_for_node(runtime.mb_graph, node, ctx_before)
+        self.assertGreater(bundle_after_success.freshness, 0.9)
+
 
 if __name__ == "__main__":
     unittest.main()

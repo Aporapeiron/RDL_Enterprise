@@ -90,6 +90,8 @@ class BundleCore:
     authority_weight: float = 0.0
     source_strength: float = 0.0
     source_lineages: List[str] = field(default_factory=list)
+    opposing_freshness: float = 0.0      # 反証証拠の最新鮮度 ∈ [0, 1]
+    historical_opposing_signal: float = 0.0  # M_B 内部に蓄積された歴史的反証拘束シグナル
 
 
 @dataclass
@@ -129,6 +131,8 @@ class ConstraintBundle:
         auxiliary_convergence_signal: float = 0.0,
         observation_count: int = 0,
         independent_sources: Optional[List[str]] = None,
+        opposing_freshness: float = 0.0,
+        historical_opposing_signal: float = 0.0,
     ):
         if core is not None:
             self.core = core
@@ -141,6 +145,8 @@ class ConstraintBundle:
                 freshness=freshness,
                 authority_weight=authority_weight,
                 source_strength=source_strength,
+                opposing_freshness=opposing_freshness,
+                historical_opposing_signal=historical_opposing_signal,
             )
         if auxiliary is not None:
             self.auxiliary = auxiliary
@@ -191,6 +197,14 @@ class ConstraintBundle:
     @property
     def source_strength(self) -> float:
         return self.core.source_strength
+
+    @property
+    def opposing_freshness(self) -> float:
+        return self.core.opposing_freshness
+
+    @property
+    def historical_opposing_signal(self) -> float:
+        return self.core.historical_opposing_signal
 
     # --- 未回収関係 (auxiliary ξ) への完全委譲プロパティ ---
     @property
@@ -370,11 +384,14 @@ def _compute_relevance(query: str, pattern: dict) -> float:
     return best_rel
 
 
-def _compute_freshness(last_updated_iso: str, half_life_days: float, now: datetime) -> float:
+def _compute_freshness(last_updated_iso: Optional[str], half_life_days: float, now: datetime) -> float:
     """
     最終更新日からの経過日数をもとに freshness ∈ [0, 1] を算出。
     half_life_days 経過で 0.5、それ以降は指数減衰。
+    None または空文字列の場合は証拠未到来として 0.0 を返す。
     """
+    if not last_updated_iso:
+        return 0.0
     try:
         updated = datetime.fromisoformat(last_updated_iso.replace("Z", "+00:00"))
         if updated.tzinfo is None:
@@ -647,7 +664,8 @@ def is_support_node_eligible(
     if s_rel < 0.3:
         return False
 
-    s_fresh = _compute_freshness(support_node.last_updated, cfg.freshness_half_life_days, now)
+    support_time = getattr(support_node, "last_support_at", None) or getattr(support_node, "last_updated", None)
+    s_fresh = _compute_freshness(support_time, cfg.freshness_half_life_days, now)
     if s_fresh < cfg.rupture_freshness_threshold:
         return False
 
@@ -696,7 +714,16 @@ class RelationConstraintLocator:
         keys = node.trigger_pattern.get("exact_keys", [])
         rel = _compute_relevance(query, node.trigger_pattern)
 
-        fresh = _compute_freshness(node.last_updated, cfg.freshness_half_life_days, now)
+        # 支持証拠鮮度 (Core freshness): last_support_at 由来
+        support_time = getattr(node, "last_support_at", None) or getattr(node, "last_updated", None)
+        fresh = _compute_freshness(support_time, cfg.freshness_half_life_days, now)
+
+        # 反証証拠鮮度 & 歴史的反証拘束シグナル (Opposing Signal)
+        opp_time = getattr(node, "last_opposing_at", None)
+        opp_fresh = _compute_freshness(opp_time, cfg.freshness_half_life_days, now)
+        total_trials = node.success_count + node.failure_count + node.rejection_count
+        opp_signal = opp_fresh * (1.0 + (node.failure_count + 2.0 * node.rejection_count) / max(1.0, total_trials + 1.0))
+
         auth = _compute_authority_weight(node.authority_level)
         src = _compute_source_strength(node.approval_count, node.rejection_count)
         conv = 0.5  # 局所評価時のニュートラル収束値
@@ -804,6 +831,8 @@ class RelationConstraintLocator:
             inferred_node_ids=inferred_node_ids,
             auxiliary_constraint_signal=aux_signal,
             auxiliary_convergence_signal=aux_conv_signal,
+            opposing_freshness=opp_fresh,
+            historical_opposing_signal=opp_signal,
         )
 
     def locate_bundle_for_locus(
@@ -849,7 +878,8 @@ class RelationConstraintLocator:
 
         for n in nodes:
             rel = _compute_relevance(query, n.trigger_pattern)
-            fresh = _compute_freshness(n.last_updated, cfg.freshness_half_life_days, now)
+            support_time = getattr(n, "last_support_at", None) or getattr(n, "last_updated", None)
+            fresh = _compute_freshness(support_time, cfg.freshness_half_life_days, now)
             auth = _compute_authority_weight(n.authority_level)
             src = _compute_source_strength(n.approval_count, n.rejection_count)
             base_score = _compute_constraint_score(rel, fresh, auth, src, 0.5, cfg)
@@ -906,6 +936,12 @@ class RelationConstraintLocator:
         core_conv = min(1.0, 0.4 + 0.15 * len(core_lineages))
         aux_conv = min(0.5, 0.05 * len(aux_lineages) + 0.02 * len(inferred_node_ids))
 
+        # 代表ノードの反証証拠シグナル
+        opp_time = getattr(primary_node, "last_opposing_at", None)
+        opp_fresh = _compute_freshness(opp_time, cfg.freshness_half_life_days, now)
+        total_trials = primary_node.success_count + primary_node.failure_count + primary_node.rejection_count
+        opp_signal = opp_fresh * (1.0 + (primary_node.failure_count + 2.0 * primary_node.rejection_count) / max(1.0, total_trials + 1.0))
+
         return ConstraintBundle(
             node_ids=core_node_ids,  # primary + 明示的 support のみ
             locus_type="strong" if core_score >= 0.6 else "subgraph",
@@ -919,6 +955,8 @@ class RelationConstraintLocator:
             inferred_node_ids=inferred_node_ids,  # auxiliary ξ
             auxiliary_constraint_signal=aux_signal,
             auxiliary_convergence_signal=aux_conv,
+            opposing_freshness=opp_fresh,
+            historical_opposing_signal=opp_signal,
         )
 
     def locate(
@@ -957,7 +995,14 @@ class RelationConstraintLocator:
             keys = node.trigger_pattern.get("exact_keys", [])
             rel = _compute_relevance(query, node.trigger_pattern)
 
-            fresh = _compute_freshness(node.last_updated, cfg.freshness_half_life_days, now)
+            support_time = getattr(node, "last_support_at", None) or getattr(node, "last_updated", None)
+            fresh = _compute_freshness(support_time, cfg.freshness_half_life_days, now)
+
+            opp_time = getattr(node, "last_opposing_at", None)
+            opp_fresh = _compute_freshness(opp_time, cfg.freshness_half_life_days, now)
+            total_trials = node.success_count + node.failure_count + node.rejection_count
+            opp_signal = opp_fresh * (1.0 + (node.failure_count + 2.0 * node.rejection_count) / max(1.0, total_trials + 1.0))
+
             auth = _compute_authority_weight(node.authority_level)
             src = _compute_source_strength(node.approval_count, node.rejection_count)
 
@@ -980,6 +1025,8 @@ class RelationConstraintLocator:
                 "authority_weight": auth,
                 "source_strength": src,
                 "convergence": conv,
+                "opposing_freshness": opp_fresh,
+                "historical_opposing_signal": opp_signal,
             }
 
         # --- ドメインフィルタ（境界 B の適用） ---
@@ -1087,6 +1134,8 @@ class RelationConstraintLocator:
                     inferred_node_ids=inferred_node_ids,
                     auxiliary_constraint_signal=aux_signal,
                     auxiliary_convergence_signal=aux_conv_signal,
+                    opposing_freshness=d.get("opposing_freshness", 0.0),
+                    historical_opposing_signal=d.get("historical_opposing_signal", 0.0),
                 ))
 
         # --- (b) 構造的橋の高速検出 (O(M * keys)) ---
@@ -1458,6 +1507,19 @@ class RuptureProbe:
                         opposing_strength=opposing,
                         rupture_reason=f"rejection 比率超過による破断 (ratio={rejection_ratio:.2f} >= {cfg.rupture_rejection_ratio_threshold})",
                     )
+
+        # 蓄積された歴史的反証シグナル (historical_opposing_signal) による破断検査
+        # 過去の反証が新鮮（opposing_freshness > 0.7）かつ支持証拠が陳腐（freshness < 0.5）で、
+        # 反証シグナルが閾値(1.2)を超過している場合は内部亀裂として破断判定する
+        if getattr(bundle, "historical_opposing_signal", 0.0) > 1.2 and bundle.freshness < 0.5:
+            return _make_result(
+                verdict="break",
+                opposing_strength=1.0 + bundle.historical_opposing_signal,
+                rupture_reason=(
+                    f"蓄積反証シグナル超過による破断 (opposing_signal={bundle.historical_opposing_signal:.2f}, "
+                    f"support_freshness={bundle.freshness:.2f})"
+                ),
+            )
 
         # 構造的橋だがソースが極端に弱い場合（単一障害点かつ根拠薄弱）
         if bundle.is_structural_bridge and bundle.source_strength < 0.3:

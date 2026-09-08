@@ -114,6 +114,11 @@ graph TD
   * 関係拘束スコア（`freshness`）の計算元には、肯定的・確定的な経験更新（成功・失敗・方針注入・結晶化）のタイムスタンプである `last_evidence_at` のみを用いる。
   * タイムアウト等の観測不能（UNKNOWN）は観測時刻 `last_observed_at` のみを更新し、`last_evidence_at` は保存される（「未確認放置案件による不当な鮮度リフレッシュ」の完全遮断）。
   * グラフ同一性（`content_hash`）には行動力学・時間拘束に直結する `last_evidence_at` を包含し、過渡的観測残差 $\xi$ である `last_observed_at` および `unresolved_count` は除外する。
+* **証拠極性の分離（Evidence Polarity Separation: 支持 vs 反証）**:
+  * 証拠タイムスタンプを肯定的支持証拠（`last_support_at`）と否定的反証証拠（`last_opposing_at`）に分離。
+  * 失敗・差し戻し（FAILURE / REJECTED）は `last_opposing_at` を更新し、`last_support_at` は保存されるため、失敗によって既存拘束 $C_{rel}$ の支持鮮度（`freshness`）が不当に上昇する逆転現象を根絶。
+  * 過去の反証実績は $M_B$ 内部の「歴史的反証拘束シグナル（`historical_opposing_signal`）」として蓄積・計算され、破断検査（`RuptureProbe`）の内部亀裂判定に用いられる。
+  * ※ 外界後続入力 $EFP'$ の拘束 $C'$ と、過去の反証履歴（$M_B$ 状態）は厳格に分離され、$C'$ に歴史的反証シグナルを混同しない（SPEC公理整合）。
 
 ### 3.4 権威的方針注入（Authority Injection）の分離
 * `InterpCascade.crystallize_rule()`: 業務成功から自律生成される経験的ルール（`origin="experience"`, `source_lineage="sedimentation:experience"`）。
@@ -178,6 +183,7 @@ $H_{total} \ge \theta_{eff}$ に達した瞬間、巡航相（Cruise）から再
 | **Test 10** | TIMEOUTの観測保留 | タイムアウト案件（UNKNOWN）において、ノードの `failure_count` や `confidence` が悪化せず、`unresolved_count` として観測保留記録されること。 |
 | **Test 11** | キャッシュ移行の起源明示 | 旧形式キャッシュのインポート時に `source_mb_version` の明示を義務付け、現行バージョンへの不当な自己昇格が防止されること。 |
 | **Test 12** | 意味的鮮度と残差の分離 | タイムアウト案件（UNKNOWN）において、ノードの `last_evidence_at` および `content_hash` が保存され、不当な鮮度リフレッシュが発生しないこと。 |
+| **Test 13** | 証拠極性分離と反証シグナル | 失敗・差し戻し発生時に `last_opposing_at` が更新され、`last_support_at` は保存されて支持鮮度の上昇が防止されること。また歴史的反証シグナルが破断検査に反映され、$C'$ と分離されること。 |
 
 ---
 
