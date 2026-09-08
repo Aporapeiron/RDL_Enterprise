@@ -107,6 +107,7 @@ class MBNode:
     is_frozen: bool = False
     source_id: Optional[str] = None       # 固有の発行元・作成元ID (BASE v2.0 §4.2: ソース独立性)
     source_lineage: Optional[str] = None  # 上流系譜 (例: "manual_hr_v1", "policy_sec_2026")
+    node_relations: Dict[str, str] = field(default_factory=dict) # 他ノードとの明示的関係: {node_id: "support" | "contradict" | "independent" | "unknown"}
     created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
     last_updated: str = field(default_factory=lambda: datetime.utcnow().isoformat())
 
@@ -124,6 +125,7 @@ class MBNode:
         """ノードを凍結（Deep Freeze: 属性代入および内部辞書・リストの変更を封殺）"""
         super().__setattr__("trigger_pattern", _deep_freeze_value(self.trigger_pattern))
         super().__setattr__("action_template", _deep_freeze_value(self.action_template))
+        super().__setattr__("node_relations", _deep_freeze_value(self.node_relations))
         super().__setattr__("is_frozen", True)
 
     def unfreeze(self):
@@ -257,6 +259,8 @@ class MBGraph:
                 n_dict["source_id"] = node.source_id
             if getattr(node, "source_lineage", None) is not None:
                 n_dict["source_lineage"] = node.source_lineage
+            if getattr(node, "node_relations", None):
+                n_dict["node_relations"] = dict(sorted(node.node_relations.items()))
             canonical_nodes.append(n_dict)
         payload = {
             "version": self.version,

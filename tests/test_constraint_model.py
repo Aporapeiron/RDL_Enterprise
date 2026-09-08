@@ -388,11 +388,12 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
                 is_authoritative=True,
                 channel="official_doc",
                 claim_type="rule",
+                target_relation="rule_promulgation",
             ),
         )
         self.assertEqual(compute_efp_prime_constraint(fb_authoritative), 1.0)
 
-        # 管理者の是正命令（規程に基づく命令）
+        # 管理者の是正命令（規程に基づく命令・決裁権限）
         fb_admin = FeedbackResult(
             user_resolved=False,
             correction_content="新制度条文第4条に基づく差し戻し",
@@ -401,6 +402,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
                 authority_level="human_only",
                 channel="admin_override",
                 claim_type="rule",
+                target_relation="approval_authority",
             ),
         )
         self.assertGreaterEqual(compute_efp_prime_constraint(fb_admin), 0.95)
@@ -557,6 +559,8 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
                 source_type="admin",
                 authority_level="human_only",
                 is_authoritative=True,
+                claim_type="rule",
+                target_relation="approval_authority",
             ),
         )
         c_prime = compute_efp_prime_constraint(feedback_human)
@@ -680,6 +684,8 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
                 authority_level="human_only",
                 observed_at=t_feedback,
                 is_authoritative=True,
+                claim_type="rule",
+                target_relation="approval_authority",
             ),
         )
         c_prime_latest = compute_efp_prime_constraint(fb_latest, snapshot, current_time=t_feedback)
@@ -695,6 +701,8 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
                 authority_level="human_only",
                 observed_at=t_old_observed,
                 is_authoritative=True,
+                claim_type="rule",
+                target_relation="approval_authority",
             ),
         )
         # t_feedback から見て 90日経過 -> 半減期90日により time_factor = 0.5 -> C_prime = 0.5
@@ -1346,6 +1354,161 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
         c_gen = compute_efp_prime_constraint(fb_gen)
         # 1.0 ではなく 0.90 に抑制されていること
         self.assertAlmostEqual(c_gen, 0.90, places=2)
+
+
+    def test_isolated_dual_cascade_identical_c0_cut(self):
+        """F_base と F_cut が独立した cascade インスタンスから同一 C0 で推論され、キャッシュ汚染が起きないこと"""
+        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.constraint import RelationConstraintLocator, RuptureProbe, ConstraintContext
+        from rdl_enterprise.snapshot import FrozenInterpretationContext
+
+        graph = MBGraph()
+        n = MBNode(id="n1", domain="sales", trigger_pattern={"exact_keys": ["見積作成"]}, action_template={"type": "direct_reply", "payload": "見積回答"}, confidence=0.7, approval_count=5)
+        graph.add_or_update(n)
+
+        # 初期キャッシュ C0 を持つ凍結コンテキスト
+        frozen_ctx = FrozenInterpretationContext(
+            mb_version="v1.0",
+            mb_content_hash=graph.content_hash(),
+            frozen_mb=graph,
+            target_domain="sales",
+            initial_level0_cache={("sales", "見積作成"): "n1"},
+        )
+
+        efp = _make_efp("見積作成", category="sales")
+        ctx = ConstraintContext(efp=efp, active_domain="sales", frozen_context=frozen_ctx)
+
+        locator = RelationConstraintLocator()
+        bundle = locator.locate_bundle_for_node(graph, n, ctx)
+
+        probe = RuptureProbe()
+        result = probe.probe(bundle, graph, ctx)
+
+        # 独立した2つの Cascade により、切断時 (F_cut) に n1 が確実に除外され、フォールバック (ask_human) へ移行すること
+        self.assertIsNotNone(result.rupture_effect)
+        self.assertGreaterEqual(result.rupture_effect, 0.7)
+
+    def test_rupture_effect_measured_across_all_verdicts(self):
+        """鮮度低下や反証拒絶で break と判定される場合でも、rupture_effect が None や 0 ではなく実測されること"""
+        from datetime import datetime, timezone, timedelta
+        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.constraint import RelationConstraintLocator, RuptureProbe, ConstraintContext
+
+        now = datetime(2026, 9, 1, 12, 0, 0, tzinfo=timezone.utc)
+        graph = MBGraph()
+        # 365日放置されて鮮度が激減したノード
+        n_stale = MBNode(
+            id="n_stale_break",
+            domain="ops",
+            trigger_pattern={"exact_keys": ["デプロイ手順"]},
+            action_template={"type": "direct_reply", "payload": "デプロイシェル実行"},
+            confidence=0.8,
+            approval_count=10,
+            last_updated=(now - timedelta(days=365)).isoformat(),
+        )
+        graph.add_or_update(n_stale)
+
+        efp = _make_efp("デプロイ手順", category="ops")
+        ctx = ConstraintContext(efp=efp, current_time=now, active_domain="ops")
+
+        locator = RelationConstraintLocator()
+        bundle = locator.locate_bundle_for_node(graph, n_stale, ctx)
+
+        probe = RuptureProbe()
+        result = probe.probe(bundle, graph, ctx)
+
+        # 鮮度低下により verdict は break
+        self.assertEqual(result.verdict, "break")
+        self.assertIn("freshness 低下", result.rupture_reason)
+        # しかし切断摂動による F 変化量は先行測定され、実測値 (Optional[float] として not None) が返ること！
+        self.assertIsNotNone(result.rupture_effect)
+        self.assertGreaterEqual(result.rupture_effect, 0.7)
+
+    def test_unknown_claim_or_relation_capped_at_0_90(self):
+        """admin や official_doc であっても claim_type や target_relation が未指定の場合は 1.0 に到達せず 0.90 に抑制されること"""
+        from rdl_enterprise.snapshot import FeedbackResult, RelationProvenance
+        from rdl_enterprise.constraint import compute_efp_prime_constraint
+
+        # 1. claim_type=None, target_relation=None（権限内容が不明）
+        prov_unknown = RelationProvenance(
+            source_type="admin",
+            authority_level="human_only",
+            is_authoritative=True,
+            channel="admin_override",
+            claim_type=None,
+            target_relation=None,
+        )
+        fb_unk = FeedbackResult(user_resolved=False, human_rejected=True, provenance=prov_unknown)
+        # 未回収関係 ξ が大きいため 1.0 ではなく 0.90 に抑制されること
+        self.assertAlmostEqual(compute_efp_prime_constraint(fb_unk), 0.90, places=2)
+
+        # 2. claim_type="rule" だが target_relation=None（制度行使か現場意見か未明示）
+        prov_no_rel = RelationProvenance(
+            source_type="admin",
+            authority_level="human_only",
+            is_authoritative=True,
+            channel="admin_override",
+            claim_type="rule",
+            target_relation=None,
+        )
+        fb_no_rel = FeedbackResult(user_resolved=False, human_rejected=True, provenance=prov_no_rel)
+        self.assertAlmostEqual(compute_efp_prime_constraint(fb_no_rel), 0.90, places=2)
+
+    def test_node_explicit_contradict_relation_and_payload_polarity_excluded_from_support(self):
+        """node_relations による明示的 contradict および payload 極性矛盾（肯定 vs 否定）が支援束から除外されること"""
+        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.constraint import RelationConstraintLocator, ConstraintContext
+
+        graph = MBGraph()
+        # 代表ノード: 申請可能
+        n_main = MBNode(
+            id="n_main",
+            domain="hr",
+            trigger_pattern={"exact_keys": ["特別休暇"]},
+            action_template={"type": "direct_reply", "payload": "特別休暇の申請が可能です。"},
+            approval_count=5,
+            node_relations={"n_explicit_contradict": "contradict", "n_explicit_support": "support"},
+        )
+        # 支援候補A: 明示的 contradict 指定
+        n_exp_contra = MBNode(
+            id="n_explicit_contradict",
+            domain="hr",
+            trigger_pattern={"exact_keys": ["特別休暇"]},
+            action_template={"type": "direct_reply", "payload": "何らかの回答"},
+            approval_count=5,
+        )
+        # 支援候補B: 明示的 relation はないが、payload が「申請は禁止・不可」と明白な極性矛盾
+        n_polarity_contra = MBNode(
+            id="n_polarity_contra",
+            domain="hr",
+            trigger_pattern={"exact_keys": ["特別休暇"]},
+            action_template={"type": "direct_reply", "payload": "当年度の特別休暇取得は禁止・不可とします。"},
+            approval_count=5,
+        )
+        # 支援候補C: 明示的 support 指定
+        n_exp_supp = MBNode(
+            id="n_explicit_support",
+            domain="hr",
+            trigger_pattern={"exact_keys": ["特別休暇", "慶弔"]},
+            action_template={"type": "direct_reply", "payload": "慶弔休暇申請が可能です。"},
+            approval_count=5,
+        )
+        graph.add_or_update(n_main)
+        graph.add_or_update(n_exp_contra)
+        graph.add_or_update(n_polarity_contra)
+        graph.add_or_update(n_exp_supp)
+
+        locator = RelationConstraintLocator()
+        efp = _make_efp("特別休暇", category="hr")
+        ctx = ConstraintContext(efp=efp, active_domain="hr")
+
+        bundle = locator.locate_bundle_for_node(graph, n_main, ctx)
+
+        # 支援束に n_main と n_explicit_support のみが含まれ、明示的 contradict や極性矛盾ノードが除外されていること
+        self.assertIn("n_main", bundle.node_ids)
+        self.assertIn("n_explicit_support", bundle.node_ids)
+        self.assertNotIn("n_explicit_contradict", bundle.node_ids)
+        self.assertNotIn("n_polarity_contra", bundle.node_ids)
 
 
 if __name__ == "__main__":

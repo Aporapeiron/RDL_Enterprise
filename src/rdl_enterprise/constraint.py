@@ -127,7 +127,7 @@ class RuptureResult:
     verdict: str              # "survive" | "break" | "unresolved"
     opposing_strength: float  # 反証拘束の強さ（add_heat の重みとして使用）
     rupture_reason: str = ""
-    rupture_effect: float = 0.0  # 束切断摂動による F の変化量 Δ(F_base, F_without) ∈ [0, 1]
+    rupture_effect: Optional[float] = None  # 束切断摂動による F の変化量 Δ(F_base, F_without) ∈ [0, 1] (None = 未測定)
 
 
 # ---------------------------------------------------------------------------
@@ -136,6 +136,51 @@ class RuptureResult:
 
 def _normalize(text: str) -> str:
     return re.sub(r"\s+", "", text.lower())
+
+
+def _is_payload_contradictory(a: str, b: str) -> bool:
+    """
+    同一 action_type であっても、payload レベルで明白な対立極性・矛盾があるかを検出。
+    BASE v2.0: 「申請可能です」と「申請は禁止です」のような矛盾関係を同一束に入れない。
+    """
+    negations = ["禁止", "不可", "却下", "無効", "不許可", "停止", "否認", "できません", "できない", "認められない"]
+    affirmatives = ["可能", "許可", "承認", "有効", "申請できます", "できる", "認められる"]
+
+    na, nb = a.lower(), b.lower()
+    a_has_neg = any(w in na for w in negations)
+    b_has_neg = any(w in nb for w in negations)
+    a_has_aff = any(w in na for w in affirmatives)
+    b_has_aff = any(w in nb for w in affirmatives)
+
+    if (a_has_neg and b_has_aff) or (a_has_aff and b_has_neg):
+        return True
+    return False
+
+
+def _check_node_relation(node: object, candidate: object) -> str:
+    """
+    node と candidate 間の関係性を評価。
+    返り値: "support" | "contradict" | "independent" | "unknown"
+    """
+    n_rel = getattr(node, "node_relations", {}).get(candidate.id)
+    c_rel = getattr(candidate, "node_relations", {}).get(node.id)
+    if n_rel == "contradict" or c_rel == "contradict":
+        return "contradict"
+    if n_rel == "independent" or c_rel == "independent":
+        return "independent"
+    if n_rel == "support" or c_rel == "support":
+        return "support"
+
+    # 未指定の場合: action_type 不一致または payload 極性矛盾があれば contradict
+    if node.action_template.get("type") != candidate.action_template.get("type"):
+        return "contradict"
+
+    p_node = str(node.action_template.get("payload", ""))
+    p_cand = str(candidate.action_template.get("payload", ""))
+    if _is_payload_contradictory(p_node, p_cand):
+        return "contradict"
+
+    return "support"
 
 
 def _bigram_jaccard(a: str, b: str) -> float:
@@ -375,12 +420,14 @@ def compute_efp_prime_constraint(
             time_factor = 1.0
 
     # 制度的公式決定 (is_authoritative=True) の評価 (BASE v2.0 §4.2: 権限の無制限特権化の排除)
-    # 1. 主観的裁量意見 (judgment) はどんな権限者・媒体であっても claim_factor (0.80) により明確に減衰
-    # 2. 一般公式言明 (general) は admin や official_doc であっても 1.0 に固定せず上限 0.90 に抑制
-    # 3. 関係種別 target_relation:
-    #    - "factual_report": 事実報告（制度制定・決裁権ではなく現場報告）の場合は 0.90
-    #    - "general_inquiry": 一般照会・意見の場合は 0.85
-    # 4. 確定事実・制度制定・公式規則 (fact / rule / policy) かつ管轄内・新鮮・関係整合であれば最大拘束 1.0 を保証
+    # 1. 主観的裁量意見 (judgment): どんな権限者・媒体であっても上限 0.80
+    # 2. 一般公式言明 (general): admin や official_doc であっても上限 0.90
+    # 3. 現場事実報告 (factual_report): 制度制定権ではないため上限 0.90
+    # 4. 一般照会 (general_inquiry): 上限 0.85
+    # 5. 未知・未指定 (claim_type is None または target_relation is None):
+    #    何を拘束する権限なのか不明（未回収関係 ξ が大きい）ため、admin であっても上限 0.90 に抑制
+    # 6. 確定事実・制度制定・公式規則 (fact / rule / policy) かつ制度的決定権の正式行使 (rule_promulgation, approval_authority 等)
+    #    かつ管轄内 (scope >= 1.0) かつ新鮮 (time >= 0.99) の場合のみ満額 1.0 を保証
     if prov and getattr(prov, "is_authoritative", False):
         target_rel = getattr(prov, "target_relation", None)
         if claim_type == "judgment":
@@ -393,13 +440,18 @@ def compute_efp_prime_constraint(
             c_prime = min(0.90, auth_weight * scope_factor * 0.90 * time_factor)
         elif target_rel == "general_inquiry":
             c_prime = min(0.85, auth_weight * scope_factor * 0.85 * time_factor)
+        elif claim_type is None or target_rel is None:
+            # 言明タイプまたは関係種別が未指定（何についての権限行使か不明）:
+            # 未回収関係 ξ が大きいため最大拘束 1.0 には到達させず上限 0.90 に抑制
+            c_prime = min(0.90, auth_weight * scope_factor * 0.90 * time_factor)
         elif scope_factor >= 1.0 and time_factor >= 0.99:
-            # 確定事実・制度制定・公式規則 (fact / rule / policy) かつ管轄内
-            if claim_type in ("fact", "rule", "policy") or getattr(prov, "channel", "") in ("official_doc", "audit_log") or getattr(prov, "source_type", "") in ("admin", "audit"):
+            # 明示的言明タイプと制度的関係行使
+            if (claim_type in ("fact", "rule", "policy") and
+                target_rel in ("rule_promulgation", "approval_authority", "institutional_decision", "audit_record")):
                 c_prime = 1.0
             else:
                 effective_score = auth_weight * scope_factor * claim_factor
-                c_prime = min(1.0, effective_score * time_factor)
+                c_prime = min(0.95, effective_score * time_factor)
         else:
             effective_score = auth_weight * scope_factor * claim_factor
             c_prime = min(1.0, effective_score * time_factor)
@@ -524,12 +576,12 @@ class RelationConstraintLocator:
 
         # 【健全かつ同一方向の支援ノードのみ束化 (Effective Support Only: BASE v2.0 §4.2)】
         # 1. 支援ノード自身の健全性検査（陳腐化・拒絶多数・無関係ノードは除外）
-        # 2. アクション整合性検査（代表ノードとアクションが対立・競合するノードは支援ノードではなく対立ノードとして除外）
+        # 2. 関係性・整合性検査（明示的 contradict / independent の除外、payload 極性矛盾の除外）
         effective_supporting_nodes = []
         for s in candidate_supporting_nodes:
             if not is_support_node_eligible(s, query, cfg, now):
                 continue
-            if s.action_template.get("type") != node.action_template.get("type"):
+            if _check_node_relation(node, s) != "support":
                 continue
             effective_supporting_nodes.append(s)
 
@@ -674,7 +726,7 @@ class RelationConstraintLocator:
                 for s in candidate_supporting_nodes:
                     if not is_support_node_eligible(s, query, cfg, now):
                         continue
-                    if s.action_template.get("type") != node.action_template.get("type"):
+                    if _check_node_relation(node, s) != "support":
                         continue
                     effective_supporting_nodes.append(s)
 
@@ -795,6 +847,54 @@ class RuptureProbe:
             if sn is not None:
                 supporting_nodes.append(sn)
 
+        # =============================================================
+        # Phase 1: 実効的切断摂動と変化量測定 (Rupture Effect: BASE v2.0 §4.2)
+        # =============================================================
+        # 「この束を切断したとき、現在の解釈可能域がどう変わるか」
+        # F_base = interp(M_B, EFP, C0) vs F_cut = interp(M_B \ bundle, EFP, C0)
+        # 【最優先: 独立した2つの Cascade インスタンスを生成し、同一 C0 から独立推論】
+        # F_base 形成によるキャッシュ更新 (C0 -> C1) が F_cut に一切伝播しないことを保証
+        rupture_effect: Optional[float] = None
+        f_base = None
+        f_without = None
+        try:
+            if ctx.frozen_context is not None and hasattr(ctx.frozen_context, "create_isolated_cascade"):
+                cascade_base = ctx.frozen_context.create_isolated_cascade()
+                cascade_cut = ctx.frozen_context.create_isolated_cascade()
+            else:
+                from rdl_enterprise.cascade import InterpCascade, CascadeConfig
+                cascade_base = InterpCascade(
+                    mb_graph,
+                    config=CascadeConfig(),
+                    constraint_config=cfg,
+                    constraint_evaluation_time=ctx.current_time,
+                )
+                cascade_cut = InterpCascade(
+                    mb_graph,
+                    config=CascadeConfig(),
+                    constraint_config=cfg,
+                    constraint_evaluation_time=ctx.current_time,
+                )
+            f_base = cascade_base.interpret(ctx.efp, skip_constraint_boost=True)
+            f_without = cascade_cut.interpret(ctx.efp, exclude_node_ids=bundle.node_ids, skip_constraint_boost=True)
+
+            # 除去摂動による F の変化量 (rupture_effect: Δ(F_base, F_without)) を定量化
+            diff = 0.0
+            if f_base.action_type != f_without.action_type:
+                diff += 0.4
+            if f_base.matched_node_id != f_without.matched_node_id:
+                diff += 0.3
+            diff += 0.2 * abs(f_base.confidence - f_without.confidence)
+            if f_base.content != f_without.content:
+                diff += 0.1
+            rupture_effect = min(1.0, round(diff, 4))
+        except Exception:
+            rupture_effect = None
+
+        # =============================================================
+        # Phase 2: 破断・妥当性判定 (Verdict Probing: survive / break / unresolved)
+        # =============================================================
+
         # -------------------------------------------------------------
         # 0. 束内部のアクション対立・亀裂検査
         # -------------------------------------------------------------
@@ -809,6 +909,7 @@ class RuptureProbe:
                         verdict="unresolved",
                         opposing_strength=0.8,
                         rupture_reason=f"束内部におけるアクション対立・競合（ノード {sn.id} との不整合、ξ として残存）",
+                        rupture_effect=rupture_effect,
                     )
 
         # -------------------------------------------------------------
@@ -820,6 +921,7 @@ class RuptureProbe:
                 verdict="break",
                 opposing_strength=1.0 + (1.0 - bundle.freshness),
                 rupture_reason=f"freshness 低下による破断 (freshness={bundle.freshness:.3f} < {cfg.rupture_freshness_threshold})",
+                rupture_effect=rupture_effect,
             )
 
         if node is not None:
@@ -833,6 +935,7 @@ class RuptureProbe:
                         verdict="break",
                         opposing_strength=opposing,
                         rupture_reason=f"rejection 比率超過による破断 (ratio={rejection_ratio:.2f} >= {cfg.rupture_rejection_ratio_threshold})",
+                        rupture_effect=rupture_effect,
                     )
 
         # 構造的橋だがソースが極端に弱い場合（単一障害点かつ根拠薄弱）
@@ -842,13 +945,12 @@ class RuptureProbe:
                 verdict="unresolved",
                 opposing_strength=0.5,
                 rupture_reason="構造的橋だがソース拘束が弱い（未回収関係 ξ として保持）",
+                rupture_effect=rupture_effect,
             )
 
         # -------------------------------------------------------------
-        # 2. 摂動検査 (Perturbation: 境界拡張による潜在競合の炙り出し)
+        # 2. 摂動検査 (Perturbation: 境界拡張による他ドメイン潜在競合の炙り出し)
         # -------------------------------------------------------------
-        # ドメイン境界 B をワイルドカードに拡張して、同一クエリに対して
-        # 他ドメインにより強い関係拘束 (C_rel) を持つ異なる結論が存在しないかを検査
         if node is not None and ctx.active_domain and ctx.active_domain not in ("*", "__any__", "any"):
             all_nodes = mb_graph.list_nodes()
             ctx_expanded = ConstraintContext(
@@ -864,14 +966,11 @@ class RuptureProbe:
             for other in all_nodes:
                 if other.id == node.id or other.domain == node.domain:
                     continue
-                # 他ドメインで同じキーを持っているか
                 common_keys = set(k.lower() for k in node.trigger_pattern.get("exact_keys", [])) & \
                               set(k.lower() for k in other.trigger_pattern.get("exact_keys", []))
                 if common_keys:
-                    # 異なるアクションを提案しているか
                     if other.action_template.get("type") != node.action_template.get("type") or \
                        other.action_template.get("payload") != node.action_template.get("payload"):
-                        # 【BASE v2.0 整合】confidence ではなく関係拘束強度 C_rel で競合判定！
                         other_bundle_any = locator.locate_bundle_for_node(mb_graph, other, ctx_expanded)
                         if other_bundle_any.constraint_score >= node_bundle_any.constraint_score:
                             return RuptureResult(
@@ -883,43 +982,14 @@ class RuptureProbe:
                                     f"({other.id}: C_rel={other_bundle_any.constraint_score:.2f} >= "
                                     f"{node_bundle_any.constraint_score:.2f})が露出"
                                 ),
+                                rupture_effect=rupture_effect,
                             )
 
         # -------------------------------------------------------------
-        # 2.5 実効的バンドル切断・除去摂動 (Actual Bundle Removal Perturbation: BASE v2.0 §4.2)
+        # 2.5 実効的バンドル切断による潜在対向解釈露出検査 (Break on Exposure)
         # -------------------------------------------------------------
-        # 「この束を切断したとき、現在の解釈可能域がどう変わるか」
-        # F_base = interp(M_B, EFP) vs F_without = interp(M_B \ bundle, EFP)
-        # 【FrozenInterpretationContext 完全同一推論環境の保証】
-        # 本番 F 形成時と完全に同一の構成・キャッシュ C0・モデル Identity を用いて切断前後を比較
-        if ctx.frozen_context is not None and hasattr(ctx.frozen_context, "create_isolated_cascade"):
-            cascade = ctx.frozen_context.create_isolated_cascade()
-        else:
-            from rdl_enterprise.cascade import InterpCascade, CascadeConfig
-            cascade = InterpCascade(
-                mb_graph,
-                config=CascadeConfig(),
-                constraint_config=cfg,
-                constraint_evaluation_time=ctx.current_time,
-            )
-        f_base = cascade.interpret(ctx.efp, skip_constraint_boost=True)
-        f_without = cascade.interpret(ctx.efp, exclude_node_ids=bundle.node_ids, skip_constraint_boost=True)
-
-        # 除去摂動による F の変化量 (rupture_effect: Δ(F_base, F_without)) を定量化
-        # 切ると変わる＝この束が現在の解釈空間を決定づけている不可欠な拘束である証拠
-        diff = 0.0
-        if f_base.action_type != f_without.action_type:
-            diff += 0.4
-        if f_base.matched_node_id != f_without.matched_node_id:
-            diff += 0.3
-        diff += 0.2 * abs(f_base.confidence - f_without.confidence)
-        if f_base.content != f_without.content:
-            diff += 0.1
-        rupture_effect = min(1.0, round(diff, 4))
-
-        # もし束を除去した結果、同一ドメイン内で異なるアクション（対立解釈）が同等以上の拘束で浮上した場合、
-        # 構造的に競合を抑え込んでいるだけの脆い状態であるため break (contested)
-        if (f_without.matched_node_id and
+        if (f_without and f_base and
+            f_without.matched_node_id and
             f_without.matched_node_id not in bundle.node_ids and
             f_without.action_type != f_base.action_type and
             f_without.confidence >= f_base.confidence):
@@ -938,8 +1008,6 @@ class RuptureProbe:
         # -------------------------------------------------------------
         # 3. 生存判定 (Survive)
         # -------------------------------------------------------------
-        # 摂動に耐え、十分な承認実績または制度的権限を持ち、現在の問いに適合している場合のみ survive
-        # 【健全な支援ノードのみ算入】陳腐化・拒絶多数の支援ノードは除外し、健全な支援ノードの実績のみ評価
         eligible_supporting_nodes = [
             sn for sn in supporting_nodes
             if is_support_node_eligible(sn, ctx.efp.query_text, cfg, ctx.current_time)
@@ -961,7 +1029,6 @@ class RuptureProbe:
         # -------------------------------------------------------------
         # 4. デフォルト: 未検査・耐性未確認 (Unresolved)
         # -------------------------------------------------------------
-        # 安易に survive と呼ばず、未回収関係 ξ として扱う
         return RuptureResult(
             bundle=bundle,
             verdict="unresolved",
