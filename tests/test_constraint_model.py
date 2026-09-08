@@ -1871,6 +1871,128 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
         res = probe.probe(bundle, graph, ctx)
         self.assertIsNotNone(res.rupture_effect)
 
+    def test_level3_rejects_drifting_bridge_despite_can_replay_true(self):
+        """can_replay()=True と公言しながら出力が揺らぐ bridge は、実際の Replay 不一致により rupture_effect=None となること"""
+        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.constraint import RuptureProbe, ConstraintBundle, ConstraintContext
+        from rdl_enterprise.snapshot import FrozenInterpretationContext
+
+        class DriftingReplayBridge:
+            def __init__(self):
+                self.call_count = 0
+            def can_replay(self):
+                return True
+            def resolve(self, efp):
+                self.call_count += 1
+                # 呼び出しごとに異なる結果を返す (口先だけの can_replay)
+                return {"type": "direct_reply", "payload": f"drifting_payload_{self.call_count}"}
+
+        graph = MBGraph()
+        # 束ノード (切断対象外の未知クエリで Level 3 へフォールスルー)
+        n = MBNode(id="n_other", domain="legal", trigger_pattern={"exact_keys": ["既知"]}, action_template={"type": "direct_reply", "payload": "既知回答"})
+        graph.add_or_update(n)
+        graph.freeze()
+
+        bridge = DriftingReplayBridge()
+        frozen_ctx = FrozenInterpretationContext(
+            mb_version="v1",
+            mb_content_hash="hash1",
+            frozen_mb=graph,
+            llm_bridge=bridge,
+            target_domain="legal",
+        )
+        efp = _make_efp("完全未知の問い合わせ（Level 3到達）", category="legal")
+        ctx = ConstraintContext(efp=efp, active_domain="legal", frozen_context=frozen_ctx)
+        bundle = ConstraintBundle(node_ids=["n_other"], locus_type="strong", constraint_score=0.8, freshness=0.9, relevance=0.8)
+
+        probe = RuptureProbe()
+        res = probe.probe(bundle, graph, ctx)
+        # f_base と f_without の両方が Level 3 に到達した際、出力が不一致（揺らぎ検知）のため None
+        self.assertIsNone(res.rupture_effect)
+
+    def test_level3_uses_resolve_replay_when_available(self):
+        """bridge が resolve_replay() を提供する場合、カスケードおよび Probe で優先実行されて決定性が実証されること"""
+        from rdl_enterprise.cascade import InterpCascade, CascadeConfig
+        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.constraint import RuptureProbe, ConstraintBundle, ConstraintContext
+        from rdl_enterprise.snapshot import FrozenInterpretationContext
+
+        class DedicatedReplayBridge:
+            def __init__(self):
+                self.resolve_replay_called = False
+            def can_replay(self):
+                return True
+            def resolve(self, efp):
+                return {"type": "direct_reply", "payload": "normal_resolve"}
+            def resolve_replay(self, efp):
+                self.resolve_replay_called = True
+                return {"type": "direct_reply", "payload": "exact_replay_output"}
+
+        graph = MBGraph()
+        bridge = DedicatedReplayBridge()
+        cascade = InterpCascade(graph, llm_bridge=bridge)
+        efp = _make_efp("未知クエリ", category="general")
+
+        pred = cascade.interpret(efp)
+        self.assertTrue(bridge.resolve_replay_called)
+        self.assertEqual(pred.content, "exact_replay_output")
+
+    def test_auxiliary_constraint_signal_separated_from_core_constraint_score(self):
+        """inferred_support は core_constraint_score に加算されず auxiliary_constraint_signal に隔離されること"""
+        from rdl_enterprise.cascade import InterpCascade, CascadeConfig
+        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.constraint import RelationConstraintLocator, ConstraintContext, ConstraintConfig
+
+        graph = MBGraph()
+        # 代表ノード: 承認数十分 (survive 対象)
+        n_main = MBNode(
+            id="n_main",
+            domain="support",
+            trigger_pattern={"exact_keys": ["パスワードリセット"]},
+            action_template={"type": "direct_reply", "payload": "リセット手順"},
+            confidence=0.7,
+            approval_count=10,
+        )
+        # 支援候補: 未指定だが同一 action_type (payload 違い -> inferred_support)
+        n_inferred = MBNode(
+            id="n_inferred",
+            domain="support",
+            trigger_pattern={"exact_keys": ["パスワードリセット", "アカウントロック"]},
+            action_template={"type": "direct_reply", "payload": "ロック解除手順"},
+            confidence=0.8,
+            approval_count=10,
+        )
+        graph.add_or_update(n_main)
+
+        locator = RelationConstraintLocator()
+        efp = _make_efp("パスワードリセット", category="support")
+        ctx = ConstraintContext(efp=efp, active_domain="support")
+
+        # 1. 支援候補がない状態での代表ノード束
+        bundle_single = locator.locate_bundle_for_node(graph, n_main, ctx)
+        self.assertEqual(bundle_single.auxiliary_constraint_signal, 0.0)
+        single_core_score = bundle_single.constraint_score
+
+        # 2. inferred_support ノードを追加
+        graph.add_or_update(n_inferred)
+        bundle_with_inferred = locator.locate_bundle_for_node(graph, n_main, ctx)
+
+        # core_constraint_score には一切加算されないこと（確定拘束強度は単体時と不変）
+        self.assertEqual(bundle_with_inferred.constraint_score, single_core_score)
+        self.assertEqual(bundle_with_inferred.core_constraint_score, single_core_score)
+
+        # auxiliary_constraint_signal にのみ潜在シグナルが分離記録されていること
+        self.assertGreater(bundle_with_inferred.auxiliary_constraint_signal, 0.0)
+        self.assertIn("n_inferred", bundle_with_inferred.inferred_node_ids)
+
+        # 3. Cascade の推論ブーストでも auxiliary_constraint_signal は加算されないこと
+        cfg = CascadeConfig()
+        c_config = ConstraintConfig(constraint_boost_cap=0.2)
+        cascade = InterpCascade(graph, config=cfg, constraint_config=c_config)
+        pred = cascade.interpret(efp)
+        # ブーストは core_constraint_score のみから算出されるため、inferred の有無でブースト量が増殖しない
+        self.assertAlmostEqual(pred.confidence, min(1.0, n_main.confidence + single_core_score * 0.2), places=4)
+
 
 if __name__ == "__main__":
     unittest.main()

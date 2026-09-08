@@ -99,6 +99,12 @@ class ConstraintBundle:
 
     is_structural_bridge: bool = False  # 構造的に唯一の接続橋か
     inferred_node_ids: List[str] = field(default_factory=list)  # 暗黙・推論支援ノード群 (auxiliary / ξ evidence)
+    auxiliary_constraint_signal: float = 0.0                    # 推論支援ノード群から立ち上がる潜在シグナル ∈ [0, 1]
+
+    @property
+    def core_constraint_score(self) -> float:
+        """確定拘束強度 (constraint_score のエイリアス: 確定束ノードのみで算出)"""
+        return self.constraint_score
 
     def primary_node_id(self) -> Optional[str]:
         """代表ノード ID（最初の要素）"""
@@ -639,7 +645,8 @@ class RelationConstraintLocator:
         if primary_lineage:
             seen_lineages.add(primary_lineage)
 
-        # 確定支援ノード群 (rel_factor = 1.0)
+        # 1. 確定支援ノード群による確定相乗効果 (Core Synergy: rel_factor = 1.0)
+        core_synergy = 0.0
         for s in effective_supporting_nodes:
             s_rel = _compute_relevance(query, s.trigger_pattern)
             s_src = _compute_source_strength(s.approval_count, s.rejection_count)
@@ -650,9 +657,14 @@ class RelationConstraintLocator:
                 lineage_factor = 1.0
                 if s_lineage:
                     seen_lineages.add(s_lineage)
-            synergy_boost += 0.04 * s_rel * s_src * lineage_factor * 1.0
+            core_synergy += 0.04 * s_rel * s_src * lineage_factor * 1.0
 
-        # 推論支援ノード群 (rel_factor = 0.5: 弱い拘束証拠として寄与)
+        core_synergy = min(0.12, core_synergy)
+        core_score = min(1.0, score + core_synergy)
+
+        # 2. 推論支援ノード群による潜在シグナル (Auxiliary Signal: rel_factor = 0.5)
+        # BASE v2.0: ξ は観測候補として記録されるが、確定した拘束強度には直接加えない
+        aux_signal = 0.0
         for s in inferred_supporting_nodes:
             s_rel = _compute_relevance(query, s.trigger_pattern)
             s_src = _compute_source_strength(s.approval_count, s.rejection_count)
@@ -663,17 +675,15 @@ class RelationConstraintLocator:
                 lineage_factor = 1.0
                 if s_lineage:
                     seen_lineages.add(s_lineage)
-            synergy_boost += 0.04 * s_rel * s_src * lineage_factor * 0.5
+            aux_signal += 0.04 * s_rel * s_src * lineage_factor * 0.5
 
-        synergy_boost = min(0.12, synergy_boost)
+        aux_signal = min(0.12, aux_signal)
         conv = min(1.0, conv + 0.05 * len(effective_supporting_nodes) + 0.02 * len(inferred_supporting_nodes))
-
-        bundle_score = min(1.0, score + synergy_boost)
 
         return ConstraintBundle(
             node_ids=bundle_node_ids,
             locus_type=locus_type,
-            constraint_score=bundle_score,
+            constraint_score=core_score,
             relevance=rel,
             freshness=fresh,
             authority_weight=auth,
@@ -681,6 +691,7 @@ class RelationConstraintLocator:
             convergence=conv,
             is_structural_bridge=False,
             inferred_node_ids=inferred_node_ids,
+            auxiliary_constraint_signal=aux_signal,
         )
 
     def locate(
@@ -798,6 +809,7 @@ class RelationConstraintLocator:
                 if primary_lineage:
                     seen_lineages.add(primary_lineage)
 
+                core_synergy = 0.0
                 for s in effective_supporting_nodes:
                     s_rel = _compute_relevance(query, s.trigger_pattern)
                     s_src = _compute_source_strength(s.approval_count, s.rejection_count)
@@ -810,8 +822,12 @@ class RelationConstraintLocator:
                         if s_lineage:
                             seen_lineages.add(s_lineage)
 
-                    synergy_boost += 0.04 * s_rel * s_src * lineage_factor * 1.0
+                    core_synergy += 0.04 * s_rel * s_src * lineage_factor * 1.0
 
+                core_synergy = min(0.12, core_synergy)
+                core_score = min(1.0, score + core_synergy)
+
+                aux_signal = 0.0
                 for s in inferred_supporting_nodes:
                     s_rel = _compute_relevance(query, s.trigger_pattern)
                     s_src = _compute_source_strength(s.approval_count, s.rejection_count)
@@ -824,16 +840,14 @@ class RelationConstraintLocator:
                         if s_lineage:
                             seen_lineages.add(s_lineage)
 
-                    synergy_boost += 0.04 * s_rel * s_src * lineage_factor * 0.5
+                    aux_signal += 0.04 * s_rel * s_src * lineage_factor * 0.5
 
-                synergy_boost = min(0.12, synergy_boost)
-
-                bundle_score = min(1.0, score + synergy_boost)
+                aux_signal = min(0.12, aux_signal)
 
                 bundles.append(ConstraintBundle(
                     node_ids=bundle_node_ids,
                     locus_type=locus_type,
-                    constraint_score=bundle_score,
+                    constraint_score=core_score,
                     relevance=d.get("relevance", 0.0),
                     freshness=d.get("freshness", 0.0),
                     authority_weight=d.get("authority_weight", 0.0),
@@ -841,6 +855,7 @@ class RelationConstraintLocator:
                     convergence=min(1.0, d.get("convergence", 0.0) + 0.05 * len(effective_supporting_nodes) + 0.02 * len(inferred_supporting_nodes)),
                     is_structural_bridge=False,
                     inferred_node_ids=inferred_node_ids,
+                    auxiliary_constraint_signal=aux_signal,
                 ))
 
         # --- (b) 構造的橋の高速検出 (O(M * keys)) ---
@@ -960,19 +975,33 @@ class RuptureProbe:
             used_llm_bridge = bridge is not None and (f_base.cost_tier == 3 or f_without.cost_tier == 3)
 
             if used_llm_bridge:
-                # 明示的な決定論的リプレイ能力（Replay Contract）を検証
+                # 1. リプレイ能力・契約の検証
                 if not _is_deterministic_replay_capable(bridge):
                     rupture_effect = None
                 else:
-                    diff = 0.0
-                    if f_base.action_type != f_without.action_type:
-                        diff += 0.4
-                    if f_base.matched_node_id != f_without.matched_node_id:
-                        diff += 0.3
-                    diff += 0.2 * abs(f_base.confidence - f_without.confidence)
-                    if f_base.content != f_without.content:
-                        diff += 0.1
-                    rupture_effect = min(1.0, round(diff, 4))
+                    # 2. 実際の Replay 実行・推論作用同一性の実証 (BASE v2.0: 同じ推論作用の実証)
+                    # 両方の Cascade が Level 3 に到達した場合、同一入力に対して同一の推論作用（LLM応答）が
+                    # 再現されたかを検証。もし結果が異なっていれば、それは切断による変化ではなく
+                    # 外部LLMのサンプリング揺らぎによるものとみなし、直ちに測定不能 (None = ξ) とする。
+                    if f_base.cost_tier == 3 and f_without.cost_tier == 3:
+                        if (f_base.action_type != f_without.action_type or
+                            f_base.content != f_without.content or
+                            abs(f_base.confidence - f_without.confidence) > 1e-4):
+                            # 「再生可能」と宣言しながら実行結果が不一致（LLM 揺らぎ）なら測定不能 (None = ξ)
+                            rupture_effect = None
+                        else:
+                            # 同一推論作用の再生が実証された（切断による変化なし）
+                            rupture_effect = 0.0
+                    else:
+                        diff = 0.0
+                        if f_base.action_type != f_without.action_type:
+                            diff += 0.4
+                        if f_base.matched_node_id != f_without.matched_node_id:
+                            diff += 0.3
+                        diff += 0.2 * abs(f_base.confidence - f_without.confidence)
+                        if f_base.content != f_without.content:
+                            diff += 0.1
+                        rupture_effect = min(1.0, round(diff, 4))
             else:
                 # ローカル決定的推論 (Level 0 - Level 2、または bridge なしの決定的フォールバック):
                 # 決定的な再実行による変化量測定

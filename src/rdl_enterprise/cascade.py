@@ -81,7 +81,8 @@ class InterpCascade:
         result = probe.probe(bundle, self.mb_graph, ctx)
         if result.verdict == "survive":
             cap = locator_cfg.constraint_boost_cap  # ConstraintConfig から読む（二重定義解消）
-            return min(cap, bundle.constraint_score * cap)
+            core_score = getattr(bundle, "core_constraint_score", bundle.constraint_score)
+            return min(cap, core_score * cap)
         return 0.0
 
 
@@ -114,9 +115,10 @@ class InterpCascade:
             if is_domain_eligible(node.domain, efp.category) and (node.id not in exclude_set)
         ]
 
-        is_prime = bool(efp.metadata.get("is_efp_prime", False))
-        user_resolved = efp.metadata.get("user_resolved", True)
-        human_rejected = efp.metadata.get("human_rejected", False)
+        is_prime = bool(efp.metadata.get("is_efp_prime", False)) if hasattr(efp, "metadata") and efp.metadata else getattr(efp, "is_prime", False)
+        metadata = getattr(efp, "metadata", {}) or {}
+        user_resolved = metadata.get("user_resolved", True)
+        human_rejected = metadata.get("human_rejected", False)
 
         def _build_prediction(node: MBNode, base_conf: float, cost_tier: int) -> InterpretationPrediction:
             outcome = "resolve"
@@ -167,26 +169,29 @@ class InterpCascade:
                     base_c = node.confidence + boost
                     return _build_prediction(node, base_c, cost_tier=1)
 
-            # 正規表現ルールのチェック
+            # ルール式 (正規表現等) の評価
             rule_expr = pattern.get("rule_expr")
-            if rule_expr and re.search(rule_expr, efp.query_text, re.IGNORECASE):
-                boost = 0.0 if skip_constraint_boost else self._constraint_boost(node, efp)
-                base_c = node.confidence + boost
-                return _build_prediction(node, base_c, cost_tier=1)
+            if rule_expr:
+                try:
+                    if re.search(rule_expr, efp.query_text):
+                        self.level0_cache[cache_key] = node.id
+                        boost = 0.0 if skip_constraint_boost else self._constraint_boost(node, efp)
+                        base_c = node.confidence + boost
+                        return _build_prediction(node, base_c, cost_tier=1)
+                except re.error:
+                    pass
 
         # -------------------------------------------------------------
-        # Level 2: 局所類似度マッチング (Cost Tier 2)
-        # 日本語対応 文字bi-gram Jaccard類似度 (境界内 eligible_nodes のみ)
+        # Level 2: 局所推論器・類似度検索 (Cost Tier 2)
+        # bi-gram Jaccard による簡易類似度
         # -------------------------------------------------------------
-        def get_bigrams(text: str) -> set:
-            cleaned = self._normalize(text)
-            if len(cleaned) < 2:
-                return {cleaned}
-            return {cleaned[i:i+2] for i in range(len(cleaned) - 1)}
-
         best_node = None
         best_score = 0.0
-        query_bigrams = get_bigrams(efp.query_text)
+        query_bigrams = set(norm_query[i:i+2] for i in range(len(norm_query) - 1)) if len(norm_query) >= 2 else {norm_query}
+
+        def get_bigrams(s: str):
+            ns = self._normalize(s)
+            return set(ns[i:i+2] for i in range(len(ns) - 1)) if len(ns) >= 2 else {ns}
 
         for node in eligible_nodes:
             for k in node.trigger_pattern.get("exact_keys", []):
@@ -211,8 +216,11 @@ class InterpCascade:
         # Level 3: 外部LLM推論器 (Cost Tier 3: 外部高コスト推論)
         # -------------------------------------------------------------
         if self.llm_bridge:
-            # 外部LLMまたはモックLLMを呼び出し
-            llm_res = self.llm_bridge.resolve(efp)
+            # 外部LLMまたはモックLLMを呼び出し（resolve_replay が提供されていれば決定論的リプレイを優先実行）
+            if hasattr(self.llm_bridge, "resolve_replay") and callable(self.llm_bridge.resolve_replay):
+                llm_res = self.llm_bridge.resolve_replay(efp)
+            else:
+                llm_res = self.llm_bridge.resolve(efp)
             base_conf = self.config.llm_default_confidence
             outcome = "need_input"
             if is_prime:
