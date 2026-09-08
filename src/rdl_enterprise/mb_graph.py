@@ -125,7 +125,7 @@ class CommitmentRecord:
 class LegacySnapshot:
     """
     レガシーデータスナップショット (BASE v2.0 §4.2 / B5 Zero Trust: 移行データの真正性検証)
-    移行対象のデータペイロードと期待されるハッシュ値を保持。
+    移行対象のデータペイロードと期待されるハッシュ値を保持し、移行対象ノード群の同一性を拘束。
     """
     source_version: str
     raw_payload: Dict[str, Any]
@@ -134,6 +134,24 @@ class LegacySnapshot:
     def compute_hash(self) -> str:
         serialized = json.dumps(self.raw_payload, sort_keys=True, ensure_ascii=False)
         return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+    def get_target_node_ids(self) -> List[str]:
+        """スナップショットが対象とするノードIDの集合を抽出"""
+        if "nodes" in self.raw_payload and isinstance(self.raw_payload["nodes"], dict):
+            return sorted(self.raw_payload["nodes"].keys())
+        elif "uncommitted_nodes" in self.raw_payload and isinstance(self.raw_payload["uncommitted_nodes"], list):
+            return sorted(n["id"] for n in self.raw_payload["uncommitted_nodes"] if isinstance(n, dict) and "id" in n)
+        return []
+
+    def get_node_payload(self, node_id: str) -> Optional[Dict[str, Any]]:
+        """指定ノードIDのペイロードを抽出"""
+        if "nodes" in self.raw_payload and isinstance(self.raw_payload["nodes"], dict):
+            return self.raw_payload["nodes"].get(node_id)
+        elif "uncommitted_nodes" in self.raw_payload and isinstance(self.raw_payload["uncommitted_nodes"], list):
+            for n in self.raw_payload["uncommitted_nodes"]:
+                if isinstance(n, dict) and n.get("id") == node_id:
+                    return n
+        return None
 
 
 @dataclass(frozen=True)
@@ -617,6 +635,13 @@ class MBGraph:
         if self.is_frozen:
             raise RuntimeError(f"MBGraph (version={self.version}) は凍結(frozen)されています。ノード {node.id} のコミットは禁止されています。")
 
+        # 0. 既存コミットメントの再コミット・出所上書きの禁止 (BASE v2.0 §4.2: 単一コミットモデル)
+        if node.is_committed:
+            raise ValueError(
+                f"ノード '{node.id}' は既にコミットされています (origin='{node.commitment_origin}', "
+                f"committed_at='{node.committed_at}')。コミットメント証跡の再コミット・上書きは禁止されています。"
+            )
+
         # 1. CommitmentOrigin の厳格正規化と検証
         if not isinstance(origin, CommitmentOrigin):
             try:
@@ -854,68 +879,78 @@ class MBGraph:
 
     def migrate_legacy_nodes(
         self,
-        snapshot: Optional[Any] = None,
-        context: Optional[Any] = None,
-        source_version: Optional[str] = None,
-        migrated_by: Optional[str] = None,
-        source_hash: Optional[str] = None,
+        snapshot: LegacySnapshot,
+        context: MigrationContext,
     ) -> int:
         """
         レガシー・未コミットノードを実検証を経て正統コミットメントへ昇格する明示的ゲートウェイ (P2)。
-        (BASE v2.0 §4.2 / B5 Zero Trust: 実データハッシュ照合・検証責任者権威チェック)
+        (BASE v2.0 §4.2 / B5 Zero Trust: 実データハッシュ照合・検証責任者権威チェック・対象同一性拘束)
 
-        引数は以下の2パターンに対応:
-        パターンA (厳格真正性検証):
-          migrate_legacy_nodes(snapshot: LegacySnapshot, context: MigrationContext)
-        パターンB (後方互換宣言型):
-          migrate_legacy_nodes(source_version: str, migrated_by: str, source_hash: Optional[str] = None)
+        - 厳格な型安全検査: LegacySnapshot および MigrationContext 以外の引数は TypeError で拒絶 (互換ラッパー全廃)。
+        - 権威検証: context.role が admin, manager, migration_officer であること、capability == 'legacy_migration' であること。
+        - 完全性照合: snapshot.compute_hash() と snapshot.expected_source_hash の完全一致。
+        - 対象バインディング: スナップショット対象ノード集合とグラフ未コミットノード集合の完全一致、およびノード定義（domain, trigger_pattern, action_template）の一致を検証。
         """
         if self.is_frozen:
             raise RuntimeError(f"MBGraph (version={self.version}) は凍結(frozen)されています。移行は禁止されています。")
 
-        # 引数の柔軟な正規化
-        actual_snapshot = snapshot if snapshot is not None else source_version
-        actual_context = context if context is not None else migrated_by
-
-        if isinstance(actual_snapshot, LegacySnapshot) and isinstance(actual_context, MigrationContext):
-            snap = actual_snapshot
-            ctx = actual_context
-        elif isinstance(actual_snapshot, str) and isinstance(actual_context, str):
-            # 後方互換ラッパー
-            snap = LegacySnapshot(
-                source_version=actual_snapshot,
-                raw_payload={"uncommitted_nodes": [n.to_dict() for n in self.nodes.values() if not n.is_committed]},
-                expected_source_hash=source_hash,
+        if not isinstance(snapshot, LegacySnapshot) or not isinstance(context, MigrationContext):
+            raise TypeError(
+                "migrate_legacy_nodes には (snapshot: LegacySnapshot, context: MigrationContext) を指定してください。"
+                "互換引数は廃止されました。"
             )
-            ctx = MigrationContext(verifier_id=actual_context, role="admin")
-        else:
-            raise TypeError("migrate_legacy_nodes には (LegacySnapshot, MigrationContext) または (source_version: str, migrated_by: str) を指定してください")
 
         # 1. 移行権威・ロールの検証 (admin, manager, migration_officer のみを許可)
         allowed_roles = {"admin", "manager", "migration_officer"}
-        if ctx.role not in allowed_roles:
+        if context.role not in allowed_roles:
             raise PermissionError(
-                f"移行権威不足: Role '{ctx.role}' (actor: '{ctx.verifier_id}') は "
+                f"移行権威不足: Role '{context.role}' (actor: '{context.verifier_id}') は "
                 f"レガシー移行を実行する権限がありません。許可ロール: {allowed_roles}"
             )
-        if ctx.capability != "legacy_migration":
-            raise PermissionError(f"移行ケイパビリティ不足: '{ctx.capability}'")
+        if context.capability != "legacy_migration":
+            raise PermissionError(f"移行ケイパビリティ不足: '{context.capability}'")
 
         # 2. 実データハッシュの照合 (Integrity Check)
-        computed_hash = snap.compute_hash()
-        if snap.expected_source_hash is not None:
-            if computed_hash != snap.expected_source_hash:
+        computed_hash = snapshot.compute_hash()
+        if snapshot.expected_source_hash is not None:
+            if computed_hash != snapshot.expected_source_hash:
                 raise IntegrityError(
                     f"レガシースナップショットのハッシュ不一致: "
-                    f"期待値 '{snap.expected_source_hash}' vs 実効値 '{computed_hash}'"
+                    f"期待値 '{snapshot.expected_source_hash}' vs 実効値 '{computed_hash}'"
                 )
 
-        migrated_count = 0
-        now_iso = (ctx.timestamp or datetime.utcnow().isoformat())
-        lineage = f"migration:{snap.source_version}:{ctx.verifier_id}:{computed_hash[:12]}"
+        # 3. スナップショット ↔ 移行対象ノード群の完全同一性バインディング (Identity Binding)
+        target_ids = set(snapshot.get_target_node_ids())
+        if not target_ids:
+            raise ValueError("スナップショットに対象ノードが含まれていません")
 
-        uncommitted_nodes = [n for n in self.nodes.values() if not n.is_committed]
-        for node in uncommitted_nodes:
+        graph_uncommitted_ids = {n.id for n in self.nodes.values() if not n.is_committed}
+        if graph_uncommitted_ids != target_ids:
+            raise IntegrityError(
+                f"スナップショット対象とグラフ未コミットノード集合の不一致（すり替え・過不足検知）: "
+                f"スナップショット対象={sorted(target_ids)} vs グラフ未コミット={sorted(graph_uncommitted_ids)}"
+            )
+
+        # 各ノードの内容（ドメイン・トリガー・アクション）の完全一致検証
+        for nid in target_ids:
+            node = self.nodes[nid]
+            snap_payload = snapshot.get_node_payload(nid)
+            if not snap_payload:
+                raise IntegrityError(f"スナップショット内にノード '{nid}' のペイロードが見つかりません")
+            if node.domain != snap_payload.get("domain"):
+                raise IntegrityError(f"ノード '{nid}' の domain がスナップショットと不一致です")
+            if node.trigger_pattern != snap_payload.get("trigger_pattern"):
+                raise IntegrityError(f"ノード '{nid}' の trigger_pattern がスナップショットと不一致です")
+            if node.action_template != snap_payload.get("action_template"):
+                raise IntegrityError(f"ノード '{nid}' の action_template がスナップショットと不一致です")
+
+        # 4. 検証済みノードの正統コミットメント確立
+        migrated_count = 0
+        now_iso = (context.timestamp or datetime.utcnow().isoformat())
+        lineage = f"migration:{snapshot.source_version}:{context.verifier_id}:{computed_hash[:12]}"
+
+        for nid in sorted(target_ids):
+            node = self.nodes[nid]
             was_frozen = node.is_frozen
             if was_frozen:
                 node.unfreeze()
@@ -923,7 +958,7 @@ class MBGraph:
             rec = CommitmentRecord(
                 origin=CommitmentOrigin.MIGRATION_VERIFIED.value,
                 committed_at=now_iso,
-                actor=ctx.verifier_id,
+                actor=context.verifier_id,
                 evidence_at=node.last_support_at,
                 lineage=lineage,
             )

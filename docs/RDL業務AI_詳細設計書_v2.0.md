@@ -147,8 +147,8 @@ graph TD
   * **支持証拠時刻とコミット時刻の明確な分離**:
     * 証拠観測時刻 `last_support_at`（過去の検証・起案時刻 `evidence_time`）と、境界 $M_B$ への拘束定着時刻 `committed_at`（コミット時刻 `commit_time`）を分離記録。
     * 反証のみノード（`last_opposing_at` 保持かつ `last_support_at is None`）、レガシー曖昧ノード（`legacy_evidence_at` 保持）、および `MIGRATION_VERIFIED` 移行ノードに対しては、コミット時であっても支持証拠を捏造しない（極性隔離の徹底）。
-  * **不変コミットメント証跡レコード（`CommitmentRecord`）(P1)**:
-    * コミットメント情報は `@dataclass(frozen=True) class CommitmentRecord(origin, committed_at, actor, evidence_at, lineage)` として不変保持。
+  * **単一コミットメントモデル（再コミット・出所上書きの遮断）(P1)**:
+    * `commit_node()` はすでにコミット済みのノード（`node.is_committed == True`）の再コミット試行を `ValueError` で即座に拒絶。一度確立されたコミットメント出所・刻印時刻・lineage の事後改ざん・上書きを防止する。
 * **未コミットノードのフェイルクローズ完全排除（多層防御）**:
   * `MBGraph.add_or_update(node)` は `node.is_committed` を厳格検証し、未コミットの記述オブジェクトの直接注入を `ValueError` で拒絶。
   * `InterpCascade`（推論カスケード）は未コミットノードを `eligible_nodes` および Level 0 キャッシュ参照から 100% 排除（未コミット記述のみでは即時 Tier 3 `ask_human` に安全フォールバック）。
@@ -157,9 +157,12 @@ graph TD
   * **`CommitmentRecord.from_dict_strict()`**: `from_dict()` におけるデフォルト値補完を全廃。直列化データ内の `origin`（既知Enum値検証）、`committed_at` / `evidence_at`（ISO-8601 時刻妥当性）、`actor`（必須）の厳格検証を行い、外側フィールドとの不一致や欠損は `ValueError` で拒絶。
   * **ロード時 `content_hash` 検証 (`IntegrityError`)**: `from_dict(verify_hash=True)` は、保存された `content_hash` と復元後グラフの実効 `content_hash()` を照合し、不一致時は `IntegrityError` を送出して改ざんデータを即座に遮断。
   * ※ `content_hash` はデータの「完全性・改ざん検出（Integrity/Checksum）」を保証するものであり、署名・認可による「真正性（Authenticity）」とは区別して運用される。
-* **実データ検証を伴う真正な移行ゲートウェイ (`migrate_legacy_nodes()`) (P2)**:
-  * `LegacySnapshot`（実データペイロードとハッシュ計算）および `MigrationContext`（検証責任者・ロール・移行権限）を導入。
-  * 権限のないアクター（`role` が `admin`, `manager`, `migration_officer` 以外）の移行試行を `PermissionError`、実データハッシュ不一致を `IntegrityError` で遮断し、実データハッシュを刻印した真正な `MIGRATION_VERIFIED` を確立。
+* **実データ検証を伴う真正な移行ゲートウェイ (`migrate_legacy_nodes()`) (P0-P2)**:
+  * **互換ショートカットの全廃**: `snapshot: LegacySnapshot`, `context: MigrationContext` の型指定を厳格義務付け。文字列引数による暗黙呼び出しは `TypeError` で即時拒絶し、`admin` ロールへの自動昇格バックドアを根絶。
+  * **スナップショット ↔ 対象ノードの同一性・内容完全束縛**:
+    * グラフ内の未コミットノード集合とスナップショットの対象ノードID集合が完全一致すること（`graph_uncommitted_ids == target_ids`）を照合。すり替え・余剰・不足がある場合は `IntegrityError` で遮断。
+    * 各ノードの `domain`, `trigger_pattern`, `action_template` がスナップショットの raw payload と一致することを照合し、改ざん・不整合を `IntegrityError` で遮断。
+  * 権限のないアクター（`role` が `admin`, `manager`, `migration_officer` 以外、または `capability != "legacy_migration"`）の移行試行を `PermissionError`、実データハッシュ不一致を `IntegrityError` で遮断し、実データハッシュを刻印した真正な `MIGRATION_VERIFIED` を確立。
 
 ---
 
@@ -214,7 +217,7 @@ $H_{total} \ge \theta_{eff}$ に達した瞬間、巡航相（Cruise）から再
 | **Test 11** | キャッシュ移行の起源明示 | 旧形式キャッシュのインポート時に `source_mb_version` の明示を義務付け、現行バージョンへの不当な自己昇格が防止されること。 |
 | **Test 12** | 意味的鮮度と残差の分離 | タイムアウト案件（UNKNOWN）において、ノードの `last_evidence_at` および `content_hash` が保存され、不当な鮮度リフレッシュが発生しないこと。 |
 | **Test 13** | 証拠極性分離と反証シグナル | 失敗・差し戻し発生時に `last_opposing_at` が更新され、`last_support_at` は保存されて支持鮮度の上昇が防止されること。支持鮮度は `last_support_at` のみから算出され対向のみノードで 0.0 となること、レガシーセッターへの代入が `AttributeError` となること、実績ゼロのレガシーノードで極性捏造を行わないこと、歴史的反証シグナルが破断検査に反映され $C'$ と分離されること。 |
-| **Test 14** | 認知的ライフサイクル分離 | 純粋な `MBNode(...)` 記述生成では支持証拠を持たず、コンストラクタでのコミットメント自己捏造（Constructor Forgery / `_internal_commitment` バイパス）が遮断されること。コミットメント属性および `_commitment_record` の直接代入が `AttributeError` で拒絶されること。正規ゲートウェイ `commit_node()` を通過して初めて正統な出所・支持証拠打刻・不変 `CommitmentRecord` が付与されること。`CommitmentRecord.from_dict_strict` による直列化データ自己申告偽造の排除、ロード時 `content_hash` 不一致時の `IntegrityError` 遮断、および `LegacySnapshot` + `MigrationContext` による真正な実検証移行が保証されること。 |
+| **Test 14** | 認知的ライフサイクル分離 | 純粋な `MBNode(...)` 記述生成では支持証拠を持たず、コンストラクタでのコミットメント自己捏造（Constructor Forgery / `_internal_commitment` バイパス）が遮断されること。コミットメント属性および `_commitment_record` の直接代入が `AttributeError` で拒絶されること。正規ゲートウェイ `commit_node()` を通過して初めて正統な出所・支持証拠打刻・不変 `CommitmentRecord` が付与され、再コミット試行が `ValueError` で遮断されること（単一コミットメントモデル）。`CommitmentRecord.from_dict_strict` による直列化データ自己申告偽造の排除、ロード時 `content_hash` 不一致時の `IntegrityError` 遮断、および `LegacySnapshot` + `MigrationContext` による互換ショートカット全廃（文字列引数 `TypeError`）・対象ノード完全束縛（すり替え・内容不一致 `IntegrityError`）を伴う真正な実検証移行が保証されること。 |
 
 ---
 

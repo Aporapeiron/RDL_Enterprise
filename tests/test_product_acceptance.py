@@ -656,6 +656,10 @@ class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
         self.assertIsNotNone(committed_policy.commitment_record)
         self.assertEqual(committed_policy.commitment_record["origin"], "authority")
 
+        # コミット済みノードの再コミット禁止検査 (単一コミットモデル: 来歴の上書き封殺)
+        with self.assertRaises(ValueError):
+            graph.commit_node(committed_policy, origin=CommitmentOrigin.AUTHORITY, authority_context=authorized_auth)
+
         # コミット後は正統な支持証拠打刻により freshness が健全に回復し、推論で自律回答可能となる
         bundle_committed = locator.locate_bundle_for_node(graph, committed_policy, ctx)
         self.assertGreater(bundle_committed.freshness, 0.9)
@@ -741,6 +745,10 @@ class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
         legacy_graph = MBGraph.from_dict(uncommitted_data, allow_uncommitted=True)
         self.assertFalse(legacy_graph.get("n_uncommitted").is_committed)
 
+        # (0) 互換ショートカット（文字列引数）の廃絶確認: TypeError が発生すること
+        with self.assertRaises(TypeError):
+            legacy_graph.migrate_legacy_nodes(source_version="v0.9", migrated_by="sec_admin")
+
         snap = LegacySnapshot(
             source_version="v0.9",
             raw_payload=uncommitted_data,
@@ -761,6 +769,25 @@ class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
         auth_mig_ctx = MigrationContext(verifier_id="sec_admin", role="admin")
         with self.assertRaises(IntegrityError):
             legacy_graph.migrate_legacy_nodes(snapshot=tampered_snap, context=auth_mig_ctx)
+
+        # (b-2) 対象ノード不一致（すり替え・過不足）による移行試行は IntegrityError
+        mismatched_payload = {
+            "nodes": {
+                "n_other": {
+                    "id": "n_other",
+                    "domain": "security",
+                    "trigger_pattern": {"exact_keys": ["旧データ"]},
+                    "action_template": {"type": "direct_reply", "payload": "legacy"},
+                }
+            }
+        }
+        mismatched_snap = LegacySnapshot(
+            source_version="v0.9",
+            raw_payload=mismatched_payload,
+            expected_source_hash=LegacySnapshot("v0.9", mismatched_payload).compute_hash(),
+        )
+        with self.assertRaises(IntegrityError):
+            legacy_graph.migrate_legacy_nodes(snapshot=mismatched_snap, context=auth_mig_ctx)
 
         # (c) 正当な Snapshot + Context による検証済み移行の成功
         migrated_count = legacy_graph.migrate_legacy_nodes(snapshot=snap, context=auth_mig_ctx)
