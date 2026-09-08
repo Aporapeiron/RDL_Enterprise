@@ -35,21 +35,32 @@ RDL_Enterprise/
 │   ├── seed_it_support.json             # 社内ITサポート初期シードグラフ
 │   └── social_fixtures_sample.json      # 耐久ハーネス用ソーシャル摂動データ
 ├── src/
-│   └── rdl_enterprise/
-│       ├── __init__.py                  # パッケージ公開API
-│       ├── authority.py                 # AuthorityContext（権限境界・役職定義）
-│       ├── canary.py                    # CanaryManager, CanaryPolicy（Canaryデプロイ・熱隔離・自動ロールバック）
-│       ├── cascade.py                   # InterpCascade（Level 0〜3 多層推論・バージョン束縛キャッシュ・沈澱）
-│       ├── constraint.py                # ConstraintEngine, RuleNode, Locus, Active Constraint Subgraph
-│       ├── durability.py                # DurabilityHarness（回帰・境界・摂動破断チェッカー）
-│       ├── h_state.py                   # HState（熱ベクトル・自然散逸・θ_eff判定・バージョン別熱管理）
-│       ├── human.py                     # HumanQuery（κゲート・HITL制御）
-│       ├── mb_graph.py                  # MBNode, MBGraph（慣性質量・κ・バージョン管理・JSON永続化）
-│       ├── promotion_gate.py            # PromotionGate, ShadowEvaluator（シャドウ反実仮想評価・昇格判定）
-│       ├── runtime.py                   # EnterpriseRuntime（代謝オーケストレーション・非同期ライフサイクル）
-│       ├── shadow.py                    # ShadowExecutionRunner, CounterfactualComparator（シャドウ並行推論）
-│       ├── snapshot.py                  # CaseSnapshot, FrozenInterpretationContext, ReplayToken
-│       └── social_adapter.py            # SocialFixtureAdapter
+│   ├── rdl_enterprise/
+│   │   ├── __init__.py                  # パッケージ公開API
+│   │   ├── authority.py                 # AuthorityContext（権限境界・役職定義）
+│   │   ├── canary.py                    # CanaryManager, CanaryPolicy（Canaryデプロイ・熱隔離・自動ロールバック）
+│   │   ├── cascade.py                   # InterpCascade（Level 0〜3 多層推論・バージョン束縛キャッシュ・沈澱）
+│   │   ├── constraint.py                # ConstraintEngine, RuleNode, Locus, Active Constraint Subgraph
+│   │   ├── durability.py                # DurabilityHarness（回帰・境界・摂動破断チェッカー）
+│   │   ├── h_state.py                   # HState（熱ベクトル・自然散逸・θ_eff判定・バージョン別熱管理）
+│   │   ├── human.py                     # HumanQuery（κゲート・HITL制御）
+│   │   ├── mb_graph.py                  # MBNode, MBGraph（慣性質量・κ・バージョン管理・JSON永続化）
+│   │   ├── promotion_gate.py            # PromotionGate, ShadowEvaluator（シャドウ反実仮想評価・昇格判定）
+│   │   ├── runtime.py                   # EnterpriseRuntime（代謝オーケストレーション・非同期ライフサイクル）
+│   │   ├── scenarios/                   # Enterprise シナリオパック（60日ライフサイクル、権威管轄衝突、摂動ストレス）
+│   │   ├── shadow.py                    # ShadowExecutionRunner, CounterfactualComparator（シャドウ並行推論）
+│   │   ├── simulation_adapter.py        # SimulationWorld と EnterpriseRuntime の双方向ブリッジ
+│   │   ├── snapshot.py                  # CaseSnapshot, FrozenInterpretationContext, ReplayToken
+│   │   └── social_adapter.py            # SocialFixtureAdapter
+│   └── rdl_simulation/                  # 【汎用】RDL Simulation Harness（Core/Game共用テスト基盤）
+│       ├── __init__.py                  # シミュレーションAPI
+│       ├── agent.py                     # SimAgent, Persona（有限観測生成）, UserAgent, AuthorityAgent, EnvironmentAgent
+│       ├── clock.py                     # SimulationClock（離散Tick / 仮想日時同期）
+│       ├── events.py                    # SimEvent, EventQueue（優先度付き時系列キュー）
+│       ├── metrics.py                   # SimMetricsCollector（全体統計 & コホート別局所破断追跡）
+│       ├── replay.py                    # SimTraceLogger（イベントトレース / 決定論的再生）
+│       ├── scenario.py                  # ScenarioPack, ScenarioEvent（シナリオ定義基底）
+│       └── world.py                     # SimulationWorld（実行統合体）
 ├── tests/
 │   ├── test_canary.py                   # Canary隔離・熱監視テスト
 │   ├── test_candidate_immutability.py   # 候補ノード不変性・スナップショットテスト
@@ -58,8 +69,10 @@ RDL_Enterprise/
 │   ├── test_product_acceptance.py       # 製品受入テスト（最小代謝閉ループ・権威分離・バージョン束縛・観測保留・鮮度分離・証拠極性分離・ライフサイクルコミット等 14大テスト）
 │   ├── test_promotion_gate.py           # 昇格ゲート・シャドウ評価テスト
 │   ├── test_shadow.py                   # 反実仮想シャドウ推論テスト
+│   ├── test_simulation_harness.py       # シミュレーションハーネス単体・結合テスト
 │   └── test_social_adapter.py           # ソーシャル摂動フィクスチャテスト
 ├── run_simulation.py                    # 5大実証シナリオ実行スクリプト
+├── run_multiagent_sim.py                # 長期・複数主体・イベント駆動シミュレーション実行スクリプト
 ├── benchmark_cost_curve.py              # 合成トークン等価シミュレーションベンチマーク（LLM vs RAG vs RDL）
 ├── pyproject.toml
 └── README.md
@@ -87,7 +100,20 @@ python3 run_simulation.py
 * **シナリオ4**: 業務AIの非同期ライフサイクル（保留 PENDING $\to$ 翌朝フィードバック回収 SUCCESS）
 * **シナリオ5**: 案件放置によるタイムアウト（UNKNOWN化 $\to$ 不確実性熱の蓄積）
 
-### 2. コストカーブ・逆スケーリングのベンチマーク実行
+### 2. 長期・複数主体・イベント駆動シミュレーションの実行（RDL Simulation Harness）
+
+```bash
+# 60日間の長期ライフサイクル（平常沈澱 → 制度変更 → 発熱 → 破断 → MΔ → Shadow → Leap）
+py run_multiagent_sim.py --scenario lifecycle --days 60
+
+# 権威境界・管轄衝突（一般社員の伝聞 vs セキュリティ責任者の正式指示 vs 経理の越境介入遮断）
+py run_multiagent_sim.py --scenario authority
+
+# 過酷な摂動ストレス（表記揺れ・急増する放置・成功/失敗の交互連続・コホート別局所破断評価）
+py run_multiagent_sim.py --scenario stress --days 15
+```
+
+### 3. コストカーブ・逆スケーリングのベンチマーク実行
 
 ```bash
 py benchmark_cost_curve.py
@@ -95,10 +121,12 @@ py benchmark_cost_curve.py
 
 Pure LLM（毎回フルプロンプト推論）、Standard RAG（毎回検索注入）、RDL Enterprise（成功体験の沈澱による Tier 0 化）における合成トークン等価消費量とコスト削減率を比較計測します。
 
-### 3. テストスイートの実行
+### 4. テストスイートの実行
 
 ```bash
 py -m pytest -o pythonpath=src
+# または
+py -m unittest discover tests
 ```
 
-全 **147件** の単体・結合・受入テストが高速（約0.2秒）にパスします。
+全 **151件** の単体・結合・受入テストが高速（約0.1秒）にパスします。
