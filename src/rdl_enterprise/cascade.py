@@ -29,6 +29,7 @@ class InterpCascade:
         initial_cache: Optional[Dict[Tuple[str, str], str]] = None,
         constraint_config: Optional[ConstraintConfig] = None,
         constraint_evaluation_time: Optional[Any] = None,  # datetime（FrozenInterpretationContext から伝播）
+        interpretation_context_hash: Optional[str] = None, # 完全凍結コンテキストハッシュ (BASE v2.0 §4.2)
     ):
         self.mb_graph = mb_graph
         self.llm_bridge = llm_bridge
@@ -39,6 +40,9 @@ class InterpCascade:
         self.constraint_locator = RelationConstraintLocator(constraint_config or ConstraintConfig())
         # 凍結された関係拘束評価時刻（None の場合は _constraint_boost() が now() にフォールバック）
         self.constraint_evaluation_time = constraint_evaluation_time
+        # 全解釈条件の暗号論的ハッシュ（未指定の場合はグラフハッシュとunfrozenスコープにフォールバック）
+        self.interpretation_context_hash = interpretation_context_hash
+        self.context_scope = "frozen" if interpretation_context_hash else "unfrozen"
 
     def export_cache(self) -> Dict[Tuple[str, str], str]:
         """現在保持している Level 0 キャッシュの不変スナップショットを複製出力"""
@@ -56,15 +60,8 @@ class InterpCascade:
         現在の問い EFP に対するノードの関係拘束スコアを算出し、
         confidence への寄与分（boost）を返す。
         survive した拘束のみ boost、break / unresolved は 0。
-
-        【修正点】
-          - 評価時刻: FrozenInterpretationContext から伝播された constraint_evaluation_time を使用。
-            None の場合のみ datetime.now() にフォールバック（凍結なし cascade での使用時）。
-          - 設定: self.constraint_locator.config を ConstraintContext に渡す（カスタム設定が反映される）。
-          - boost cap: ConstraintConfig.constraint_boost_cap を参照（CascadeConfig の二重定義を解消）。
         """
         from datetime import datetime, timezone
-        # 凍結評価時刻を優先（F と F' で同じ freshness になることを保証）
         eval_time = self.constraint_evaluation_time or datetime.now(timezone.utc)
         locator_cfg = self.constraint_locator.config
         ctx = ConstraintContext(
@@ -72,7 +69,7 @@ class InterpCascade:
             current_time=eval_time,
             mb_version=getattr(self.mb_graph, "version", "prod"),
             active_domain=efp.category,
-            config=locator_cfg,  # カスタム ConstraintConfig を必ず渡す
+            config=locator_cfg,
         )
         bundle = self.constraint_locator.locate_bundle_for_node(self.mb_graph, node, ctx)
         if bundle is None:
@@ -80,11 +77,73 @@ class InterpCascade:
         probe = RuptureProbe(locator_cfg)
         result = probe.probe(bundle, self.mb_graph, ctx)
         if result.verdict == "survive":
-            cap = locator_cfg.constraint_boost_cap  # ConstraintConfig から読む（二重定義解消）
+            cap = locator_cfg.constraint_boost_cap
             core_score = getattr(bundle, "core_constraint_score", bundle.constraint_score)
             return min(cap, core_score * cap)
         return 0.0
 
+    def select_active_constraint_subgraph(
+        self,
+        eligible_nodes: List[MBNode],
+        efp: BusinessInput,
+        limit: int = 4,
+    ) -> List[MBNode]:
+        r"""
+        活性化拘束サブグラフ選出器 (ContextSelector: BASE v2.0 §4.2)。
+        有限境界 B 内の利用可能関係 (eligible_nodes) の中から、
+        入力 EFP との適合度・トリガー共起・相互関係性に基づいて
+        実際に F 形成候補となり得る活性化サブグラフ L_candidate を選出する。
+        """
+        if not eligible_nodes:
+            return []
+        if len(eligible_nodes) <= limit:
+            return list(eligible_nodes)
+
+        from .constraint import _compute_relevance
+        scored_nodes: List[Tuple[float, MBNode]] = []
+        for node in eligible_nodes:
+            rel = _compute_relevance(efp.query_text, node.trigger_pattern)
+            src_str = node.approval_count / (node.approval_count + node.rejection_count + 1.0)
+            score = rel * 0.7 + src_str * 0.3
+            scored_nodes.append((score, node))
+
+        scored_nodes.sort(key=lambda x: x[0], reverse=True)
+        # 適合スコアが正のノード群を優先し、最大 limit 個を選出
+        top_candidates = [n for score, n in scored_nodes[:limit]]
+        if not top_candidates:
+            top_candidates = [scored_nodes[0][1]]
+        return top_candidates
+
+    def _finalize_prediction(
+        self,
+        pred: InterpretationPrediction,
+        efp: BusinessInput,
+        conditions_hash: str = "",
+        view_hash: str = "",
+        provider_request_id: Optional[str] = None,
+        provider_response_id: Optional[str] = None,
+    ) -> InterpretationPrediction:
+        r"""
+        全推論層 (L0〜L3, Fallback) 共通の予測確定パイプライン (BASE v2.0 §4.2)。
+        出口を一本化し、完全凍結された解釈条件ハッシュ (context_hash) と
+        外生条件集合 K (conditions_hash)、および知識境界ビュー (view_hash) を
+        包括した InterpretationTrace を確実に生成・刻印する。
+        """
+        from .snapshot import InterpretationTrace
+        ctx_hash = self.interpretation_context_hash or getattr(self.mb_graph, "content_hash", lambda: "unknown")()
+        trace = InterpretationTrace.create(
+            context_hash=ctx_hash,
+            conditions_hash=conditions_hash,
+            pred=pred,
+            mb_view_hash=view_hash,
+            selected_locus_ids=pred.selected_locus_ids,
+            applied_locus_ids=pred.applied_locus_ids,
+            context_scope=self.context_scope,
+            provider_request_id=provider_request_id,
+            provider_response_id=provider_response_id,
+        )
+        pred.metadata["interpretation_trace"] = trace
+        return pred
 
     def interpret(
         self,
@@ -105,9 +164,6 @@ class InterpCascade:
         target_domain = efp.category or "any"
         exclude_set = set(exclude_node_ids) if exclude_node_ids else set()
 
-        # 有限境界 B による推論空間の拘束:
-        # 明示的なワイルドカード (None, "*", "__any__", "any") のみ全域走査を許容し、
-        # "general" を含む通常ドメインは厳格に一致するノードのみを候補とする
         def is_domain_eligible(node_domain: str, category: Optional[str]) -> bool:
             if not category or category in ("*", "__any__", "any"):
                 return True
@@ -117,6 +173,7 @@ class InterpCascade:
             node for node in self.mb_graph.list_nodes()
             if is_domain_eligible(node.domain, efp.category) and (node.id not in exclude_set)
         ]
+        available_locus_ids = [n.id for n in eligible_nodes]
 
         is_prime = bool(efp.metadata.get("is_efp_prime", False)) if hasattr(efp, "metadata") and efp.metadata else getattr(efp, "is_prime", False)
         metadata = getattr(efp, "metadata", {}) or {}
@@ -133,7 +190,7 @@ class InterpCascade:
                 elif not user_resolved:
                     outcome = "need_input"
                     conf = max(0.1, base_conf * 0.6)
-            return InterpretationPrediction(
+            pred = InterpretationPrediction(
                 action_type=node.action_template.get("type", "direct_reply"),
                 content=node.action_template.get("payload", ""),
                 confidence=min(1.0, conf),
@@ -141,8 +198,13 @@ class InterpCascade:
                 cost_tier=cost_tier,
                 domain=node.domain,
                 expected_outcome=outcome,
+                available_locus_ids=available_locus_ids,
+                selected_locus_ids=[node.id],
+                applied_locus_ids=[node.id],
                 constraint_locus_ids=[node.id],
+                locus_basis="direct_match",
             )
+            return self._finalize_prediction(pred, efp)
 
         # -------------------------------------------------------------
         # Level 0: 完全一致キャッシュ (Cost Tier 0: ローカル最小コスト)
@@ -164,16 +226,13 @@ class InterpCascade:
         # -------------------------------------------------------------
         for node in eligible_nodes:
             pattern = node.trigger_pattern
-            # 完全一致キー群のチェック
             for key in pattern.get("exact_keys", []):
                 if self._normalize(key) == norm_query or key.lower() in efp.query_text.lower():
-                    # ヒットしたらLevel 0キャッシュに昇格 (ドメイン境界付き)
                     self.level0_cache[cache_key] = node.id
                     boost = 0.0 if skip_constraint_boost else self._constraint_boost(node, efp)
                     base_c = node.confidence + boost
                     return _build_prediction(node, base_c, cost_tier=1)
 
-            # ルール式 (正規表現等) の評価
             rule_expr = pattern.get("rule_expr")
             if rule_expr:
                 try:
@@ -222,13 +281,17 @@ class InterpCascade:
         if self.llm_bridge:
             actual_token = replay_token
             pred_metadata: Dict[str, Any] = {}
+            from rdl_enterprise.snapshot import CounterfactualInput, CounterfactualMBView, BridgeExecutionTrace
+
+            # 活性化拘束サブグラフ L_candidate の選出 (ContextSelector: BASE v2.0 §4.2)
+            active_subgraph = self.select_active_constraint_subgraph(eligible_nodes, efp, limit=4)
+            selected_locus_ids = [n.id for n in active_subgraph]
+            mb_hash = getattr(self.mb_graph, "content_hash", lambda: "unknown")()
+
             if replay_token is not None:
                 # 反実仮想再演 (Counterfactual Replay): 外生固定条件集合 K の下での再演
-                # BASE v2.0: 唯一の介入変数 (M_B \ bundle の有無) を CounterfactualMBView & CounterfactualInput として明示伝達
-                from rdl_enterprise.snapshot import CounterfactualInput, CounterfactualMBView
-                mb_hash = getattr(self.mb_graph, "content_hash", lambda: "unknown")()
                 mb_view = CounterfactualMBView.from_nodes(
-                    available_nodes=eligible_nodes,
+                    available_nodes=active_subgraph,
                     excluded_node_ids=list(exclude_set),
                     mb_content_hash=mb_hash,
                     domain=target_domain,
@@ -238,10 +301,12 @@ class InterpCascade:
                     replay_token=replay_token,
                     mb_view=mb_view,
                     excluded_node_ids=list(exclude_set),
-                    available_nodes=eligible_nodes,
+                    available_nodes=active_subgraph,
                     domain=target_domain,
                 )
                 cf_applied = False
+                exec_trace: Optional[BridgeExecutionTrace] = None
+
                 if hasattr(self.llm_bridge, "resolve_counterfactual") and callable(self.llm_bridge.resolve_counterfactual):
                     try:
                         llm_res = self.llm_bridge.resolve_counterfactual(efp, replay_token, counterfactual_input=cf_input)
@@ -276,16 +341,52 @@ class InterpCascade:
                     llm_res = self.llm_bridge.resolve(efp)
                     cf_applied = False
 
+                # Bridge からの BridgeExecutionTrace 抽出または適用ビュー照合
+                if isinstance(llm_res, dict):
+                    if "execution_trace" in llm_res:
+                        exec_trace = llm_res["execution_trace"]
+                    elif "applied_mb_view_hash" in llm_res:
+                        exec_trace = BridgeExecutionTrace(
+                            requested_mb_view_hash=mb_view.view_hash,
+                            applied_mb_view_hash=str(llm_res["applied_mb_view_hash"]),
+                            conditions_hash=getattr(replay_token, "conditions_hash", ""),
+                        )
+                if exec_trace is None and cf_applied:
+                    # Bridge Adapter が CounterfactualInput を受領した場合の実行証跡自動構築
+                    exec_trace = BridgeExecutionTrace(
+                        requested_mb_view_hash=mb_view.view_hash,
+                        applied_mb_view_hash=getattr(self.llm_bridge, "applied_mb_view_hash", mb_view.view_hash),
+                        conditions_hash=getattr(replay_token, "conditions_hash", ""),
+                        applied_node_ids=tuple(selected_locus_ids),
+                    )
+
                 pred_metadata["counterfactual_verified"] = cf_applied
                 pred_metadata["mb_view_hash"] = mb_view.view_hash
                 pred_metadata["conditions_hash"] = getattr(replay_token, "conditions_hash", "")
+                if exec_trace is not None:
+                    pred_metadata["execution_trace"] = exec_trace
             else:
-                # 通常推論 (Normal Resolve): 通常の未知案件解釈作用
-                if hasattr(self.llm_bridge, "resolve_with_trace") and callable(self.llm_bridge.resolve_with_trace):
+                # 通常推論 (Normal Resolve):
+                # 活性化拘束サブグラフ L_candidate を bridge に提示して推論
+                mb_view = CounterfactualMBView.from_nodes(
+                    available_nodes=active_subgraph,
+                    excluded_node_ids=[],
+                    mb_content_hash=mb_hash,
+                    domain=target_domain,
+                )
+                exec_trace: Optional[BridgeExecutionTrace] = None
+                if hasattr(self.llm_bridge, "resolve_with_context") and callable(self.llm_bridge.resolve_with_context):
+                    llm_res = self.llm_bridge.resolve_with_context(efp, mb_view)
+                    if isinstance(llm_res, tuple) and len(llm_res) == 2:
+                        llm_res, actual_token = llm_res
+                elif hasattr(self.llm_bridge, "resolve_with_trace") and callable(self.llm_bridge.resolve_with_trace):
                     llm_res, actual_token = self.llm_bridge.resolve_with_trace(efp)
                 else:
-                    llm_res = self.llm_bridge.resolve(efp)
-                    # 1. resolve() 自体から排出された実際の推論証跡 K_actual を最優先採用
+                    try:
+                        llm_res = self.llm_bridge.resolve(efp, mb_view=mb_view)
+                    except TypeError:
+                        llm_res = self.llm_bridge.resolve(efp)
+
                     if isinstance(llm_res, dict) and "replay_token" in llm_res and llm_res["replay_token"] is not None:
                         actual_token = llm_res["replay_token"]
                     elif hasattr(self.llm_bridge, "capture_counterfactual_context") and callable(self.llm_bridge.capture_counterfactual_context):
@@ -299,6 +400,33 @@ class InterpCascade:
                         except Exception:
                             actual_token = None
 
+                # Bridge からの BridgeExecutionTrace 抽出または適用ビュー照合
+                if isinstance(llm_res, dict):
+                    if "execution_trace" in llm_res:
+                        exec_trace = llm_res["execution_trace"]
+                    elif "applied_mb_view_hash" in llm_res:
+                        exec_trace = BridgeExecutionTrace(
+                            requested_mb_view_hash=mb_view.view_hash,
+                            applied_mb_view_hash=str(llm_res["applied_mb_view_hash"]),
+                            conditions_hash=getattr(actual_token, "conditions_hash", "") if actual_token else "",
+                        )
+
+                pred_metadata["mb_view_hash"] = mb_view.view_hash
+                pred_metadata["conditions_hash"] = getattr(actual_token, "conditions_hash", "") if actual_token else ""
+                if exec_trace is not None:
+                    pred_metadata["execution_trace"] = exec_trace
+
+            # 実際に注入・適用されたノード群 (applied_locus_ids) の特定
+            applied_locus_ids = list(selected_locus_ids)
+            locus_basis = "context_selected"
+            if isinstance(llm_res, dict):
+                if "applied_node_ids" in llm_res and llm_res["applied_node_ids"]:
+                    applied_locus_ids = list(llm_res["applied_node_ids"])
+                    locus_basis = "bridge_applied"
+                elif "used_node_ids" in llm_res and llm_res["used_node_ids"]:
+                    applied_locus_ids = list(llm_res["used_node_ids"])
+                    locus_basis = "bridge_applied"
+
             base_conf = self.config.llm_default_confidence
             outcome = "need_input"
             if is_prime:
@@ -309,36 +437,28 @@ class InterpCascade:
                     outcome = "need_input"
                     base_conf = max(0.05, base_conf * 0.6)
 
-            # Level 3 の責任拘束位置 (responsible constraint loci):
-            # このドメイン境界 B のもとで推論器の前提として提供された全 M_B ノード群
-            level3_locus_ids = [n.id for n in eligible_nodes]
-
             pred = InterpretationPrediction(
-                action_type=llm_res.get("type", "direct_reply"),
-                content=llm_res.get("payload", "LLMによる汎用回答"),
-                confidence=base_conf,  # 未知初見のため標準確信度
+                action_type=llm_res.get("type", "direct_reply") if isinstance(llm_res, dict) else "direct_reply",
+                content=llm_res.get("payload", "LLMによる汎用回答") if isinstance(llm_res, dict) else str(llm_res),
+                confidence=base_conf,
                 matched_node_id=None,
                 cost_tier=3,
                 domain=efp.category or "unknown",
                 expected_outcome=outcome,
                 replay_token=actual_token,
-                constraint_locus_ids=level3_locus_ids,
+                available_locus_ids=available_locus_ids,
+                selected_locus_ids=selected_locus_ids,
+                applied_locus_ids=applied_locus_ids,
+                constraint_locus_ids=applied_locus_ids,
+                locus_basis=locus_basis,
                 metadata=pred_metadata,
             )
-
-            # 監査証跡 (InterpretationTrace) の生成と保存 (BASE v2.0 §4.2)
-            from rdl_enterprise.snapshot import InterpretationTrace
-            mb_hash = getattr(self.mb_graph, "content_hash", lambda: "unknown")()
-            cond_hash = getattr(actual_token, "conditions_hash", "") if actual_token else ""
-            view_h = pred_metadata.get("mb_view_hash", "")
-            trace = InterpretationTrace.create(
-                context_hash=mb_hash,
-                conditions_hash=cond_hash,
-                pred=pred,
-                mb_view_hash=view_h,
+            return self._finalize_prediction(
+                pred,
+                efp,
+                conditions_hash=pred_metadata.get("conditions_hash", ""),
+                view_hash=pred_metadata.get("mb_view_hash", ""),
             )
-            pred.metadata["interpretation_trace"] = trace
-            return pred
 
         # LLM未設定のデフォルトフォールバック（人間に聞く）
         fallback_conf = 0.1
@@ -351,8 +471,7 @@ class InterpCascade:
                 fallback_conf = 0.06
                 fallback_outcome = "need_input"
 
-        fallback_locus_ids = [n.id for n in eligible_nodes]
-        return InterpretationPrediction(
+        fallback_pred = InterpretationPrediction(
             action_type="ask_human",
             content="過去事例・ルールが見つかりません。先輩社員へ確認が必要です。",
             confidence=fallback_conf,
@@ -360,8 +479,13 @@ class InterpCascade:
             cost_tier=3,
             domain=efp.category or "unknown",
             expected_outcome=fallback_outcome,
-            constraint_locus_ids=fallback_locus_ids,
+            available_locus_ids=available_locus_ids,
+            selected_locus_ids=[],
+            applied_locus_ids=[],
+            constraint_locus_ids=[],
+            locus_basis="fallback",
         )
+        return self._finalize_prediction(fallback_pred, efp)
 
     def crystallize_rule(self, efp: BusinessInput, resolution_text: str, category: str, approved: bool = True):
         """

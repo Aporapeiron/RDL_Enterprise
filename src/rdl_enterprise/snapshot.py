@@ -176,17 +176,37 @@ class CounterfactualInput:
 
 
 @dataclass(frozen=True)
+class BridgeExecutionTrace:
+    r"""
+    Bridge Adapter による反実仮想要求構築の暗号論的監査証跡 (BASE v2.0 §4.2)
+    LLMモデルの口頭自己申告ではなく、Adapter自身が知識ビューから
+    実際にプロンプト・リクエストを生成した客観的事実を記録する。
+    """
+    requested_mb_view_hash: str
+    applied_mb_view_hash: str
+    prompt_context_hash: str = ""
+    conditions_hash: str = ""
+    provider_request_id: Optional[str] = None
+    provider_response_id: Optional[str] = None
+    applied_node_ids: Tuple[str, ...] = field(default_factory=tuple)
+
+
+@dataclass(frozen=True)
 class InterpretationTrace:
     r"""
     推論作用の完全監査証跡 (BASE v2.0 §4.2)
-    事前に固定した解釈可能条件 (context_hash) と、
-    外生固定条件集合 K (conditions_hash)、および知識境界ビュー (view_hash) を束ねる。
+    事前に固定した全解釈条件 (FrozenInterpretationContext.context_hash) と、
+    外生固定条件集合 K (conditions_hash)、および知識境界ビュー (view_hash) と責任拘束位置を束ねる。
     """
     context_hash: str
     conditions_hash: str
     prediction_hash: str
     mb_view_hash: str = ""
+    selected_locus_hash: str = ""
+    applied_locus_hash: str = ""
+    context_scope: str = "frozen"               # "frozen" (完全同一性保証) | "unfrozen"
     timestamp: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+    provider_request_id: Optional[str] = None
     provider_response_id: Optional[str] = None
     trace_id: str = ""
 
@@ -202,6 +222,7 @@ class InterpretationTrace:
             "domain": pred.domain or "",
             "expected_outcome": pred.expected_outcome,
             "constraint_locus_ids": sorted(pred.constraint_locus_ids or []),
+            "locus_basis": pred.locus_basis,
         }
         raw = json.dumps(payload, sort_keys=True, ensure_ascii=False)
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
@@ -213,17 +234,29 @@ class InterpretationTrace:
         conditions_hash: str,
         pred: "InterpretationPrediction",
         mb_view_hash: str = "",
+        selected_locus_ids: Optional[List[str]] = None,
+        applied_locus_ids: Optional[List[str]] = None,
+        context_scope: str = "frozen",
+        provider_request_id: Optional[str] = None,
         provider_response_id: Optional[str] = None,
         trace_id: Optional[str] = None,
     ) -> "InterpretationTrace":
         import uuid
         t_id = trace_id or f"trace_{uuid.uuid4().hex[:8]}"
         p_hash = cls.compute_prediction_hash(pred)
+        sel_locus = selected_locus_ids if selected_locus_ids is not None else pred.selected_locus_ids
+        app_locus = applied_locus_ids if applied_locus_ids is not None else pred.applied_locus_ids
+        sel_h = hashlib.sha256(json.dumps(sorted(sel_locus)).encode("utf-8")).hexdigest()[:16] if sel_locus else ""
+        app_h = hashlib.sha256(json.dumps(sorted(app_locus)).encode("utf-8")).hexdigest()[:16] if app_locus else ""
         return cls(
             context_hash=context_hash,
             conditions_hash=conditions_hash,
             prediction_hash=p_hash,
             mb_view_hash=mb_view_hash,
+            selected_locus_hash=sel_h,
+            applied_locus_hash=app_h,
+            context_scope=context_scope,
+            provider_request_id=provider_request_id,
             provider_response_id=provider_response_id,
             trace_id=t_id,
         )
@@ -231,10 +264,14 @@ class InterpretationTrace:
 
 @dataclass
 class InterpretationPrediction:
-    """
+    r"""
     事前予測 F (BASE v2.0 §4.2)
-    - matched_node_id: 単一の確定ルールとして直接発火したノードID（Level 0〜2）
-    - constraint_locus_ids: F 形成時に作用・拘束した M_B の関係位置群（責任拘束位置）
+    関係拘束位置の有限段階化 (Locus Semantic Staging):
+    - available_locus_ids: 有限境界 B (ドメイン等) のもとで利用可能だった関係ノード群
+    - selected_locus_ids: ContextSelector が F 形成候補として選択した活性化サブグラフ
+    - applied_locus_ids: 実際に推論器/プロンプト入力へ注入された関係ノード群
+    - constraint_locus_ids: 現在の観測・介入条件下で F 形成への作用が確認された有限な責任拘束位置
+    - locus_basis: "direct_match" | "context_selected" | "bridge_applied" | "rupture_verified" | "fallback"
     """
     action_type: str                  # "direct_reply" | "tool_call" | "ask_human" | "delegate"
     content: str                      # 回答テキストまたは処理内容
@@ -244,12 +281,26 @@ class InterpretationPrediction:
     domain: Optional[str] = None
     expected_outcome: str = "resolve" # "resolve" | "need_input" | "escalate"
     replay_token: Optional[ReplayToken] = None # 反実仮想再演・同一条件証跡 K
-    constraint_locus_ids: List[str] = field(default_factory=list) # 責任拘束位置 (M_B 関係位置群)
+    constraint_locus_ids: List[str] = field(default_factory=list) # 責任拘束位置 (代表責任位置)
+    available_locus_ids: List[str] = field(default_factory=list)  # 利用可能関係
+    selected_locus_ids: List[str] = field(default_factory=list)   # 選択活性化関係 L_candidate
+    applied_locus_ids: List[str] = field(default_factory=list)    # 実注入関係 L_applied
+    locus_basis: str = "direct_match" # 責任帰属根拠
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
-        if not self.constraint_locus_ids and self.matched_node_id:
-            self.constraint_locus_ids = [self.matched_node_id]
+        # 単一ノード直接発火の場合のデフォルト帰属
+        if self.matched_node_id:
+            if not self.constraint_locus_ids:
+                self.constraint_locus_ids = [self.matched_node_id]
+            if not self.applied_locus_ids:
+                self.applied_locus_ids = [self.matched_node_id]
+            if not self.selected_locus_ids:
+                self.selected_locus_ids = [self.matched_node_id]
+        elif self.applied_locus_ids and not self.constraint_locus_ids:
+            self.constraint_locus_ids = list(self.applied_locus_ids)
+        elif self.selected_locus_ids and not self.constraint_locus_ids:
+            self.constraint_locus_ids = list(self.selected_locus_ids)
 
 
 @dataclass
@@ -472,6 +523,7 @@ class FrozenInterpretationContext:
             initial_cache=dict(self.initial_level0_cache),  # 常に初期 C0 のコピーを渡す
             constraint_config=copy.deepcopy(self.constraint_config) if self.constraint_config is not None else None,
             constraint_evaluation_time=self.constraint_evaluation_time,  # 凍結評価時刻を伝播
+            interpretation_context_hash=self.context_hash,  # 完全凍結コンテキストハッシュを伝播
         )
 
     def get_or_create_cascade(self) -> Any:

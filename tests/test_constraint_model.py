@@ -2606,6 +2606,165 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
         self.assertIsInstance(pred_hash, str)
         self.assertGreater(len(pred_hash), 0)
 
+    def test_unified_prediction_finalization_and_frozen_context_hash(self):
+        """全推論層 (L0-L3, Fallback) の出口が一本化され、FrozenInterpretationContext.context_hash が一貫刻印されること (BASE v2.0 §4.2)"""
+        from rdl_enterprise.cascade import InterpCascade, CascadeConfig
+        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.snapshot import BusinessInput, FrozenInterpretationContext
+
+        graph = MBGraph()
+        n0 = MBNode(id="n_l0", domain="hr", trigger_pattern={"exact_keys": ["完全一致クエリ"]}, action_template={"type": "direct_reply", "payload": "L0回答"}, confidence=0.9)
+        n1 = MBNode(id="n_l1", domain="hr", trigger_pattern={"rule_expr": r"正規表現.*"}, action_template={"type": "direct_reply", "payload": "L1回答"}, confidence=0.8)
+        n2 = MBNode(id="n_l2", domain="hr", trigger_pattern={"exact_keys": ["類似マッチクエリ"]}, action_template={"type": "direct_reply", "payload": "L2回答"}, confidence=0.7)
+        graph.add_or_update(n0)
+        graph.add_or_update(n1)
+        graph.add_or_update(n2)
+
+        frozen_ctx = FrozenInterpretationContext(
+            mb_version="v2",
+            mb_content_hash="content_hash_fixed_123",
+            frozen_mb=graph,
+            target_domain="hr",
+        )
+        cascade = frozen_ctx.create_isolated_cascade()
+
+        # 1. Level 1 (初回到達時は L1 ルール評価され、L0 キャッシュに蓄積される)
+        efp0 = BusinessInput("T0", "U1", "hr", "完全一致クエリ")
+        p_init = cascade.interpret(efp0)
+        self.assertEqual(p_init.cost_tier, 1)
+
+        # 2. Level 0 (2回目の同一クエリは L0 キャッシュにヒット)
+        p0 = cascade.interpret(efp0)
+        self.assertEqual(p0.cost_tier, 0)
+        self.assertIn("interpretation_trace", p0.metadata)
+        self.assertEqual(p0.metadata["interpretation_trace"].context_hash, frozen_ctx.context_hash)
+
+        # 3. Level 1 (正規表現)
+        efp1 = BusinessInput("T1", "U1", "hr", "正規表現テスト")
+        p1 = cascade.interpret(efp1)
+        self.assertEqual(p1.cost_tier, 1)
+        self.assertIn("interpretation_trace", p1.metadata)
+        self.assertEqual(p1.metadata["interpretation_trace"].context_hash, frozen_ctx.context_hash)
+
+        # 4. Fallback (LLMなし)
+        efp_fb = BusinessInput("TFB", "U1", "hr", "完全未知クエリxyz")
+        pfb = cascade.interpret(efp_fb)
+        self.assertEqual(pfb.locus_basis, "fallback")
+        self.assertIn("interpretation_trace", pfb.metadata)
+        self.assertEqual(pfb.metadata["interpretation_trace"].context_hash, frozen_ctx.context_hash)
+
+    def test_active_constraint_subgraph_and_locus_bundle_matching(self):
+        """ContextSelector により活性化サブグラフ L が選出され、locate_bundle_for_locus が 1:1 で L を束ねて切断対象とすること (BASE v2.0 §4.2)"""
+        from rdl_enterprise.cascade import InterpCascade, CascadeConfig
+        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.constraint import RelationConstraintLocator, ConstraintContext
+        from rdl_enterprise.snapshot import BusinessInput
+
+        graph = MBGraph()
+        # 5 つのノードを作成
+        for i in range(5):
+            n = MBNode(
+                id=f"node_sub_{i}",
+                domain="support",
+                trigger_pattern={"exact_keys": [f"問合せ_{i}" if i < 2 else "その他"]},
+                action_template={"type": "direct_reply", "payload": f"payload_{i}"},
+                confidence=0.5 + 0.1 * i,
+                approval_count=10 * i,
+            )
+            graph.add_or_update(n)
+
+        cascade = InterpCascade(graph)
+        efp = BusinessInput("T_SUB", "U1", "support", "問合せ_0 について教えて")
+
+        # ContextSelector の選出 (limit=2)
+        eligible = graph.list_nodes()
+        selected = cascade.select_active_constraint_subgraph(eligible, efp, limit=2)
+        self.assertEqual(len(selected), 2)
+        self.assertEqual(selected[0].id, "node_sub_0")
+
+        # locate_bundle_for_locus による 1:1 拘束束構築
+        locus_ids = [s.id for s in selected]
+        locator = RelationConstraintLocator()
+        ctx = ConstraintContext(efp=efp, active_domain="support")
+        bundle = locator.locate_bundle_for_locus(graph, locus_ids, ctx)
+
+        # 評価対象と切断対象が locus_ids と完全一致
+        self.assertEqual(bundle.node_ids, locus_ids)
+        self.assertEqual(bundle.primary_node_id(), locus_ids[0])
+        self.assertEqual(bundle.supporting_node_ids, locus_ids[1:])
+        self.assertGreater(bundle.constraint_score, 0.0)
+
+    def test_applied_view_hash_contract_and_trace_verification(self):
+        """RuptureProbe が BridgeExecutionTrace の 4点照合を検証し、満たした場合のみ intervention_verified=True とし effect_verified_locus_ids を記録すること (BASE v2.0 §4.2)"""
+        from rdl_enterprise.cascade import InterpCascade
+        from rdl_enterprise.mb_graph import MBGraph, MBNode
+        from rdl_enterprise.constraint import RuptureProbe, ConstraintBundle, ConstraintContext
+        from rdl_enterprise.snapshot import BusinessInput, ReplayToken, CounterfactualInput, BridgeExecutionTrace
+
+        class VerifiedTraceMockBridge:
+            def __init__(self):
+                self.is_mb_dependent = True
+                self.applied_mb_view_hash = None
+                self._token = ReplayToken(token_id="tok_fixed", model_name="v-model", seed=42)
+            def can_replay(self):
+                return True
+            def create_replay_token(self):
+                return self._token
+            def resolve(self, efp, mb_view=None):
+                v_hash = mb_view.view_hash if mb_view else "base_view_hash"
+                trace = BridgeExecutionTrace(
+                    requested_mb_view_hash=v_hash,
+                    applied_mb_view_hash=v_hash, # 正しく一致
+                    conditions_hash=self._token.conditions_hash,
+                    applied_node_ids=("n_tgt",),
+                )
+                return {
+                    "type": "direct_reply",
+                    "payload": "base_with_tgt",
+                    "applied_mb_view_hash": v_hash,
+                    "execution_trace": trace,
+                    "replay_token": self._token,
+                }
+            def resolve_counterfactual(self, cf_input: CounterfactualInput):
+                v_hash = cf_input.mb_view.view_hash if cf_input.mb_view else "view_hash"
+                is_cut = bool(cf_input.excluded_node_ids)
+                applied_ids = () if is_cut else ("n_tgt",)
+                trace = BridgeExecutionTrace(
+                    requested_mb_view_hash=v_hash,
+                    applied_mb_view_hash=v_hash, # 正しく一致
+                    conditions_hash=self._token.conditions_hash,
+                    applied_node_ids=applied_ids,
+                )
+                payload_text = "cut_without_tgt_different" if is_cut else "base_with_tgt"
+                return {
+                    "type": "direct_reply",
+                    "payload": payload_text,
+                    "applied_mb_view_hash": v_hash,
+                    "execution_trace": trace,
+                }
+
+        graph = MBGraph()
+        n_tgt = MBNode(id="n_tgt", domain="sales", trigger_pattern={"exact_keys": ["特別割引"]}, action_template={"type": "direct_reply", "payload": "10%割引"}, confidence=0.8)
+        graph.add_or_update(n_tgt)
+
+        bridge = VerifiedTraceMockBridge()
+        bundle = ConstraintBundle(node_ids=["n_tgt"], locus_type="strong", constraint_score=0.8)
+        probe = RuptureProbe()
+        # ローカルルール (Level 1) にヒットしないクエリで推論させ、Level 3 の bridge を呼び出させる
+        efp = BusinessInput("T_TGT", "U1", "sales", "未定義の複雑な割引相談")
+        ctx = ConstraintContext(efp=efp, llm_bridge=bridge, active_domain="sales")
+
+        res = probe.probe(bundle, graph, ctx)
+
+        # 4点照合が成立し、介入が実証されること
+        self.assertTrue(res.intervention_verified)
+        self.assertIsNotNone(res.rupture_effect)
+        self.assertGreater(res.rupture_effect, 0.0)
+        self.assertEqual(res.effect_verified_locus_ids, ["n_tgt"])
+        self.assertIsNotNone(res.base_trace_id)
+        self.assertIsNotNone(res.cut_trace_id)
+        self.assertNotEqual(res.base_mb_view_hash, res.cut_mb_view_hash)
+
 
 if __name__ == "__main__":
     unittest.main()

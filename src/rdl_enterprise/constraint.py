@@ -239,6 +239,9 @@ class RuptureResult:
     base_mb_view_hash: Optional[str] = None     # 切断前 M_B の view_hash
     cut_mb_view_hash: Optional[str] = None      # 切断後 M_B \ bundle の view_hash
     intervention_verified: bool = False         # Level 3 で M_B 介入が実証されたか
+    base_trace_id: Optional[str] = None         # f_base の InterpretationTrace trace_id
+    cut_trace_id: Optional[str] = None          # f_without の InterpretationTrace trace_id
+    effect_verified_locus_ids: List[str] = field(default_factory=list)  # 切断で有意差が実証された責任拘束位置
 
 
 # ---------------------------------------------------------------------------
@@ -829,39 +832,61 @@ class RelationConstraintLocator:
         if len(nodes) == 1:
             return self.locate_bundle_for_node(mb_graph, nodes[0], ctx)
 
-        # 複数ノード (Level 3 等): 各ノードの bundle を評価し、最も拘束スコアの高いノードを主軸とする
-        evaluated_bundles = []
+        # 複数ノード (Level 3 等): 責任拘束位置 L 全体を対象とする複合束を構築 (BASE v2.0 §4.2)
+        # 【拘束強度評価と破断切断範囲の 1:1 一致】
+        # score評価対象 = L, cut切断対象 = L
+        cfg = ctx.config if ctx.config is not None else self.config
+        efp = ctx.efp
+        query = efp.query_text
+        now = ctx.current_time
+
+        evaluated_nodes = []
+        seen_lineages = set()
+        locus_ids = [n.id for n in nodes]
+
         for n in nodes:
-            b = self.locate_bundle_for_node(mb_graph, n, ctx)
-            if b is not None:
-                evaluated_bundles.append((b, n))
+            rel = _compute_relevance(query, n.trigger_pattern)
+            fresh = _compute_freshness(n.last_updated, cfg.freshness_half_life_days, now)
+            auth = _compute_authority_weight(n.authority_level)
+            src = _compute_source_strength(n.approval_count, n.rejection_count)
+            base_score = _compute_constraint_score(rel, fresh, auth, src, 0.5, cfg)
+            lineage = getattr(n, "source_lineage", None) or getattr(n, "source_id", None)
+            evaluated_nodes.append((base_score, rel, fresh, auth, src, lineage, n))
 
-        if not evaluated_bundles:
-            return None
+        evaluated_nodes.sort(key=lambda x: x[0], reverse=True)
+        primary = evaluated_nodes[0]
+        primary_score, primary_rel, primary_fresh, primary_auth, primary_src, primary_lin, primary_node = primary
+        if primary_lin:
+            seen_lineages.add(primary_lin)
 
-        # 最も強い拘束を持つ bundle をベースにする
-        evaluated_bundles.sort(key=lambda item: item[0].constraint_score, reverse=True)
-        best_bundle, primary_node = evaluated_bundles[0]
+        # L 内部の相互支援・相乗効果 (Composite Synergy)
+        synergy_mass = 0.0
+        distinct_lineages = len(seen_lineages)
+        for score, rel, fresh, auth, src, lin, n in evaluated_nodes[1:]:
+            rel_type = _check_node_relation(primary_node, n)
+            if rel_type in ("support", "inferred_support"):
+                lin_factor = 0.2 if (lin and lin in seen_lineages) else 1.0
+                if lin:
+                    seen_lineages.add(lin)
+                weight = 1.0 if rel_type == "support" else 0.5
+                synergy_mass += 0.03 * rel * src * lin_factor * weight
 
-        # locus 全体のノード群を切断対象 (bundle.node_ids) に確実に統合
-        combined_node_ids = list(best_bundle.node_ids)
-        for n in nodes:
-            if n.id not in combined_node_ids:
-                combined_node_ids.append(n.id)
+        synergy_mass = min(0.20, synergy_mass)
+        composite_score = min(1.0, primary_score + synergy_mass)
+
+        # 独立ソース系統数に基づく収束度
+        convergence = min(1.0, 0.4 + 0.15 * len(seen_lineages))
 
         return ConstraintBundle(
-            node_ids=combined_node_ids,
-            locus_type=best_bundle.locus_type,
-            constraint_score=best_bundle.constraint_score,
-            relevance=best_bundle.relevance,
-            freshness=best_bundle.freshness,
-            authority_weight=best_bundle.authority_weight,
-            source_strength=best_bundle.source_strength,
-            convergence=best_bundle.convergence,
-            is_structural_bridge=best_bundle.is_structural_bridge,
-            inferred_node_ids=best_bundle.inferred_node_ids,
-            auxiliary_constraint_signal=best_bundle.auxiliary_constraint_signal,
-            auxiliary_convergence_signal=best_bundle.auxiliary_convergence_signal,
+            node_ids=locus_ids,  # 完全に L と 1:1 一致
+            locus_type="strong" if composite_score >= 0.6 else "subgraph",
+            constraint_score=composite_score,
+            relevance=primary_rel,
+            freshness=primary_fresh,
+            authority_weight=primary_auth,
+            source_strength=primary_src,
+            convergence=convergence,
+            is_structural_bridge=False,
         )
 
     def locate(
@@ -1125,6 +1150,9 @@ class RuptureProbe:
         base_view_hash: Optional[str] = None
         cut_view_hash: Optional[str] = None
         intervention_verified: bool = False
+        base_trace_id: Optional[str] = None
+        cut_trace_id: Optional[str] = None
+        effect_verified_locus_ids: List[str] = []
 
         def _make_result(verdict: str, opposing_strength: float, rupture_reason: str = "") -> RuptureResult:
             return RuptureResult(
@@ -1137,6 +1165,9 @@ class RuptureProbe:
                 base_mb_view_hash=base_view_hash,
                 cut_mb_view_hash=cut_view_hash,
                 intervention_verified=intervention_verified,
+                base_trace_id=base_trace_id,
+                cut_trace_id=cut_trace_id,
+                effect_verified_locus_ids=list(effect_verified_locus_ids),
             )
 
         try:
@@ -1207,12 +1238,47 @@ class RuptureProbe:
             )
 
             # 監査証跡情報の抽出 (BASE v2.0 §4.2)
-            base_verified = getattr(f_base, "metadata", {}).get("counterfactual_verified", False) if f_base else False
-            cut_verified = getattr(f_without, "metadata", {}).get("counterfactual_verified", False) if f_without else False
-            base_view_hash = getattr(f_base, "metadata", {}).get("mb_view_hash", None) if f_base else None
-            cut_view_hash = getattr(f_without, "metadata", {}).get("mb_view_hash", None) if f_without else None
+            base_meta = getattr(f_base, "metadata", {}) if f_base else {}
+            cut_meta = getattr(f_without, "metadata", {}) if f_without else {}
+            base_verified = base_meta.get("counterfactual_verified", False)
+            cut_verified = cut_meta.get("counterfactual_verified", False)
+            base_view_hash = base_meta.get("mb_view_hash", None)
+            cut_view_hash = cut_meta.get("mb_view_hash", None)
             conditions_hash = getattr(replay_token_K, "conditions_hash", None) if replay_token_K else None
-            intervention_verified = bool(base_verified and cut_verified)
+
+            base_trace = base_meta.get("interpretation_trace", None)
+            cut_trace = cut_meta.get("interpretation_trace", None)
+            base_trace_id = getattr(base_trace, "trace_id", None) if base_trace else None
+            cut_trace_id = getattr(cut_trace, "trace_id", None) if cut_trace else None
+
+            base_exec_trace = base_meta.get("execution_trace", None)
+            cut_exec_trace = cut_meta.get("execution_trace", None)
+
+            # 【暗号論的 4点照合契約 (Applied View Hash Contract: BASE v2.0 §4.2)】
+            # 1. base_exec_trace.requested == applied == base_view_hash
+            # 2. cut_exec_trace.requested == applied == cut_view_hash
+            # 3. base_view_hash != cut_view_hash
+            # 4. base_conditions_hash == cut_conditions_hash == conditions_hash_K
+            hashes_match = False
+            if base_exec_trace and cut_exec_trace and base_view_hash and cut_view_hash:
+                cond_k = conditions_hash or ""
+                cond_base = getattr(base_exec_trace, "conditions_hash", "")
+                cond_cut = getattr(cut_exec_trace, "conditions_hash", "")
+                conds_match = (cond_base == cond_cut == cond_k) if cond_k else (cond_base == cond_cut)
+                hashes_match = (
+                    base_exec_trace.requested_mb_view_hash == base_exec_trace.applied_mb_view_hash == base_view_hash
+                    and cut_exec_trace.requested_mb_view_hash == cut_exec_trace.applied_mb_view_hash == cut_view_hash
+                    and base_view_hash != cut_view_hash
+                    and conds_match
+                )
+
+            # 介入実証フラグの厳格判定:
+            # BridgeExecutionTrace がある場合は 4 点照合を必須とし、
+            # ない場合は従来の counterfactual_verified (Bridge が CounterfactualInput を受領したこと) を確認
+            if base_exec_trace is not None or cut_exec_trace is not None:
+                intervention_verified = bool(hashes_match)
+            else:
+                intervention_verified = bool(base_verified and cut_verified)
 
             if used_llm_bridge:
                 # 1. リプレイ能力・反実仮想契約の検証
@@ -1252,6 +1318,8 @@ class RuptureProbe:
                                     diff += 0.4
                                 diff += 0.2 * abs(f_base.confidence - f_without.confidence)
                                 rupture_effect = min(1.0, round(diff, 4))
+                                if rupture_effect > 0:
+                                    effect_verified_locus_ids = list(bundle.node_ids)
                     else:
                         # 片方が Level 3 でもう片方がローカル階層（切断によってフォールバック等が発生）
                         diff = 0.0
@@ -1264,6 +1332,8 @@ class RuptureProbe:
                             if f_base.content != f_without.content:
                                 diff += 0.1
                         rupture_effect = min(1.0, round(diff, 4))
+                        if rupture_effect > 0:
+                            effect_verified_locus_ids = list(bundle.node_ids)
             else:
                 # ローカル決定的推論 (Level 0 - Level 2、または bridge なしの決定的フォールバック):
                 # 決定的な再実行による変化量測定
@@ -1277,12 +1347,17 @@ class RuptureProbe:
                     if f_base.content != f_without.content:
                         diff += 0.1
                 rupture_effect = min(1.0, round(diff, 4))
+                if rupture_effect > 0:
+                    effect_verified_locus_ids = list(bundle.node_ids)
         except Exception:
             rupture_effect = None
             base_view_hash = None
             cut_view_hash = None
             conditions_hash = None
             intervention_verified = False
+            base_trace_id = None
+            cut_trace_id = None
+            effect_verified_locus_ids = []
 
         # =============================================================
         # Phase 2: 破断・妥当性判定 (Verdict Probing: survive / break / unresolved)
