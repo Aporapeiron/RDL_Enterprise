@@ -534,6 +534,98 @@ class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
         self.assertIsNone(policy_failed_node.last_opposing_at)
         self.assertEqual(policy_failed_node.legacy_evidence_at, "2026-09-01T00:00:00Z")
 
+    def test_description_vs_commitment_lifecycle(self):
+        """
+        Acceptance Test 14: 認知的ライフサイクル (Description -> Commitment -> Active Constraint)
+        (BASE v2.0 §4.2: 関係記述 != 正統コミットメント != 活性化拘束)
+
+        1. 純粋な Python MBNode(...) 記述オブジェクトの生成時点では正の支持証拠を一切捏造しない
+           (last_support_at is None, last_evidence_at is None, freshness == 0.0)
+        2. MBGraph.commit_node() ゲートウェイを通過して初めて、明示的な CommitmentOrigin と支持証拠打刻が付与される
+        3. origin='authority' の場合、AuthorityContext が無効または未認可であれば PermissionError で遮断 (Fail-Closed)
+        4. 認可された権威コミットまたは経験沈澱 (origin='experience') を経て初めて、活性化拘束・鮮度回復が認められる
+        """
+        from datetime import datetime, timezone
+        from rdl_enterprise.mb_graph import MBGraph, MBNode, CommitmentOrigin
+        from rdl_enterprise.authority import AuthorityContext
+        from rdl_enterprise.constraint import RelationConstraintLocator, ConstraintContext
+        from rdl_enterprise.snapshot import BusinessInput
+
+        graph = MBGraph()
+
+        # 1. 記述フェーズ (Description Phase): 単なる MBNode のインスタンス化
+        desc_node = MBNode(
+            id="node_desc_candidate",
+            domain="security",
+            trigger_pattern={"exact_keys": ["パスワード変更"]},
+            action_template={"type": "direct_reply", "payload": "8文字以上で設定してください"},
+            authority_level="auto",
+        )
+        # 支持証拠・確定証拠は一切持たず、None (ξ) であること
+        self.assertIsNone(desc_node.last_support_at)
+        self.assertIsNone(desc_node.last_opposing_at)
+        self.assertIsNone(desc_node.last_evidence_at)
+        self.assertIsNone(desc_node.commitment_origin)
+
+        # 記述ノードをグラフに直接 add_or_update しても、支持証拠がないため拘束鮮度は厳格に 0.0
+        graph.add_or_update(desc_node)
+        locator = RelationConstraintLocator()
+        efp = BusinessInput("T_DESC_01", "U_SEC", "security", "パスワード変更のルール")
+        ctx = ConstraintContext(efp=efp, current_time=datetime.now(timezone.utc), active_domain="security")
+
+        bundle_uncommitted = locator.locate_bundle_for_node(graph, desc_node, ctx)
+        self.assertEqual(bundle_uncommitted.freshness, 0.0)
+
+        # 2. 権威コミット時の認可チェック (origin='authority')
+        # (a) AuthorityContext なしのコミットは PermissionError
+        with self.assertRaises(PermissionError):
+            graph.commit_node(desc_node, origin=CommitmentOrigin.AUTHORITY, authority_context=None)
+
+        # (b) ドメイン管轄外 (finance 担当者が security をコミット) の権威コミットは PermissionError
+        unauthorized_auth = AuthorityContext(actor_id="finance_lead", role="manager", scope="finance")
+        with self.assertRaises(PermissionError):
+            graph.commit_node(desc_node, origin=CommitmentOrigin.AUTHORITY, authority_context=unauthorized_auth)
+
+        # 3. 正当な権威コミット (security 管理者によるコミット: role in ('admin', 'manager'))
+        authorized_auth = AuthorityContext(actor_id="ciso_admin", role="manager", scope="security")
+        committed_policy = graph.commit_node(desc_node, origin=CommitmentOrigin.AUTHORITY, authority_context=authorized_auth)
+        self.assertEqual(committed_policy.commitment_origin, "authority")
+        self.assertEqual(committed_policy.authority_level, "policy")
+        self.assertEqual(committed_policy.source_id, "ciso_admin")
+        self.assertIn("authority:manager:ciso_admin", committed_policy.source_lineage)
+        self.assertIsNotNone(committed_policy.last_support_at)
+        self.assertIsNotNone(committed_policy.last_evidence_at)
+
+        # コミット後は正統な支持証拠打刻により freshness が健全に回復
+        bundle_committed = locator.locate_bundle_for_node(graph, committed_policy, ctx)
+        self.assertGreater(bundle_committed.freshness, 0.9)
+
+        # 4. 経験沈澱コミット (origin='experience')
+        exp_node = MBNode(
+            id="node_exp_candidate",
+            domain="security",
+            trigger_pattern={"exact_keys": ["MFA設定"]},
+            action_template={"type": "direct_reply", "payload": "Authenticatorアプリを利用してください"},
+        )
+        self.assertIsNone(exp_node.last_support_at)
+        committed_exp = graph.commit_node(exp_node, origin=CommitmentOrigin.VERIFIED_EXPERIENCE)
+        self.assertEqual(committed_exp.commitment_origin, "experience")
+        self.assertIn("sedimentation:experience", committed_exp.source_lineage)
+        self.assertIsNotNone(committed_exp.last_support_at)
+
+        # 5. content_hash への包含確認
+        h1 = graph.content_hash()
+        # 別のコミット出所を持つノードを追加するとハッシュが厳格に変化すること
+        fixture_node = MBNode(
+            id="node_fixture",
+            domain="security",
+            trigger_pattern={"exact_keys": ["テスト用"]},
+            action_template={"type": "direct_reply", "payload": "fixture"},
+        )
+        graph.commit_node(fixture_node, origin=CommitmentOrigin.TEST_FIXTURE)
+        h2 = graph.content_hash()
+        self.assertNotEqual(h1, h2)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -89,7 +89,7 @@ class TestRelationConstraintLocator(unittest.TestCase):
             failure_count=0,
             rejection_count=0,
         )
-        graph.add_or_update(node)
+        graph.commit_node(node)
 
         efp = _make_efp("有給申請の方法を教えてください")
         ctx = _make_ctx(efp)
@@ -127,8 +127,8 @@ class TestRelationConstraintLocator(unittest.TestCase):
             failure_count=0,
             rejection_count=0,
         )
-        graph.add_or_update(stale_node)
-        graph.add_or_update(fresh_node)
+        graph.commit_node(stale_node)
+        graph.commit_node(fresh_node)
 
         efp = _make_efp("古いルールの確認")
         ctx = _make_ctx(efp)
@@ -161,8 +161,8 @@ class TestRelationConstraintLocator(unittest.TestCase):
             "other_node",
             exact_keys=["別クエリ"],
         )
-        graph.add_or_update(bridge_node)
-        graph.add_or_update(other_node)
+        graph.commit_node(bridge_node)
+        graph.commit_node(other_node)
 
         efp = _make_efp("専用クエリ_A")
         ctx = _make_ctx(efp)
@@ -190,7 +190,7 @@ class TestRuptureProbe(unittest.TestCase):
             exact_keys=["古いルール"],
             last_updated=old_date,
         )
-        graph.add_or_update(node)
+        graph.commit_node(node)
 
         efp = _make_efp("古いルール")
         ctx = _make_ctx(efp)
@@ -216,7 +216,7 @@ class TestRuptureProbe(unittest.TestCase):
             success_count=10,
             approval_count=8,
         )
-        graph.add_or_update(node)
+        graph.commit_node(node)
 
         efp = _make_efp("有効なルール")
         ctx = _make_ctx(efp)
@@ -281,7 +281,7 @@ class TestConstraintBoostInCascade(unittest.TestCase):
             success_count=5,
             approval_count=3,
         )
-        graph_fresh.add_or_update(node_fresh)
+        graph_fresh.commit_node(node_fresh)
 
         # 古いグラフ（同じ inertia に見えても freshness が低い）
         graph_stale = MBGraph()
@@ -293,7 +293,7 @@ class TestConstraintBoostInCascade(unittest.TestCase):
             approval_count=80,
             last_updated=old_date,
         )
-        graph_stale.add_or_update(node_stale)
+        graph_stale.commit_node(node_stale)
 
         efp = _make_efp("経費精算の手続き")
 
@@ -356,7 +356,7 @@ class TestFrozenContextConstraintIntegration(unittest.TestCase):
             success_count=10,
             approval_count=8,
         )
-        graph.add_or_update(node)
+        graph.commit_node(node)
         efp = _make_efp("テスト用クエリ")
 
         # cap を極小 (0.02) に設定したカスタム config
@@ -438,7 +438,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
             success_count=1,
             approval_count=0,  # 未承認
         )
-        graph.add_or_update(node)
+        graph.commit_node(node)
         efp = _make_efp("新しい社内手続")
         ctx = _make_ctx(efp)
 
@@ -480,8 +480,8 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
             confidence=0.9,
             approval_count=15,
         )
-        graph.add_or_update(node_hr)
-        graph.add_or_update(node_sec)
+        graph.commit_node(node_hr)
+        graph.commit_node(node_sec)
 
         efp = _make_efp("パスワード再発行", category="hr")
         ctx = _make_ctx(efp)
@@ -527,8 +527,8 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
             approval_count=20,
             last_updated=datetime.now(timezone.utc).isoformat(),
         )
-        graph.add_or_update(node_a)
-        graph.add_or_update(node_b)
+        graph.commit_node(node_a)
+        graph.commit_node(node_b)
 
         efp = _make_efp("APIキーの発行", category="hr")
         ctx = _make_ctx(efp)
@@ -602,7 +602,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
             success_count=5,
             approval_count=5,
         )
-        runtime.mb_graph.add_or_update(node)
+        runtime.mb_graph.commit_node(node)
 
         efp = _make_efp("凍結検証用クエリ")
         dispatch_res = runtime.dispatch_ticket(efp)
@@ -666,7 +666,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
             confidence=0.8,
             approval_count=5,
         )
-        runtime.mb_graph.add_or_update(node)
+        runtime.mb_graph.commit_node(node)
 
         # 1. チケットディスパッチ (時刻 t_dispatch で凍結)
         efp = _make_efp("時刻検証")
@@ -829,10 +829,10 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
         n3 = MBNode(id="node_pay_3", domain="finance", trigger_pattern={"exact_keys": ["経費精算"]}, action_template={"type": "direct_reply", "payload": "C"})
         n4 = MBNode(id="node_hr_1", domain="hr", trigger_pattern={"exact_keys": ["有給休暇"]}, action_template={"type": "direct_reply", "payload": "D"})
 
-        graph.add_or_update(n1)
-        graph.add_or_update(n2)
-        graph.add_or_update(n3)
-        graph.add_or_update(n4)
+        graph.commit_node(n1)
+        graph.commit_node(n2)
+        graph.commit_node(n3)
+        graph.commit_node(n4)
 
         locator = RelationConstraintLocator()
         efp = _make_efp("請求書支払の手順")
@@ -855,8 +855,8 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
         graph = MBGraph()
         n_main = MBNode(id="n_tax", domain="finance", trigger_pattern={"exact_keys": ["法人税"]}, action_template={"type": "direct_reply", "payload": "税率回答"})
         n_unrelated = MBNode(id="n_lunch", domain="finance", trigger_pattern={"exact_keys": ["社食代補助"]}, action_template={"type": "direct_reply", "payload": "補助回答"})
-        graph.add_or_update(n_main)
-        graph.add_or_update(n_unrelated)
+        graph.commit_node(n_main)
+        graph.commit_node(n_unrelated)
 
         locator = RelationConstraintLocator()
         efp = _make_efp("法人税の申告")
@@ -875,14 +875,14 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
         # 孤立した単独ノードグラフ
         graph_solo = MBGraph()
         n_solo = MBNode(id="n_solo", domain="finance", trigger_pattern={"exact_keys": ["海外送金"]}, action_template={"type": "direct_reply", "payload": "A"}, confidence=0.7, approval_count=5)
-        graph_solo.add_or_update(n_solo)
+        graph_solo.commit_node(n_solo)
 
         # 相互補強する支援ノードが存在するグラフ
         graph_bundle = MBGraph()
         n_base = MBNode(id="n_base", domain="finance", trigger_pattern={"exact_keys": ["海外送金"]}, action_template={"type": "direct_reply", "payload": "A"}, confidence=0.7, approval_count=5)
         n_supp = MBNode(id="n_supp", domain="finance", trigger_pattern={"exact_keys": ["海外送金", "SWIFTコード"]}, action_template={"type": "direct_reply", "payload": "A"}, confidence=0.7, approval_count=10)
-        graph_bundle.add_or_update(n_base)
-        graph_bundle.add_or_update(n_supp)
+        graph_bundle.commit_node(n_base)
+        graph_bundle.commit_node(n_supp)
 
         locator = RelationConstraintLocator()
         efp = _make_efp("海外送金の手数料")
@@ -902,9 +902,9 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
         n1 = MBNode(id="n1", domain="tech", trigger_pattern={"exact_keys": ["git pull", "git merge"]}, action_template={"type": "direct_reply", "payload": "A"})
         n2 = MBNode(id="n2", domain="tech", trigger_pattern={"exact_keys": ["git push", "git pull"]}, action_template={"type": "direct_reply", "payload": "B"})
         n3 = MBNode(id="n3", domain="tech", trigger_pattern={"exact_keys": ["docker run"]}, action_template={"type": "direct_reply", "payload": "C"})
-        graph.add_or_update(n1)
-        graph.add_or_update(n2)
-        graph.add_or_update(n3)
+        graph.commit_node(n1)
+        graph.commit_node(n2)
+        graph.commit_node(n3)
 
         related = graph.find_co_occurring_nodes(n1)
         related_ids = [r.id for r in related]
@@ -921,8 +921,8 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
         # bridge ノードと共起ノード
         n_bridge = MBNode(id="n_bridge", domain="special", trigger_pattern={"exact_keys": ["極秘事項A", "極秘事項B"]}, action_template={"type": "direct_reply", "payload": "A"})
         n_supp = MBNode(id="n_supp", domain="special", trigger_pattern={"exact_keys": ["極秘事項A"]}, action_template={"type": "direct_reply", "payload": "A"})
-        graph.add_or_update(n_bridge)
-        graph.add_or_update(n_supp)
+        graph.commit_node(n_bridge)
+        graph.commit_node(n_supp)
 
         locator = RelationConstraintLocator()
         efp = _make_efp("極秘事項Aの閲覧")
@@ -991,8 +991,8 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
         n_primary = MBNode(id="n_new_flow", domain="sales", trigger_pattern={"exact_keys": ["新規見積作成"]}, action_template={"type": "direct_reply", "payload": "見積書フォーマット"}, confidence=0.6, approval_count=0)
         # 支援ノードは高承認 (approval_count = 10)
         n_supp = MBNode(id="n_old_flow", domain="sales", trigger_pattern={"exact_keys": ["新規見積作成", "割引率"]}, action_template={"type": "direct_reply", "payload": "見積書フォーマット"}, confidence=0.8, approval_count=10)
-        graph.add_or_update(n_primary)
-        graph.add_or_update(n_supp)
+        graph.commit_node(n_primary)
+        graph.commit_node(n_supp)
 
         locator = RelationConstraintLocator()
         efp = _make_efp("新規見積作成の手順", category="sales")
@@ -1013,8 +1013,8 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
         graph = MBGraph()
         n1 = MBNode(id="n1", domain="sales", trigger_pattern={"exact_keys": ["割引"]}, action_template={"type": "direct_reply", "payload": "即時承認"}, confidence=0.8, approval_count=5)
         n2 = MBNode(id="n2", domain="sales", trigger_pattern={"exact_keys": ["割引"]}, action_template={"type": "direct_reply", "payload": "部長決裁必須"}, confidence=0.8, approval_count=5)
-        graph.add_or_update(n1)
-        graph.add_or_update(n2)
+        graph.commit_node(n1)
+        graph.commit_node(n2)
 
         # n1 と n2 が相容れないアクションを持つにもかかわらず同束に存在する場合
         bundle = ConstraintBundle(
@@ -1044,7 +1044,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
 
         graph = MBGraph()
         n_main = MBNode(id="n_main", domain="tech", trigger_pattern={"exact_keys": ["デプロイ"]}, action_template={"type": "direct_reply", "payload": "OK"})
-        graph.add_or_update(n_main)
+        graph.commit_node(n_main)
 
         # 10個のノードを追加 (承認数やIDをバラバラに設定)
         for i in range(10):
@@ -1056,7 +1056,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
                 approval_count=i * 2,
                 confidence=0.5 + (i * 0.04),
             )
-            graph.add_or_update(node)
+            graph.commit_node(node)
 
         # 複数回呼び出して完全に同一のID順列が返ることを確認
         res1 = [n.id for n in graph.find_co_occurring_nodes(n_main, limit=4)]
@@ -1104,9 +1104,9 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
             rejection_count=80,
             last_support_at=now.isoformat(),
         )
-        graph.add_or_update(n_primary)
-        graph.add_or_update(n_stale)
-        graph.add_or_update(n_rejected)
+        graph.commit_node(n_primary)
+        graph.commit_node(n_stale)
+        graph.commit_node(n_rejected)
 
         locator = RelationConstraintLocator()
         efp = _make_efp("サーバー再起動の手順", category="ops")
@@ -1129,18 +1129,18 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
         n_base_dup = MBNode(id="n_b1", domain="hr", trigger_pattern={"exact_keys": ["育休"]}, action_template={"type": "direct_reply", "payload": "A"}, confidence=0.7, approval_count=5, source_lineage="manual_hr_v1")
         n_s1_dup = MBNode(id="n_s1", domain="hr", trigger_pattern={"exact_keys": ["育休", "給付金"]}, action_template={"type": "direct_reply", "payload": "A"}, confidence=0.7, approval_count=5, source_lineage="manual_hr_v1")
         n_s2_dup = MBNode(id="n_s2", domain="hr", trigger_pattern={"exact_keys": ["育休", "申請書"]}, action_template={"type": "direct_reply", "payload": "A"}, confidence=0.7, approval_count=5, source_lineage="manual_hr_v1")
-        graph_dup.add_or_update(n_base_dup)
-        graph_dup.add_or_update(n_s1_dup)
-        graph_dup.add_or_update(n_s2_dup)
+        graph_dup.commit_node(n_base_dup)
+        graph_dup.commit_node(n_s1_dup)
+        graph_dup.commit_node(n_s2_dup)
 
         # グラフB: 独立した関係源（法務決定、監査ログ）からのノード群
         graph_indep = MBGraph()
         n_base_ind = MBNode(id="n_b2", domain="hr", trigger_pattern={"exact_keys": ["育休"]}, action_template={"type": "direct_reply", "payload": "A"}, confidence=0.7, approval_count=5, source_lineage="manual_hr_v1")
         n_s1_ind = MBNode(id="n_s1_ind", domain="hr", trigger_pattern={"exact_keys": ["育休", "給付金"]}, action_template={"type": "direct_reply", "payload": "A"}, confidence=0.7, approval_count=5, source_lineage="audit_log_2026")
         n_s2_ind = MBNode(id="n_s2_ind", domain="hr", trigger_pattern={"exact_keys": ["育休", "申請書"]}, action_template={"type": "direct_reply", "payload": "A"}, confidence=0.7, approval_count=5, source_lineage="labor_law_amendment")
-        graph_indep.add_or_update(n_base_ind)
-        graph_indep.add_or_update(n_s1_ind)
-        graph_indep.add_or_update(n_s2_ind)
+        graph_indep.commit_node(n_base_ind)
+        graph_indep.commit_node(n_s1_ind)
+        graph_indep.commit_node(n_s2_ind)
 
         locator = RelationConstraintLocator()
         efp = _make_efp("育休の申請手続き", category="hr")
@@ -1176,8 +1176,8 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
             confidence=0.90,
             approval_count=20,
         )
-        graph.add_or_update(n_normal)
-        graph.add_or_update(n_compliance)
+        graph.commit_node(n_normal)
+        graph.commit_node(n_compliance)
 
         locator = RelationConstraintLocator()
         efp = _make_efp("送金振込", category="finance")
@@ -1211,7 +1211,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
             confidence=0.85,
             approval_count=10,
         )
-        graph.add_or_update(n_pillar)
+        graph.commit_node(n_pillar)
 
         locator = RelationConstraintLocator()
         efp = _make_efp("福利厚生申請", category="hr")
@@ -1244,11 +1244,11 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
         # 健全な支援ノード
         n_healthy = MBNode(id="n_healthy", domain="it", trigger_pattern={"exact_keys": ["パスワードリセット", "SSO"]}, action_template={"type": "direct_reply", "payload": "A"}, approval_count=5, last_updated=now.isoformat())
 
-        graph.add_or_update(n_prim)
-        graph.add_or_update(n_stale)
-        graph.add_or_update(n_rej)
-        graph.add_or_update(n_conflict)
-        graph.add_or_update(n_healthy)
+        graph.commit_node(n_prim)
+        graph.commit_node(n_stale)
+        graph.commit_node(n_rej)
+        graph.commit_node(n_conflict)
+        graph.commit_node(n_healthy)
 
         locator = RelationConstraintLocator()
         efp = _make_efp("パスワードリセットのやり方", category="it")
@@ -1270,7 +1270,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
 
         graph = MBGraph()
         n = MBNode(id="n1", domain="sales", trigger_pattern={"exact_keys": ["見積"]}, action_template={"type": "direct_reply", "payload": "見積回答"}, confidence=0.7, approval_count=5)
-        graph.add_or_update(n)
+        graph.commit_node(n)
 
         # 初期キャッシュに特定のエントリを持つ凍結コンテキスト
         frozen_ctx = FrozenInterpretationContext(
@@ -1369,7 +1369,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
 
         graph = MBGraph()
         n = MBNode(id="n1", domain="sales", trigger_pattern={"exact_keys": ["見積作成"]}, action_template={"type": "direct_reply", "payload": "見積回答"}, confidence=0.7, approval_count=5)
-        graph.add_or_update(n)
+        graph.commit_node(n)
 
         # 初期キャッシュ C0 を持つ凍結コンテキスト
         frozen_ctx = FrozenInterpretationContext(
@@ -1411,7 +1411,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
             approval_count=10,
             last_updated=(now - timedelta(days=365)).isoformat(),
         )
-        graph.add_or_update(n_stale)
+        graph.commit_node(n_stale)
 
         efp = _make_efp("デプロイ手順", category="ops")
         ctx = ConstraintContext(efp=efp, current_time=now, active_domain="ops")
@@ -1498,10 +1498,10 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
             action_template={"type": "direct_reply", "payload": "慶弔休暇申請が可能です。"},
             approval_count=5,
         )
-        graph.add_or_update(n_main)
-        graph.add_or_update(n_exp_contra)
-        graph.add_or_update(n_polarity_contra)
-        graph.add_or_update(n_exp_supp)
+        graph.commit_node(n_main)
+        graph.commit_node(n_exp_contra)
+        graph.commit_node(n_polarity_contra)
+        graph.commit_node(n_exp_supp)
 
         locator = RelationConstraintLocator()
         efp = _make_efp("特別休暇", category="hr")
@@ -1531,7 +1531,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
             confidence=0.5,
             approval_count=10,
         )
-        graph.add_or_update(node)
+        graph.commit_node(node)
 
         cascade = InterpCascade(graph, config=CascadeConfig(level2_threshold=0.3))
         efp = _make_efp("定期代精算の手順を教えて", category="finance")
@@ -1567,8 +1567,8 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
             action_template={"type": "direct_reply", "payload": "値引き承認手順"},
             approval_count=10,
         )
-        graph.add_or_update(n_main)
-        graph.add_or_update(n_unknown_cand)
+        graph.commit_node(n_main)
+        graph.commit_node(n_unknown_cand)
 
         # _check_node_relation が "unknown" を返すこと
         self.assertEqual(_check_node_relation(n_main, n_unknown_cand), "unknown")
@@ -1605,7 +1605,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
         graph = MBGraph()
         # 束ノードを登録 (完全一致キー)
         n_cut = MBNode(id="n_cut_me", domain="hr", trigger_pattern={"exact_keys": ["特殊照会"]}, action_template={"type": "direct_reply", "payload": "A"}, approval_count=5)
-        graph.add_or_update(n_cut)
+        graph.commit_node(n_cut)
         graph.freeze()
 
         bridge_non_det = NonDeterministicMockBridge()
@@ -1666,8 +1666,8 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
             confidence=0.8,
             approval_count=10,
         )
-        graph.add_or_update(n_a)
-        graph.add_or_update(n_b)
+        graph.commit_node(n_a)
+        graph.commit_node(n_b)
 
         locator = RelationConstraintLocator()
         efp = _make_efp("特別休暇の申請", category="hr")
@@ -1703,8 +1703,8 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
             action_template={"type": "direct_reply", "payload": "交通費精算ガイド"},
             approval_count=10,
         )
-        graph.add_or_update(n_main)
-        graph.add_or_update(n_inferred)
+        graph.commit_node(n_main)
+        graph.commit_node(n_inferred)
 
         locator = RelationConstraintLocator()
         efp = _make_efp("経費申請", category="finance")
@@ -1747,7 +1747,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
         # 凍結コンテキストのハッシュ検証
         graph = MBGraph()
         n = MBNode(id="n1", domain="it", trigger_pattern={"exact_keys": ["PC手配"]}, action_template={"type": "direct_reply", "payload": "手配手順"})
-        graph.add_or_update(n)
+        graph.commit_node(n)
         graph.freeze()
 
         frozen_ctx = FrozenInterpretationContext(
@@ -1789,8 +1789,8 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
             action_template={"type": "direct_reply", "payload": "振込支払の手順です"},
             approval_count=5,
         )
-        graph.add_or_update(n_main)
-        graph.add_or_update(n_aux)
+        graph.commit_node(n_main)
+        graph.commit_node(n_aux)
 
         locator = RelationConstraintLocator()
         efp = _make_efp("請求書支払", category="finance")
@@ -1823,7 +1823,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
 
         graph = MBGraph()
         n = MBNode(id="n1", domain="cs", trigger_pattern={"exact_keys": ["契約解除"]}, action_template={"type": "direct_reply", "payload": "解約手順"})
-        graph.add_or_update(n)
+        graph.commit_node(n)
         graph.freeze()
 
         bridge = PlainSeedBridge()
@@ -1858,7 +1858,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
 
         graph = MBGraph()
         n = MBNode(id="n1", domain="cs", trigger_pattern={"exact_keys": ["契約解除"]}, action_template={"type": "direct_reply", "payload": "解約手順"})
-        graph.add_or_update(n)
+        graph.commit_node(n)
         graph.freeze()
 
         bridge = ReplayableBridge()
@@ -1895,7 +1895,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
         graph = MBGraph()
         # 束ノード (切断対象外の未知クエリで Level 3 へフォールスルー)
         n = MBNode(id="n_other", domain="legal", trigger_pattern={"exact_keys": ["既知"]}, action_template={"type": "direct_reply", "payload": "既知回答"})
-        graph.add_or_update(n)
+        graph.commit_node(n)
         graph.freeze()
 
         bridge = DriftingReplayBridge()
@@ -1957,7 +1957,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
             confidence=0.8,
             approval_count=10,
         )
-        graph.add_or_update(node_x)
+        graph.commit_node(node_x)
         bundle = ConstraintBundle(
             node_ids=["n_x"],
             locus_type="strong",
@@ -1982,7 +1982,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
             action_template={"type": "direct_reply", "payload": "エラーコード対応"},
             confidence=0.85,
         )
-        graph.add_or_update(node)
+        graph.commit_node(node)
         cascade = InterpCascade(graph)
 
         # 大文字混在クエリ
@@ -2025,7 +2025,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
             confidence=0.8,
             approval_count=10,
         )
-        graph.add_or_update(node)
+        graph.commit_node(node)
 
         bundle = ConstraintBundle(node_ids=["n_test"], locus_type="strong", constraint_score=0.8)
         probe = RuptureProbe()
@@ -2063,7 +2063,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
             confidence=0.8,
             approval_count=10,
         )
-        graph.add_or_update(n_main)
+        graph.commit_node(n_main)
 
         locator = RelationConstraintLocator()
         efp = _make_efp("テスト", category="support")
@@ -2079,7 +2079,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
         self.assertEqual(b1.auxiliary.convergence_signal, 0.0)
 
         # 2. 推論ノード追加時
-        graph.add_or_update(n_inferred)
+        graph.commit_node(n_inferred)
         b2 = locator.locate_bundle_for_node(graph, n_main, ctx)
 
         # core のスコアと収束度は全く変わらない
@@ -2119,7 +2119,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
             confidence=0.8,
             approval_count=10,
         )
-        graph.add_or_update(n_main)
+        graph.commit_node(n_main)
 
         locator = RelationConstraintLocator()
         efp = _make_efp("パスワードリセット", category="support")
@@ -2131,7 +2131,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
         single_core_score = bundle_single.constraint_score
 
         # 2. inferred_support ノードを追加
-        graph.add_or_update(n_inferred)
+        graph.commit_node(n_inferred)
         bundle_with_inferred = locator.locate_bundle_for_node(graph, n_main, ctx)
 
         # core_constraint_score には一切加算されないこと（確定拘束強度は単体時と不変）
@@ -2183,7 +2183,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
             confidence=0.8,
             approval_count=10,
         )
-        graph.add_or_update(n1)
+        graph.commit_node(n1)
 
         bridge = MBInterventionBridge()
         bundle = ConstraintBundle(node_ids=["n1"], locus_type="strong", constraint_score=0.8)
@@ -2258,7 +2258,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
             confidence=0.8,
             approval_count=10,
         )
-        graph.add_or_update(node_x)
+        graph.commit_node(node_x)
         bundle = ConstraintBundle(node_ids=["n_x"], locus_type="strong", constraint_score=0.8)
         probe = RuptureProbe()
 
@@ -2372,7 +2372,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
             confidence=0.8,
             approval_count=5,
         )
-        runtime.mb_graph.add_or_update(node_b)
+        runtime.mb_graph.commit_node(node_b)
 
         # 未知チケットを受信し、dispatch_ticket() で Level 3 推論を実行
         efp = BusinessInput(
@@ -2436,7 +2436,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
             confidence=0.8,
             approval_count=10,
         )
-        graph.add_or_update(node)
+        graph.commit_node(node)
 
         bundle = ConstraintBundle(node_ids=["n_legacy"], locus_type="strong", constraint_score=0.8)
         probe = RuptureProbe()
@@ -2478,7 +2478,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
             confidence=0.8,
             approval_count=10,
         )
-        graph.add_or_update(n1)
+        graph.commit_node(n1)
 
         bridge = VerifiedInterventionBridge()
         bundle = ConstraintBundle(node_ids=["n_audit_1"], locus_type="strong", constraint_score=0.8)
@@ -2530,7 +2530,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
             confidence=0.8,
             approval_count=10,
         )
-        graph.add_or_update(node)
+        graph.commit_node(node)
 
         bridge = SelfDeclaredBridgeWithoutCFSupport()
         bundle = ConstraintBundle(node_ids=["n_self_declare"], locus_type="strong", constraint_score=0.8)
@@ -2598,7 +2598,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
             action_template={"type": "direct_reply", "payload": "申請フォーム"},
             confidence=0.85,
         )
-        runtime.mb_graph.add_or_update(node)
+        runtime.mb_graph.commit_node(node)
 
         # Level 1 ルール推論
         efp = BusinessInput("T_TRACE_01", "U1", "hr", "有給休暇の取り方")
@@ -2624,9 +2624,9 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
         n0 = MBNode(id="n_l0", domain="hr", trigger_pattern={"exact_keys": ["完全一致クエリ"]}, action_template={"type": "direct_reply", "payload": "L0回答"}, confidence=0.9)
         n1 = MBNode(id="n_l1", domain="hr", trigger_pattern={"rule_expr": r"正規表現.*"}, action_template={"type": "direct_reply", "payload": "L1回答"}, confidence=0.8)
         n2 = MBNode(id="n_l2", domain="hr", trigger_pattern={"exact_keys": ["類似マッチクエリ"]}, action_template={"type": "direct_reply", "payload": "L2回答"}, confidence=0.7)
-        graph.add_or_update(n0)
-        graph.add_or_update(n1)
-        graph.add_or_update(n2)
+        graph.commit_node(n0)
+        graph.commit_node(n1)
+        graph.commit_node(n2)
 
         frozen_ctx = FrozenInterpretationContext(
             mb_version="v2",
@@ -2679,7 +2679,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
                 confidence=0.5 + 0.1 * i,
                 approval_count=10 * i,
             )
-            graph.add_or_update(n)
+            graph.commit_node(n)
 
         cascade = InterpCascade(graph)
         efp = BusinessInput("T_SUB", "U1", "support", "問合せ_0 について教えて")
@@ -2764,7 +2764,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
 
         graph = MBGraph()
         n_tgt = MBNode(id="n_tgt", domain="sales", trigger_pattern={"exact_keys": ["特別割引"]}, action_template={"type": "direct_reply", "payload": "10%割引"}, confidence=0.8)
-        graph.add_or_update(n_tgt)
+        graph.commit_node(n_tgt)
 
         bridge = VerifiedTraceMockBridge()
         bundle = ConstraintBundle(node_ids=["n_tgt"], locus_type="strong", constraint_score=0.8)
@@ -2817,7 +2817,7 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
 
         graph = MBGraph()
         n_tgt = MBNode(id="n_tgt", domain="sales", trigger_pattern={"exact_keys": ["特別割引"]}, action_template={"type": "direct_reply", "payload": "10%割引"}, confidence=0.8)
-        graph.add_or_update(n_tgt)
+        graph.commit_node(n_tgt)
 
         bridge = SilentBridgeWithoutAppliedHash()
         bundle = ConstraintBundle(node_ids=["n_tgt"], locus_type="strong", constraint_score=0.8, freshness=1.0, relevance=0.8)
@@ -2869,9 +2869,9 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
             approval_count=1000, # 圧倒的な承認実績
         )
 
-        graph.add_or_update(n_seed)
-        graph.add_or_update(n_supported)
-        graph.add_or_update(n_high_approval_isolated)
+        graph.commit_node(n_seed)
+        graph.commit_node(n_supported)
+        graph.commit_node(n_high_approval_isolated)
 
         cascade = InterpCascade(graph)
         efp = BusinessInput("T_PROP", "U1", "sales", "大型契約についての相談")
@@ -2947,8 +2947,8 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
         n1 = MBNode(id="n1", domain="tech", trigger_pattern={"exact_keys": ["API仕様"]}, action_template={"type": "direct_reply", "payload": "p1"}, confidence=0.9)
         n2 = MBNode(id="n2", domain="tech", trigger_pattern={"exact_keys": ["API補足"]}, action_template={"type": "direct_reply", "payload": "p2"}, confidence=0.8)
         n1.node_relations = {"n2": "support"}
-        graph.add_or_update(n1)
-        graph.add_or_update(n2)
+        graph.commit_node(n1)
+        graph.commit_node(n2)
 
         bridge = MultiNodeAblationMockBridge()
         bundle = ConstraintBundle(node_ids=["n1", "n2"], locus_type="strong", constraint_score=0.85)

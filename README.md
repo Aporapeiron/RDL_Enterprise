@@ -55,7 +55,7 @@ RDL_Enterprise/
 │   ├── test_candidate_immutability.py   # 候補ノード不変性・スナップショットテスト
 │   ├── test_constraint_model.py         # 制約部分グラフ・関係伝播・Locus意味付けテスト
 │   ├── test_core.py                     # コア代謝・ライフサイクルテスト
-│   ├── test_product_acceptance.py       # 製品受入テスト（最小代謝閉ループ・権威分離・バージョン束縛・観測保留・鮮度分離・証拠極性分離等 13大テスト）
+│   ├── test_product_acceptance.py       # 製品受入テスト（最小代謝閉ループ・権威分離・バージョン束縛・観測保留・鮮度分離・証拠極性分離・ライフサイクルコミット等 14大テスト）
 │   ├── test_promotion_gate.py           # 昇格ゲート・シャドウ評価テスト
 │   ├── test_shadow.py                   # 反実仮想シャドウ推論テスト
 │   └── test_social_adapter.py           # ソーシャル摂動フィクスチャテスト
@@ -101,4 +101,4 @@ Pure LLM（毎回フルプロンプト推論）、Standard RAG（毎回検索注
 py -m pytest -o pythonpath=src
 ```
 
-全 **146件** の単体・結合・受入テストが高速（約0.2秒）にパスします。
+全 **147件** の単体・結合・受入テストが高速（約0.2秒）にパスします。

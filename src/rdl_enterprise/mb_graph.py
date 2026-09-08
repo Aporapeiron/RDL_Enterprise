@@ -13,6 +13,16 @@ class EvidencePolarity(str, Enum):
     OPPOSE = "oppose"
     UNRESOLVED = "unresolved"
 
+
+class CommitmentOrigin(str, Enum):
+    """M_B へのコミットメント出所・正統性 (BASE v2.0 §4.2: Description != Commitment)"""
+    AUTHORITY = "authority"                # 認可された方針注入 (inject_authoritative_rule)
+    VERIFIED_EXPERIENCE = "experience"    # 解決確認済みの経験沈澱 (crystallize_rule)
+    AUTHORITATIVE_SEED = "seed"           # 明示的シード知識 (seed load)
+    PROMOTION = "promotion"               # M_Δ ハーネス・シャドウ通過昇格 (Leap)
+    MIGRATION_VERIFIED = "migration"      # 来歴検証済み移行
+    TEST_FIXTURE = "test_fixture"         # テスト用明示コミット
+
 class ReadOnlyDict(dict):
     """凍結ノード内部の辞書不変性を担保する読み取り専用辞書"""
     def __copy__(self):
@@ -122,6 +132,7 @@ class MBNode:
     last_opposing_at: Optional[str] = None
     last_observed_at: Optional[str] = None
     legacy_evidence_at: Optional[str] = None
+    commitment_origin: Optional[str] = None
 
     def __init__(
         self,
@@ -147,6 +158,7 @@ class MBNode:
         legacy_evidence_at: Optional[str] = None,
         last_evidence_at: Optional[str] = None,
         last_updated: Optional[str] = None,
+        commitment_origin: Optional[str] = None,
     ):
         self.is_frozen = False
         self.id = id
@@ -163,6 +175,7 @@ class MBNode:
         self.source_id = source_id
         self.source_lineage = source_lineage
         self.node_relations = node_relations if node_relations is not None else {}
+        self.commitment_origin = commitment_origin
 
         def _to_iso(val: Any) -> Optional[str]:
             if val is None:
@@ -195,22 +208,23 @@ class MBNode:
                 pass
             self.legacy_evidence_at = legacy_val
 
-        # 新規作成時（legacy も polarity も未指定）の初期化（作成時コミットメント）:
-        if self.last_support_at is None and self.last_opposing_at is None and self.legacy_evidence_at is None:
-            self.last_support_at = self.created_at
+        # 【Description != Commitment (BASE v2.0 §4.2)】
+        # ノードの単なるオブジェクト生成（記述）をもって正の支持証拠（last_support_at）を自己生成・捏造することを禁止。
+        # 正式なコミットメント（commit_node / crystallize / inject / seed）を経るまで last_support_at は None のままとする。
 
         if is_frozen:
             self.is_frozen = True
 
     @property
-    def last_evidence_at(self) -> str:
+    def last_evidence_at(self) -> Optional[str]:
         """
         後方互換・監査用プロパティ。
-        最後に何らかの確定証拠（支持または反証）が到来した最新時刻。
+        最後に確定証拠（支持または反証）が到来した最新時刻。
+        一度も確定証拠が観測されていない場合は None (ξ) を返す。
         ※Core freshness（支持鮮度）の計算には直接使ってはならない。
         """
         candidates = [x for x in (self.last_support_at, self.last_opposing_at) if x]
-        return max(candidates) if candidates else self.created_at
+        return max(candidates) if candidates else None
 
     @last_evidence_at.setter
     def last_evidence_at(self, value: Any):
@@ -220,7 +234,7 @@ class MBNode:
         )
 
     @property
-    def last_updated(self) -> str:
+    def last_updated(self) -> Optional[str]:
         """後方互換用プロパティ（last_evidence_at への委譲）"""
         return self.last_evidence_at
 
@@ -391,6 +405,8 @@ class MBGraph:
                 "last_support_at": node.last_support_at,
                 "last_opposing_at": node.last_opposing_at,
             }
+            if getattr(node, "commitment_origin", None) is not None:
+                n_dict["commitment_origin"] = node.commitment_origin
             if getattr(node, "source_id", None) is not None:
                 n_dict["source_id"] = node.source_id
             if getattr(node, "source_lineage", None) is not None:
@@ -405,6 +421,62 @@ class MBGraph:
         }
         serialized = json.dumps(payload, sort_keys=True, ensure_ascii=False)
         return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+    def commit_node(
+        self,
+        node: MBNode,
+        origin: CommitmentOrigin = CommitmentOrigin.TEST_FIXTURE,
+        actor: Optional[str] = None,
+        authority_context: Optional[Any] = None,
+        commit_time: Optional[datetime] = None,
+    ) -> MBNode:
+        """
+        関係記述（Description）を正統な拘束として M_B にコミットする唯一の正規ゲートウェイ。
+        (BASE v2.0 §4.2: Description != Commitment != Active Constraint)
+
+        - 単なる MBNode(...) 記述オブジェクトは支持証拠を持たない (last_support_at is None, freshness=0.0)。
+        - commit_node() を通過することで出所 (CommitmentOrigin) とコミット時刻 (last_support_at) が付与され、
+          初めて活性化拘束サブグラフ選定・推論の正統な構成要素となる。
+        - origin='authority' の場合は有効な AuthorityContext によるドメイン認可が必須 (Fail-Closed)。
+        """
+        if self.is_frozen:
+            raise RuntimeError(f"MBGraph (version={self.version}) は凍結(frozen)されています。ノード {node.id} のコミットは禁止されています。")
+
+        now_iso = (commit_time or datetime.utcnow()).isoformat()
+        origin_str = origin.value if isinstance(origin, CommitmentOrigin) else str(origin)
+
+        if origin == CommitmentOrigin.AUTHORITY:
+            if authority_context is None:
+                raise PermissionError("権威コミット (origin='authority') には AuthorityContext が必須です")
+            if hasattr(authority_context, "is_authorized_for") and not authority_context.is_authorized_for(node.domain):
+                raise PermissionError(
+                    f"Actor '{getattr(authority_context, 'actor_id', '')}' with role '{getattr(authority_context, 'role', '')}' "
+                    f"is not authorized for domain '{node.domain}'"
+                )
+            node.authority_level = "policy"
+            role = getattr(authority_context, "role", "policy")
+            actor_id = getattr(authority_context, "actor_id", actor or "system")
+            node.source_id = actor_id
+            node.source_lineage = f"authority:{role}:{actor_id}"
+
+        elif origin == CommitmentOrigin.VERIFIED_EXPERIENCE:
+            node.source_lineage = node.source_lineage or "sedimentation:experience"
+
+        elif origin == CommitmentOrigin.AUTHORITATIVE_SEED:
+            node.source_lineage = node.source_lineage or "seed:authoritative"
+
+        elif origin == CommitmentOrigin.PROMOTION:
+            promoter = actor or "shadow_leap"
+            node.source_lineage = node.source_lineage or f"promotion:{promoter}"
+
+        node.commitment_origin = origin_str
+
+        # コミット時に初めて正の支持証拠打刻が行われる (Description -> Commitment)
+        if node.last_support_at is None:
+            node.last_support_at = now_iso
+
+        self.add_or_update(node)
+        return node
 
     def add_or_update(self, node: MBNode):
         if self.is_frozen:

@@ -134,6 +134,18 @@ graph TD
 * **自動ロールバック**:
   * Canary 熱が閾値 $\theta_{canary}$ を超過した場合、またはシャドウ反実仮想評価で改悪率が許容限界を超えた場合、即座に本番バージョンへ安全にロールバックされる。
 
+### 3.6 認知的ライフサイクルの分離（Description $\to$ Commitment $\to$ Active Constraint）
+* **オブジェクト生成と支持証拠の厳格分離（BASE v2.0 §4.2）**:
+  * 単なる Python クラス `MBNode(...)` のインスタンス化（関係の記述・仮説定義）をもって、正の支持証拠 `last_support_at` や `freshness` を自己生成・捏造することを禁止。
+  * 生成直後の未コミットノードは `last_support_at = None`, `last_evidence_at = None`, `commitment_origin = None` であり、拘束鮮度は厳格に `0.0`。
+* **正規コミットメントゲートウェイ（`MBGraph.commit_node()`）**:
+  * 記述を $M_B$ の正統な構成要素として昇格・定着させる唯一の手段として `commit_node(node, origin, actor, authority_context, commit_time)` を規定。
+  * `CommitmentOrigin`（`AUTHORITY`, `VERIFIED_EXPERIENCE`, `AUTHORITATIVE_SEED`, `PROMOTION`, `MIGRATION_VERIFIED`, `TEST_FIXTURE`）を義務付け。
+  * `origin="authority"` の場合は `AuthorityContext.is_authorized_for(domain)` を検証し、権限不足やドメイン管轄外の場合は `PermissionError` で即座にフェイルクローズ遮断。
+  * コミットを通過した瞬間に初めて正統な支持証拠打刻（`last_support_at = now`）が行われ、活性化拘束サブグラフ選定および推論への参画が認められる。
+* **暗号論的同一性への反映**:
+  * `content_hash` は各ノードの `commitment_origin` を正準化辞書に包含し、コミット出所の改ざんを完全に検知する。
+
 ---
 
 ## 4. 計算力学モデル（T0 Primitive 実装）
@@ -187,6 +199,7 @@ $H_{total} \ge \theta_{eff}$ に達した瞬間、巡航相（Cruise）から再
 | **Test 11** | キャッシュ移行の起源明示 | 旧形式キャッシュのインポート時に `source_mb_version` の明示を義務付け、現行バージョンへの不当な自己昇格が防止されること。 |
 | **Test 12** | 意味的鮮度と残差の分離 | タイムアウト案件（UNKNOWN）において、ノードの `last_evidence_at` および `content_hash` が保存され、不当な鮮度リフレッシュが発生しないこと。 |
 | **Test 13** | 証拠極性分離と反証シグナル | 失敗・差し戻し発生時に `last_opposing_at` が更新され、`last_support_at` は保存されて支持鮮度の上昇が防止されること。支持鮮度は `last_support_at` のみから算出され対向のみノードで 0.0 となること、レガシーセッターへの代入が `AttributeError` となること、実績ゼロのレガシーノードで極性捏造を行わないこと、歴史的反証シグナルが破断検査に反映され $C'$ と分離されること。 |
+| **Test 14** | 認知的ライフサイクル分離 | 純粋な `MBNode(...)` 記述生成では支持証拠を持たず（`last_support_at is None`, `freshness = 0.0`）、正規ゲートウェイ `commit_node()` を通過して初めて正統なコミット出所と支持証拠打刻が付与されること。権威コミット時の認可不在・権限外は `PermissionError` となること。 |
 
 ---
 

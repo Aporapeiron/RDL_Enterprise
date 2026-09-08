@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
 import re
 from typing import Optional, List, Dict, Any, Tuple
-from .mb_graph import MBGraph, MBNode
+from .mb_graph import MBGraph, MBNode, CommitmentOrigin
 from .snapshot import BusinessInput, InterpretationPrediction
 from .authority import AuthorityContext
 from .constraint import (
@@ -630,7 +630,7 @@ class InterpCascade:
             approval_count=1 if approved else 0,
             source_lineage=f"sedimentation:{origin}",
         )
-        self.mb_graph.add_or_update(new_node)
+        self.mb_graph.commit_node(new_node, origin=CommitmentOrigin.VERIFIED_EXPERIENCE)
         # Level 0 キャッシュにも即座に登録（ドメイン境界付き）
         self.sediment_level0(category, efp.query_text, new_id)
         return new_node
@@ -645,14 +645,8 @@ class InterpCascade:
         """
         認可された権限主体による明示的な方針・規則のコミット (Authoritative Policy Injection)。
         真理性保証ではなく権限統治 (Governance Commitment) に基づくノード策定。
-        caller trust や自己例外化を排除し、必ず AuthorityContext.is_authorized_for() を検証する。
+        caller trust や自己例外化を排除し、commit_node(origin=AUTHORITY) 経由で AuthorityContext.is_authorized_for() を検証する。
         """
-        if not authority.is_authorized_for(category):
-            raise PermissionError(
-                f"Actor '{authority.actor_id}' with role '{authority.role}' and scope '{authority.scope}' "
-                f"is not authorized for category '{category}'"
-            )
-
         new_id = f"node_policy_{len(self.mb_graph.nodes) + 1:03d}"
         new_node = MBNode(
             id=new_id,
@@ -669,10 +663,10 @@ class InterpCascade:
             confidence=0.9,
             success_count=0,
             approval_count=1,
-            source_id=authority.actor_id,
-            source_lineage=f"authority:{authority.role}:{authority.actor_id}",
+            source_id=authority.actor_id if authority else None,
+            source_lineage=f"authority:{authority.role}:{authority.actor_id}" if authority else None,
         )
-        self.mb_graph.add_or_update(new_node)
+        self.mb_graph.commit_node(new_node, origin=CommitmentOrigin.AUTHORITY, authority_context=authority)
         # 権限者による即時方針策定を Level 0 キャッシュへ登録
         self.sediment_level0(category, efp.query_text, new_id)
         return new_node
