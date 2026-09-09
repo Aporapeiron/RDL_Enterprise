@@ -27,6 +27,7 @@ from rdl_core import (
     TriggerDescription,
     observe_exact_keys,
     FunctionDescription,
+    FunctionInvocation,
 )
 
 
@@ -65,6 +66,17 @@ class TestCoreContracts(unittest.TestCase):
                 evaluator_id=constraint_function.function_id,
                 evaluator_version=constraint_function.version,
             )
+
+        invocation = FunctionInvocation(
+            function=constraint_function,
+            context=BoundaryContext("function-invocation"),
+            purpose="bounded evaluation",
+            config={"threshold": 0.7, "nested": {"mode": "local"}},
+            provenance=Provenance("test-function"),
+        )
+        self.assertEqual(invocation.config["threshold"], 0.7)
+        with self.assertRaises(TypeError):
+            invocation.config["threshold"] = 0.1
 
     def test_commitment_record_requires_valid_origin_and_time(self):
         record = CommitmentRecord.from_dict_strict(
