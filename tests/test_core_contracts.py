@@ -361,6 +361,12 @@ class TestCoreContracts(unittest.TestCase):
 
         graph = NodeDescriptionGraph((node, list_node))
         self.assertIs(graph.get("node-1"), node)
+        external_relation = ConstraintIdentity("external", "node-1", "references", "outside")
+        graph_with_external = NodeDescriptionGraph(
+            (NodeDescription("node-1", "finance", relations=(external_relation,)),)
+        )
+        self.assertEqual(graph_with_external.internal_relation_targets, ())
+        self.assertEqual(graph_with_external.external_relation_targets, ("outside",))
         with self.assertRaises(ValueError):
             NodeDescriptionGraph((node, node))
 

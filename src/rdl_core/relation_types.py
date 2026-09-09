@@ -75,3 +75,25 @@ class NodeDescriptionGraph:
 
     def get(self, node_id: str) -> Optional[NodeDescription]:
         return next((node for node in self.nodes if node.node_id == node_id), None)
+
+    @property
+    def internal_relation_targets(self) -> Tuple[str, ...]:
+        node_ids = {node.node_id for node in self.nodes}
+        targets = {
+            relation.object
+            for node in self.nodes
+            for relation in node.relations
+            if relation.object in node_ids
+        }
+        return tuple(sorted(targets))
+
+    @property
+    def external_relation_targets(self) -> Tuple[str, ...]:
+        node_ids = {node.node_id for node in self.nodes}
+        targets = {
+            relation.object
+            for node in self.nodes
+            for relation in node.relations
+            if relation.object not in node_ids
+        }
+        return tuple(sorted(targets))
