@@ -22,6 +22,7 @@ from rdl_core import (
     RelationObservation,
     RelationObservationStatus,
     RelationTargetScope,
+    MatchingObservation,
     MatchingObservationStatus,
     TriggerDescription,
     observe_exact_keys,
@@ -502,6 +503,22 @@ class TestCoreContracts(unittest.TestCase):
         self.assertEqual(unresolved.status, MatchingObservationStatus.UNRESOLVED)
         with self.assertRaises(ValueError):
             TriggerDescription(exact_keys=("password", 123))
+        normalized = observe_exact_keys(
+            TriggerDescription(exact_keys=("Password Reset",)),
+            "passwordreset",
+            context,
+        )
+        self.assertEqual(normalized.status, MatchingObservationStatus.MATCHED)
+        self.assertEqual(normalized.matched_keys, ("Password Reset",))
+
+        mutable_keys = MatchingObservation(
+            trigger=trigger,
+            query="password",
+            status=MatchingObservationStatus.MATCHED,
+            matched_keys=["password"],
+            context=context,
+        )
+        self.assertEqual(mutable_keys.matched_keys, ("password",))
 
     def test_mbnode_exact_key_trigger_projection_ignores_other_policies(self):
         from rdl_enterprise.mb_graph import MBNode
