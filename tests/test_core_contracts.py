@@ -468,6 +468,11 @@ class TestCoreContracts(unittest.TestCase):
                 (("graph-a", "support", "graph-b", "observed", "graph-boundary"),),
             ),
         )
+        reordered = project_mbgraph(
+            SimpleNamespace(nodes={"graph-b": node_b, "graph-a": node_a}),
+            BoundaryContext("graph-boundary", purpose="projection"),
+        )
+        self.assertEqual(projection.selected_slice(), reordered.selected_slice())
 
         node_a.source_id = "  "
         node_a.source_lineage = None

@@ -29,8 +29,8 @@ class MBGraphProjection:
 
     def selected_slice(self) -> Tuple[tuple, tuple]:
         """Return only the stable identity/edge fields selected by the adapter."""
-        nodes = tuple((node.node_id, node.domain) for node in self.graph.nodes)
-        edges = tuple(
+        nodes = tuple(sorted((node.node_id, node.domain) for node in self.graph.nodes))
+        edges = tuple(sorted(
             (
                 observation.relation.subject,
                 observation.relation.relation,
@@ -39,7 +39,7 @@ class MBGraphProjection:
                 observation.boundary.boundary_id,
             )
             for observation in self.observations
-        )
+        ))
         return nodes, edges
 
 
