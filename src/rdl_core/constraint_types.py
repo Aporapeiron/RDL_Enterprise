@@ -80,22 +80,39 @@ class ConstraintEvaluationComparison:
         return self.left.context == self.right.context
 
     @property
-    def same_inputs(self) -> bool:
+    def same_observations(self) -> bool:
         return (
             self.left.relevance == self.right.relevance
             and self.left.freshness == self.right.freshness
             and self.left.authority == self.right.authority
             and self.left.source == self.right.source
             and self.left.convergence == self.right.convergence
-            and self.left.weights == self.right.weights
         )
 
     @property
+    def same_evaluator_config(self) -> bool:
+        return self.left.weights == self.right.weights
+
+    @property
+    def replay_eligible(self) -> bool:
+        return self.same_boundary and self.same_observations and self.same_evaluator_config
+
+    @property
+    def evaluator_comparison_eligible(self) -> bool:
+        return self.same_boundary and self.same_observations
+
+    @property
     def eligible(self) -> bool:
-        return self.same_boundary and self.same_inputs
+        """Backward-compatible alias for replay eligibility."""
+        return self.replay_eligible
+
+    def raw_delta(self, provenance: Optional[Provenance] = None) -> ConstraintEvaluationDelta:
+        return ConstraintEvaluationDelta(self.left, self.right, provenance=provenance)
 
     def delta(self, provenance: Optional[Provenance] = None) -> ConstraintEvaluationDelta:
-        return ConstraintEvaluationDelta(self.left, self.right, provenance=provenance)
+        if not self.evaluator_comparison_eligible:
+            raise ValueError("評価比較のBoundaryまたは観測条件が一致していません")
+        return self.raw_delta(provenance=provenance)
 
 
 def evaluate_constraint_strength(

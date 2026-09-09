@@ -159,12 +159,26 @@ class TestCoreContracts(unittest.TestCase):
         self.assertTrue(delta.same_boundary)
         comparison = ConstraintEvaluationComparison(left, evaluation)
         self.assertTrue(comparison.eligible)
+        self.assertTrue(comparison.same_observations)
+        self.assertTrue(comparison.same_evaluator_config)
         self.assertEqual(comparison.delta().value, delta.value)
         different_context = record_constraint_evaluation(
             context=BoundaryContext("eval-2"), relevance=1.0, freshness=0.5,
             authority=0.0, source=0.5, convergence=1.0,
         )
         self.assertFalse(ConstraintEvaluationComparison(left, different_context).eligible)
+        self.assertTrue(ConstraintEvaluationComparison(left, different_context).raw_delta())
+        with self.assertRaises(ValueError):
+            ConstraintEvaluationComparison(left, different_context).delta()
+        different_weights = record_constraint_evaluation(
+            context=context, relevance=1.0, freshness=0.5, authority=0.0,
+            source=0.5, convergence=1.0,
+            weights=ConstraintEvaluationWeights(relevance=1.0, freshness=0.0, authority=0.0, source=0.0, convergence=0.0),
+        )
+        weight_comparison = ConstraintEvaluationComparison(left, different_weights)
+        self.assertFalse(weight_comparison.same_evaluator_config)
+        self.assertTrue(weight_comparison.same_observations)
+        self.assertTrue(weight_comparison.evaluator_comparison_eligible)
         with self.assertRaises(TypeError):
             record_constraint_evaluation(
                 context=context, relevance=1.0, freshness=0.5, authority=0.0,
