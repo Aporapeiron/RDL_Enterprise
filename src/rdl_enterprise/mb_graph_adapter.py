@@ -32,8 +32,12 @@ def provenance_from_mbnode(node: object) -> Optional[Provenance]:
     """Recover MBNode source fields without inventing a missing source."""
     source_id = getattr(node, "source_id", None)
     lineage = getattr(node, "source_lineage", None)
-    source_id = source_id.strip() if isinstance(source_id, str) else source_id
-    lineage = lineage.strip() if isinstance(lineage, str) else lineage
+    if source_id is not None and not isinstance(source_id, str):
+        raise TypeError("MBNode.source_idは文字列またはNoneである必要があります")
+    if lineage is not None and not isinstance(lineage, str):
+        raise TypeError("MBNode.source_lineageは文字列またはNoneである必要があります")
+    source_id = source_id.strip() if source_id is not None else None
+    lineage = lineage.strip() if lineage is not None else None
     if source_id is None and lineage is None:
         return None
     if not source_id and not lineage:

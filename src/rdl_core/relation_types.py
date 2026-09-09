@@ -14,6 +14,12 @@ class RelationObservationStatus(str, Enum):
     UNRESOLVED = "unresolved"
 
 
+class RelationTargetScope(str, Enum):
+    INTERNAL = "internal"
+    EXTERNAL = "external"
+    UNRESOLVED = "unresolved"
+
+
 @dataclass(frozen=True)
 class NodeDescription:
     """A describable node; creation does not imply Commitment."""
@@ -99,3 +105,10 @@ class NodeDescriptionGraph:
             if relation.object not in node_ids
         }
         return tuple(sorted(targets))
+
+    def classify_target(self, target_id: str, declared_external: Tuple[str, ...] = ()) -> RelationTargetScope:
+        if target_id in {node.node_id for node in self.nodes}:
+            return RelationTargetScope.INTERNAL
+        if target_id in declared_external:
+            return RelationTargetScope.EXTERNAL
+        return RelationTargetScope.UNRESOLVED

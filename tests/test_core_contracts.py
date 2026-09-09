@@ -21,6 +21,7 @@ from rdl_core import (
     NodeDescriptionGraph,
     RelationObservation,
     RelationObservationStatus,
+    RelationTargetScope,
 )
 
 
@@ -370,6 +371,11 @@ class TestCoreContracts(unittest.TestCase):
         )
         self.assertEqual(graph_with_external.internal_relation_targets, ())
         self.assertEqual(graph_with_external.external_relation_targets, ("outside",))
+        self.assertEqual(graph_with_external.classify_target("outside"), RelationTargetScope.UNRESOLVED)
+        self.assertEqual(
+            graph_with_external.classify_target("outside", ("outside",)),
+            RelationTargetScope.EXTERNAL,
+        )
         with self.assertRaises(ValueError):
             NodeDescriptionGraph((node, node))
 
@@ -422,6 +428,10 @@ class TestCoreContracts(unittest.TestCase):
             (("mb-edges", "support", "mb-support", "observed"),
              ("mb-edges", "unknown", "mb-unknown", "unresolved")),
         )
+        node.source_id = 123
+        with self.assertRaises(TypeError):
+            relation_observations_from_mbnode(node, BoundaryContext("edge-b"))
+        node.source_id = "policy-1"
         node.node_relations["bad"] = "truth"
         with self.assertRaises(ValueError):
             relation_observations_from_mbnode(node, BoundaryContext("edge-b"))
