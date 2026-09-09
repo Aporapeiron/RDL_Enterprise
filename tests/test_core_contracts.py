@@ -8,6 +8,9 @@ from rdl_core import (
     CommitmentRecord,
     EvidencePolarity,
     Provenance,
+    ConstraintActivation,
+    ConstraintIdentity,
+    ConstraintStrength,
 )
 
 
@@ -94,3 +97,15 @@ class TestCoreContracts(unittest.TestCase):
             {"origin": "game:rumor", "committed_at": "2026-09-09T00:00:00+00:00", "actor": "npc-1"}
         )
         self.assertEqual(record.origin, "game:rumor")
+
+    def test_constraint_identity_and_bounded_activation(self):
+        identity = ConstraintIdentity("c1", "requester", "may_approve", "expense")
+        activation = ConstraintActivation(
+            identity=identity,
+            context=BoundaryContext("b1", question="approval"),
+            strength=ConstraintStrength(value=0.8, support=EvidencePolarity.SUPPORT, relevance=0.9),
+            authority_constraint=AuthorityConstraint("a1", "finance", "expense", "approve"),
+        )
+        self.assertEqual(activation.identity.constraint_id, "c1")
+        with self.assertRaises(ValueError):
+            ConstraintStrength(value=1.1)
