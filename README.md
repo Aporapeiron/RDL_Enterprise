@@ -69,6 +69,7 @@ RDL_Enterprise/
 │   ├── test_product_acceptance.py       # 製品受入テスト（最小代謝閉ループ・権威分離・バージョン束縛・観測保留・鮮度分離・証拠極性分離・ライフサイクルコミット等 14大テスト）
 │   ├── test_promotion_gate.py           # 昇格ゲート・シャドウ評価テスト
 │   ├── test_shadow.py                   # 反実仮想シャドウ推論テスト
+│   ├── test_property_invariants.py      # 多変量プロパティベース不変条件テスト（UNKNOWN純粋性・OPPOSE非更新・権威遮断等）
 │   ├── test_simulation_harness.py       # シミュレーションハーネス単体・結合テスト
 │   ├── test_simulation_scenarios.py     # 長期シナリオ・権威衝突・決定論・摂動受入アサーションテスト
 │   └── test_social_adapter.py           # ソーシャル摂動フィクスチャテスト
@@ -130,4 +131,4 @@ py -m pytest -o pythonpath=src
 py -m unittest discover tests
 ```
 
-全 **158件** の単体・結合・受入テスト（時間注入・完全決定論Replay・60日ライフサイクル検証を含む）が高速（約2.3秒）にパスします。
+全 **163件** の単体・結合・受入・プロパティベース不変条件テスト（時間注入・完全決定論Replay・60日ライフサイクル検証・Fail-Closed Replay検証を含む）が高速（約3.3秒）にパスします。

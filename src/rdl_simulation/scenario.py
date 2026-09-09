@@ -26,6 +26,8 @@ class SimulationRunContext:
     scenario_content_hash: str = "none"
     agent_configs_hash: str = "none"
     adapter_config_hash: str = "none"
+    world_config_hash: str = "none"
+    runtime_config_hash: str = "none"
     initial_mb_hash: Optional[str] = None
     created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
 

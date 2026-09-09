@@ -265,10 +265,11 @@ class TestSimulationScenariosAcceptance(unittest.TestCase):
         world2.load_scenario(LongTermLifecycleScenario())
         world2.run_days(60)
 
-        # トレースログ（因果前後の力学状態遷移を含む）完全一致の検証
+        # トレースログ（因果前後の力学状態遷移を含む全12フィールド）完全一致の検証
         ok, msg = SimulationReplayer.compare_traces(
             world1.trace_logger.records,
             world2.trace_logger.records,
+            exact=True,
         )
         self.assertTrue(ok, f"60日間長期ライフサイクルのトレース不一致: {msg}")
 
@@ -294,6 +295,8 @@ class TestSimulationScenariosAcceptance(unittest.TestCase):
         self.assertNotEqual(ctx.scenario_content_hash, "none")
         self.assertNotEqual(ctx.agent_configs_hash, "none")
         self.assertNotEqual(ctx.adapter_config_hash, "none")
+        self.assertNotEqual(ctx.world_config_hash, "none")
+        self.assertNotEqual(ctx.runtime_config_hash, "none")
 
         # Replayer による再構築リプレイ実行
         ok, world_replayed, err = SimulationReplayer.replay_from_context(
@@ -305,16 +308,51 @@ class TestSimulationScenariosAcceptance(unittest.TestCase):
         self.assertTrue(ok)
         self.assertIsNone(err)
 
-        # オリジナル世界とリプレイ世界の完全照合
+        # オリジナル世界とリプレイ世界の Canonical Exact トレース照合
         match, diff_msg = SimulationReplayer.compare_traces(
             world_orig.trace_logger.records,
             world_replayed.trace_logger.records,
+            exact=True,
         )
         self.assertTrue(match, f"Replay 世界とのトレース不一致: {diff_msg}")
         self.assertEqual(
             world_orig.rdl_adapter.runtime.mb_graph.content_hash(),
             world_replayed.rdl_adapter.runtime.mb_graph.content_hash(),
         )
+
+        # 【Fail-Closed 検証】: コンテキスト改ざん・不一致時の即時遮断
+        from dataclasses import replace
+        from rdl_simulation.replay import ReplayContextMismatchError
+
+        # 1. 偽の初期 M_B ハッシュを渡した場合
+        tampered_mb_ctx = replace(ctx, initial_mb_hash="tampered_mb_hash_000")
+        with self.assertRaises(ReplayContextMismatchError):
+            SimulationReplayer.replay_from_context(
+                context=tampered_mb_ctx,
+                world_factory=create_test_world,
+                scenario=AuthorityConflictScenario(),
+                days=2,
+            )
+
+        # 2. 異なるシナリオハッシュを渡した場合
+        tampered_scen_ctx = replace(ctx, scenario_content_hash="tampered_scen_hash_000")
+        with self.assertRaises(ReplayContextMismatchError):
+            SimulationReplayer.replay_from_context(
+                context=tampered_scen_ctx,
+                world_factory=create_test_world,
+                scenario=AuthorityConflictScenario(),
+                days=2,
+            )
+
+        # 3. 異なるランタイム設定ハッシュ（例: 異なる耐久ハーネスやθ0の世界）を渡した場合
+        tampered_rt_ctx = replace(ctx, runtime_config_hash="tampered_rt_hash_000")
+        with self.assertRaises(ReplayContextMismatchError):
+            SimulationReplayer.replay_from_context(
+                context=tampered_rt_ctx,
+                world_factory=create_test_world,
+                scenario=AuthorityConflictScenario(),
+                days=2,
+            )
 
     def test_perturbation_stress_state_transitions(self):
         """

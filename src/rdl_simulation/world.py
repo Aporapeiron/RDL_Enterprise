@@ -89,7 +89,38 @@ class SimulationWorld:
             adapter_info["type"] = self.rdl_adapter.__class__.__name__
             if hasattr(self.rdl_adapter, "oracle_answers"):
                 adapter_info["oracle_answers"] = getattr(self.rdl_adapter, "oracle_answers", {})
+            if hasattr(self.rdl_adapter, "timeout_interval_ticks"):
+                adapter_info["timeout_interval_ticks"] = getattr(self.rdl_adapter, "timeout_interval_ticks", 16)
         adapter_hash = hashlib.sha256(json.dumps(adapter_info, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+
+        # ワールド設定ハッシュ (時計設定、登録カスタムイベントハンドラ名一覧等)
+        world_info = {
+            "clock_start": self.clock.start_time.isoformat(),
+            "minutes_per_tick": self.clock.minutes_per_tick,
+            "custom_handlers": sorted(list(self._custom_event_handlers.keys())),
+        }
+        world_config_hash = hashlib.sha256(json.dumps(world_info, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+
+        # ランタイム設定ハッシュ (力学定数 θ_0, γ, 耐久ハーネスチェッカー構成, 昇格ポリシー等)
+        runtime_info = {}
+        if self.rdl_adapter and hasattr(self.rdl_adapter, "runtime"):
+            rt = self.rdl_adapter.runtime
+            runtime_info["theta_0"] = getattr(rt.h_state, "theta_0", 2.0)
+            runtime_info["gamma"] = getattr(rt.h_state, "gamma", 0.05)
+            runtime_info["auto_promote"] = getattr(rt, "auto_promote_reorganizations", False)
+            if hasattr(rt, "durability_harness") and rt.durability_harness:
+                runtime_info["checkers"] = [
+                    c.__class__.__name__ for c in getattr(rt.durability_harness, "checkers", [])
+                ]
+            if hasattr(rt, "default_promotion_policy") and rt.default_promotion_policy:
+                pol = rt.default_promotion_policy
+                runtime_info["default_policy"] = {
+                    "durability": pol.require_durability,
+                    "shadow": pol.require_shadow,
+                    "human": pol.require_human_approval,
+                    "min_cases": pol.min_resolved_cases,
+                }
+        runtime_config_hash = hashlib.sha256(json.dumps(runtime_info, sort_keys=True).encode("utf-8")).hexdigest()[:16]
 
         scenario_c_hash = scenario.content_hash() if hasattr(scenario, "content_hash") else "none"
 
@@ -102,6 +133,8 @@ class SimulationWorld:
             scenario_content_hash=scenario_c_hash,
             agent_configs_hash=agents_hash,
             adapter_config_hash=adapter_hash,
+            world_config_hash=world_config_hash,
+            runtime_config_hash=runtime_config_hash,
             initial_mb_hash=initial_mb_hash,
         )
 
