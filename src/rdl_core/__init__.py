@@ -87,7 +87,7 @@ from .recompilation_types import (
     materialize_compiled_replacement,
     activate_compiled_replacement,
 )
-from .supersession_types import SupersessionRecord
+from .supersession_types import SupersessionRecord, record_supersession
 
 __all__ = [
     "AuthorityConstraint",
@@ -169,6 +169,7 @@ __all__ = [
     "materialize_compiled_replacement",
     "activate_compiled_replacement",
     "SupersessionRecord",
+    "record_supersession",
     "CompilationValidationStatus",
     "extract_structure_candidate",
     "extract_recompiled_structure_candidate",

@@ -76,6 +76,7 @@ from rdl_core import (
     materialize_compiled_replacement,
     activate_compiled_replacement,
     SupersessionRecord,
+    record_supersession,
 )
 
 
@@ -386,6 +387,12 @@ class TestCoreContracts(unittest.TestCase):
             active, active_v2, compiled_replacement, BoundaryContext("supersession"),
         )
         self.assertEqual(supersession.predecessor, active)
+        self.assertEqual(
+            record_supersession(
+                active, active_v2, compiled_replacement, BoundaryContext("supersession"),
+            ).replacement,
+            active_v2,
+        )
 
 
     def test_commitment_record_requires_valid_origin_and_time(self):

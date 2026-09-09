@@ -23,3 +23,18 @@ class SupersessionRecord:
             raise ValueError("Supersessionのreplacementが一致していません")
         if self.predecessor.artifact == self.replacement.artifact:
             raise ValueError("Supersessionには異なるCompiledMBが必要です")
+
+
+def record_supersession(
+    predecessor: ActiveCompiledMB,
+    replacement: ActiveCompiledMB,
+    compiled_replacement: CompiledReplacement,
+    context: BoundaryContext,
+    *,
+    provenance: Optional[Provenance] = None,
+) -> SupersessionRecord:
+    """Record an explicit Active v1-to-v2 replacement event."""
+    return SupersessionRecord(
+        predecessor, replacement, compiled_replacement, context,
+        provenance=provenance,
+    )
