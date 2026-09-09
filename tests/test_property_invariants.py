@@ -366,11 +366,15 @@ class TestPropertyBasedInvariants(unittest.TestCase):
             self.assertIsNotNone(digest.digest_hash)
             self.assertEqual(len(digest.digest_hash), 16)
 
-            # 2. 差し戻しやタイムアウトしたチケットが Level 0 キャッシュに混入していないこと
+            # 2. 差し戻しやタイムアウトしたチケットが Level 0 キャッシュに混入していないこと (負の沈澱遮断)
             for snap in rt.resolved_snapshots:
                 if snap.status in (CaseStatus.FAILURE, CaseStatus.REJECTED, CaseStatus.UNKNOWN):
-                    # 当該クエリが Level 0 に存在する場合、そのノードは直前の失敗で沈澱したものではないこと
                     key = (rt.mb_graph.version, snap.efp.category or "general", snap.efp.query_text)
+                    self.assertNotIn(
+                        key,
+                        rt.cascade.level0_cache,
+                        f"Seed {trial}: 失敗・差し戻し・タイムアウト案件 ({snap.status.value}, tid={snap.efp.ticket_id}) が Level 0 キャッシュに沈澱しています",
+                    )
                     # 失敗案件が新規結晶化ルールとしてM_Bにコミットされていないこと
                     self.assertFalse(
                         snap.status == CaseStatus.REJECTED and getattr(snap, "is_authoritative", False),

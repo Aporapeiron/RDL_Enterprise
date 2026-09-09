@@ -172,6 +172,7 @@ class SimulationReplayer:
         days: int,
         raise_on_mismatch: bool = True,
         original_trace: Optional[List[TraceRecord]] = None,
+        original_final_digest: Optional[str] = None,
     ) -> "ReplayResult":
         """
         SimulationRunContext を外生条件として受け取り、
@@ -183,6 +184,8 @@ class SimulationReplayer:
         【Self-Verifying ReplayResult】:
         original_trace が渡された場合、実行後に再演トレースと自動照合し、
         完全一致 (trace_exact_match) および最初の乖離 (first_divergence) を自己診断して返却。
+        【True Final State Proof】:
+        シミュレーション終了時点の実際のランタイム状態ダイジェスト (get_state_digest) を照合。
         """
         # 1. 独立した世界インスタンスを生成
         replayed_world = world_factory(seed=context.seed)
@@ -275,13 +278,18 @@ class SimulationReplayer:
                         "length_mismatch": f"original={len(original_trace)} vs replayed={len(rep_trace)}"
                     }
 
-        # 5. 最終状態ダイジェストの完全一致検証
+        # 5. 最終状態ダイジェストの完全一致検証 (真の最終ランタイム状態)
         final_state_match = True
-        if original_trace and len(original_trace) > 0 and len(replayed_world.trace_logger.records) > 0:
-            last_orig = original_trace[-1]
-            last_rep = replayed_world.trace_logger.records[-1]
-            if last_orig.state_digest_after and last_rep.state_digest_after:
-                final_state_match = (last_orig.state_digest_after == last_rep.state_digest_after)
+        replayed_final_digest = None
+        if hasattr(replayed_world, "rdl_adapter") and hasattr(replayed_world.rdl_adapter, "get_state_digest"):
+            replayed_final_digest = replayed_world.rdl_adapter.get_state_digest()
+
+        target_orig_final = original_final_digest
+        if target_orig_final is None and original_trace and len(original_trace) > 0:
+            target_orig_final = original_trace[-1].state_digest_after
+
+        if target_orig_final and replayed_final_digest:
+            final_state_match = (target_orig_final == replayed_final_digest)
 
         return ReplayResult(
             context_verified=True,

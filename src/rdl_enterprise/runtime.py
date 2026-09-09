@@ -566,7 +566,7 @@ class EnterpriseRuntime:
             if current_prod_h >= current_theta:
                 transition_m_delta = True
                 hot_id = self.h_state.hottest_node_for_version(mb_ver) or pred.matched_node_id or "__global__"
-                proposal = self._trigger_m_delta_proposal(hot_id, snapshot.efp, feedback)
+                proposal = self._trigger_m_delta_proposal(hot_id, snapshot.efp, feedback, at=evidence_at)
                 proposal_id = proposal.proposal_id
 
                 # 自動昇格設定かつ委任権限が存在する場合（PromotionGate で検証）
@@ -578,6 +578,7 @@ class EnterpriseRuntime:
                         proposal_id,
                         authority=self.auto_promote_authority,
                         is_automated=True,
+                        at=evidence_at,
                     )
             else:
                 # 通常運転：局所更新 (dM_B/dt)
@@ -614,6 +615,7 @@ class EnterpriseRuntime:
         hot_node_id: str,
         efp: BusinessInput,
         feedback: Optional[FeedbackResult] = None,
+        at: Optional[str] = None,
     ) -> ReorganizationProposal:
         """
         高負荷再編相 M_Δ パイプライン:
@@ -655,6 +657,13 @@ class EnterpriseRuntime:
             candidate_mb=candidate_mb,
         )
 
+        proposal_created_at = (
+            at
+            or (feedback.observed_at if feedback and getattr(feedback, "observed_at", None) else None)
+            or getattr(efp, "created_at", None)
+            or datetime.utcnow().isoformat()
+        )
+
         proposal = ReorganizationProposal(
             proposal_id=proposal_id,
             hot_node_id=hot_node_id,
@@ -663,6 +672,7 @@ class EnterpriseRuntime:
             policy=policy,
             status=gate_res.next_state,
             reasons=gate_res.reasons,
+            created_at=proposal_created_at,
         )
         self.pending_reorganizations[proposal_id] = proposal
         return proposal
@@ -676,6 +686,7 @@ class EnterpriseRuntime:
         canary_ratio: float = 0.1,
         theta_canary: float = 1.5,
         max_canary_failures: int = 1,
+        at: Optional[str] = None,
     ) -> bool:
         """
         PromotionGate（準備性検証）と権限者（AuthorityContext）の二重ゲートを通過した場合のみ、
@@ -757,7 +768,7 @@ class EnterpriseRuntime:
         self.h_state.apply_remaining_heat_after_leap(proposal.hot_node_id, remaining_ratio=0.2)
 
         proposal.status = ProposalState.PROMOTED
-        proposal.promoted_at = datetime.utcnow().isoformat()
+        proposal.promoted_at = at or (authority.timestamp if hasattr(authority, "timestamp") and authority.timestamp else None) or datetime.utcnow().isoformat()
         proposal.approved_by = f"{authority.role}:{authority.actor_id}"
         self.reorganization_history.append(proposal)
 
@@ -771,7 +782,7 @@ class EnterpriseRuntime:
         """カナリア配分比率を拡大 (例: 0.1 -> 0.5 -> 1.0)"""
         return self.canary_manager.step_up_traffic(new_ratio)
 
-    def complete_canary_rollout(self, policy: Optional[CanaryCompletionPolicy] = None) -> bool:
+    def complete_canary_rollout(self, policy: Optional[CanaryCompletionPolicy] = None, at: Optional[str] = None) -> bool:
         """カナリア展開を完了し、新 M_B' を本番として確定コミット (エビデンス検証を含む)"""
         if not self.canary_manager.active_deployment:
             return False
@@ -789,7 +800,7 @@ class EnterpriseRuntime:
         if prop_id in self.pending_reorganizations:
             proposal = self.pending_reorganizations.pop(prop_id)
             proposal.status = ProposalState.PROMOTED
-            proposal.promoted_at = datetime.utcnow().isoformat()
+            proposal.promoted_at = at or datetime.utcnow().isoformat()
             self.reorganization_history.append(proposal)
             self.h_state.apply_remaining_heat_after_leap(proposal.hot_node_id, remaining_ratio=0.2)
             # カナリア期間中の残存熱・観測統計を新本番へ合成・引き継ぎ (公理B4: 代謝の連続性)
@@ -1052,7 +1063,39 @@ class EnterpriseRuntime:
             })
         action_ledger_hash = hashlib.sha256(json.dumps(ledger_records, sort_keys=True).encode("utf-8")).hexdigest()[:16]
 
-        # 総合要約ハッシュ
+        # 9. 解決済み履歴ハッシュ (resolved_snapshots: M_Δ起草時の耐久破断検査に影響する未来拘束状態)
+        resolved_list = []
+        for snap in self.resolved_snapshots:
+            resolved_list.append({
+                "ticket_id": snap.efp.ticket_id,
+                "status": snap.status.value,
+                "domain": snap.efp.category or "",
+                "query": snap.efp.query_text,
+                "resolved_at": getattr(snap, "resolved_at", ""),
+                "e_pred": snap.e_prediction,
+                "e_input": snap.e_input,
+            })
+        resolved_history_hash = hashlib.sha256(json.dumps(resolved_list, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+
+        # 10. 再編履歴ハッシュ (reorganization_history: 次期プロポーザル採番および昇格状態機械に影響)
+        reorg_list = []
+        for prop in self.reorganization_history:
+            reorg_list.append({
+                "proposal_id": prop.proposal_id,
+                "hot_node_id": prop.hot_node_id,
+                "status": prop.status.value,
+                "created_at": prop.created_at,
+                "promoted_at": prop.promoted_at,
+            })
+        reorg_history_hash = hashlib.sha256(json.dumps(reorg_list, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+
+        # 11. バージョン別観測統計プール (versioned_observations: ξ_obs / θ_eff の算出に影響)
+        v_obs_dict = {}
+        for ver, pool in sorted(self.h_state.versioned_observations.items()):
+            v_obs_dict[ver] = dict(pool)
+        observation_pool_hash = hashlib.sha256(json.dumps(v_obs_dict, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+
+        # 総合要約ハッシュ (全11要素の結合)
         full_payload = {
             "mb_hash": mb_hash,
             "h_state_hash": h_state_hash,
@@ -1062,6 +1105,9 @@ class EnterpriseRuntime:
             "shadow_hash": shadow_hash,
             "canary_hash": canary_hash,
             "action_ledger_hash": action_ledger_hash,
+            "resolved_history_hash": resolved_history_hash,
+            "reorg_history_hash": reorg_history_hash,
+            "observation_pool_hash": observation_pool_hash,
         }
         digest_hash = hashlib.sha256(json.dumps(full_payload, sort_keys=True).encode("utf-8")).hexdigest()[:16]
 
@@ -1075,6 +1121,9 @@ class EnterpriseRuntime:
             shadow_hash=shadow_hash,
             canary_hash=canary_hash,
             action_ledger_hash=action_ledger_hash,
+            resolved_history_hash=resolved_history_hash,
+            reorg_history_hash=reorg_history_hash,
+            observation_pool_hash=observation_pool_hash,
         )
 
 
@@ -1082,7 +1131,8 @@ class EnterpriseRuntime:
 class RuntimeStateDigest:
     """
     RDL AI コアの完全状態ダイジェスト (T0 BASE v2.0 §4.2 整合)
-    認知・代謝・学習・保留・再編・試験の全サブシステム状態の決定論的要約。
+    認知・代謝・学習・保留・再編・試験・過去解決履歴・再編履歴・観測統計プールの
+    未来挙動を拘束する全サブシステム状態の決定論的要約。
     """
     digest_hash: str
     mb_hash: str
@@ -1093,4 +1143,7 @@ class RuntimeStateDigest:
     shadow_hash: str
     canary_hash: str
     action_ledger_hash: str
+    resolved_history_hash: str
+    reorg_history_hash: str
+    observation_pool_hash: str
 

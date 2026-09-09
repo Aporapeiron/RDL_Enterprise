@@ -123,7 +123,7 @@ def create_test_world(seed: int = 42) -> SimulationWorld:
                 timestamp=w.clock.iso_time,
             )
             try:
-                success = rt.promote_candidate_mb(prop_id, authority=mgr_auth)
+                success = rt.promote_candidate_mb(prop_id, authority=mgr_auth, at=w.clock.iso_time)
                 if success:
                     w.metrics.record_promotion()
             except Exception:

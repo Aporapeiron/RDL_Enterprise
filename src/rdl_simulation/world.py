@@ -172,7 +172,23 @@ class SimulationWorld:
 
         # RDLランタイム側の定周期代謝 (タイムアウト処理・自然散逸等)
         if self.rdl_adapter and hasattr(self.rdl_adapter, "on_tick"):
+            tick_digest_before = self.rdl_adapter.get_state_digest() if hasattr(self.rdl_adapter, "get_state_digest") else None
             self.rdl_adapter.on_tick(self, curr_tick, curr_day)
+            tick_digest_after = self.rdl_adapter.get_state_digest() if hasattr(self.rdl_adapter, "get_state_digest") else None
+
+            # 外来イベントなしに自律代謝によって状態変化が生じた場合、トレースへ記録 (因果律の完全捕捉)
+            if tick_digest_before and tick_digest_after and tick_digest_before != tick_digest_after:
+                self.trace_logger.record(
+                    tick=curr_tick,
+                    day=curr_day,
+                    event_type="tick_metabolism",
+                    source_id="clock",
+                    target_id="runtime",
+                    payload={"type": "autonomous_metabolism"},
+                    transition_type="metabolic_dissipation_or_timeout",
+                    state_digest_before=tick_digest_before,
+                    state_digest_after=tick_digest_after,
+                )
 
         # 日付境界でのメトリクススナップショット
         ticks_per_day = int((24 * 60) // self.clock.minutes_per_tick)
