@@ -14,6 +14,11 @@ from .evolution_types import (
     ConditionalRelationCandidate,
     ConditionalRuptureRecord,
     ConditionalRuptureStatus,
+    ConditionalActivationRecord,
+    ConditionDescription,
+    ExceptionCandidate,
+    RelationPatternCandidate,
+    build_conditional_relation_candidate,
     evaluate_condition,
 )
 
@@ -45,6 +50,17 @@ class ConditionSetObservation:
             for condition in self.condition_set.conditions
         ):
             raise ValueError("Condition Observationの対象がConditionSetと一致していません")
+        statuses = tuple(item.status for item in observations)
+        if ConditionObservationStatus.NOT_EVALUATED in statuses:
+            expected_status = ConditionObservationStatus.NOT_EVALUATED
+        elif ConditionObservationStatus.UNRESOLVED in statuses:
+            expected_status = ConditionObservationStatus.UNRESOLVED
+        elif ConditionObservationStatus.NOT_MATCH in statuses:
+            expected_status = ConditionObservationStatus.NOT_MATCH
+        else:
+            expected_status = ConditionObservationStatus.MATCH
+        if self.status != expected_status:
+            raise ValueError("ConditionSetのaggregate statusが個別Observationと一致していません")
         object.__setattr__(self, "observations", observations)
 
 
@@ -99,6 +115,8 @@ class ConditionalRuntimeObservation:
             raise ValueError("purposeは空でない文字列である必要があります")
         if not isinstance(self.evaluator, FunctionDescription):
             raise TypeError("evaluatorはFunctionDescriptionである必要があります")
+        if self.evaluator != self.artifact.candidate.function_candidate.function:
+            raise ValueError("Runtime evaluatorがCompiled Functionと一致していません")
         snapshot = tuple(self.input_snapshot)
         if any(not isinstance(item, tuple) or len(item) != 2 for item in snapshot):
             raise TypeError("input_snapshotは(name, value)の列である必要があります")
@@ -108,6 +126,26 @@ class ConditionalRuntimeObservation:
     @property
     def status(self) -> ConditionObservationStatus:
         return self.condition_observation.status
+
+
+def record_conditional_runtime_observation(
+    artifact: ConditionalCompiledMB,
+    condition_set: ConditionSet,
+    finite_inputs: Mapping[str, BoundaryInputValue],
+    context: BoundaryContext,
+    *,
+    purpose: str,
+    provenance: Optional[Provenance] = None,
+) -> ConditionalRuntimeObservation:
+    """Create condition observations and their finite snapshot from one input boundary."""
+    condition_observation = evaluate_condition_set(
+        condition_set, finite_inputs, context, provenance=provenance,
+    )
+    snapshot = tuple((name, freeze_boundary_value(value)) for name, value in finite_inputs.items())
+    return ConditionalRuntimeObservation(
+        artifact, condition_observation, snapshot, context, purpose,
+        artifact.candidate.function_candidate.function, provenance,
+    )
 
 
 @dataclass(frozen=True)
@@ -180,3 +218,152 @@ def evaluate_runtime_rupture(
     return ConditionalRuptureRecord(
         summary.candidate, status, summary.context, check_id, reason, summary.provenance,
     )
+
+
+@dataclass(frozen=True)
+class ConditionalRelearningRequest:
+    """Finite request to re-enter Adaptive M_B after observed rupture evidence."""
+
+    active: ConditionalActivationRecord
+    ruptures: Tuple[ConditionalRuptureRecord, ...]
+    context: BoundaryContext
+    reason: str = ""
+    provenance: Optional[Provenance] = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.active, ConditionalActivationRecord):
+            raise TypeError("activeはConditionalActivationRecordである必要があります")
+        ruptures = tuple(self.ruptures)
+        if any(not isinstance(item, ConditionalRuptureRecord) for item in ruptures):
+            raise TypeError("rupturesはConditionalRuptureRecordの列である必要があります")
+        if any(item.candidate != self.active.promotion.artifact.conditional_candidate for item in ruptures):
+            raise ValueError("RuptureのCandidateがActive Conditional artifactと一致していません")
+        if any(item.context != self.context for item in ruptures):
+            raise ValueError("RuptureのBoundaryがRelearning requestと一致していません")
+        if not isinstance(self.reason, str):
+            raise TypeError("reasonは文字列である必要があります")
+        object.__setattr__(self, "ruptures", ruptures)
+
+
+def request_conditional_relearning(
+    active: ConditionalActivationRecord,
+    ruptures: Tuple[ConditionalRuptureRecord, ...],
+    context: BoundaryContext,
+    *,
+    reason: str = "runtime rupture",
+    provenance: Optional[Provenance] = None,
+) -> ConditionalRelearningRequest:
+    """Create a re-entry request without deactivating or mutating the active artifact."""
+    return ConditionalRelearningRequest(active, ruptures, context, reason, provenance)
+
+
+def reintroduce_conditional_to_adaptive(
+    request: ConditionalRelearningRequest,
+    profiles: Tuple[object, ...],
+    *,
+    provenance: Optional[Provenance] = None,
+):
+    """Re-enter Adaptive M_B while retaining prior conditional structure and evidence."""
+    from .evolution_types import AdaptiveMBProfile
+    from .similarity_types import RelationConstraintProfile
+
+    profiles = tuple(profiles)
+    if any(not isinstance(item, RelationConstraintProfile) for item in profiles):
+        raise TypeError("profilesはRelationConstraintProfileの列である必要があります")
+    return AdaptiveMBProfile(
+        profiles=profiles,
+        context=request.context,
+        provenance=provenance or request.provenance,
+        prior_structure=request.active.promotion.artifact.generic_artifact.structure,
+        recompilation_reason=request.reason,
+        relearning_evidence=request.ruptures,
+    )
+
+
+@dataclass(frozen=True)
+class ConditionalStructureDelta:
+    """Finite change record between conditional candidates, not a quality judgment."""
+
+    previous: ConditionalRelationCandidate
+    current: ConditionalRelationCandidate
+
+    def __post_init__(self) -> None:
+        if self.previous.context != self.current.context:
+            raise ValueError("Conditional structure comparisonのBoundaryが一致していません")
+
+    @property
+    def added_conditions(self) -> Tuple[str, ...]:
+        return tuple(item for item in self.current.conditions if item not in self.previous.conditions)
+
+    @property
+    def removed_conditions(self) -> Tuple[str, ...]:
+        return tuple(item for item in self.previous.conditions if item not in self.current.conditions)
+
+    @property
+    def added_exceptions(self) -> Tuple[object, ...]:
+        return tuple(item for item in self.current.exceptions if item not in self.previous.exceptions)
+
+    @property
+    def removed_exceptions(self) -> Tuple[object, ...]:
+        return tuple(item for item in self.previous.exceptions if item not in self.current.exceptions)
+
+
+@dataclass(frozen=True)
+class ConditionalSupersessionRecord:
+    """Conditional v1 to vNext supersession lineage over generic active artifacts."""
+
+    predecessor: ConditionalActivationRecord
+    replacement: ConditionalActivationRecord
+    request: ConditionalRelearningRequest
+    structure_delta: ConditionalStructureDelta
+    context: BoundaryContext
+    provenance: Optional[Provenance] = None
+
+    def __post_init__(self) -> None:
+        if self.request.active != self.predecessor:
+            raise ValueError("Relearning requestのActiveがSupersession predecessorと一致していません")
+        if self.predecessor.active.artifact == self.replacement.active.artifact:
+            raise ValueError("同一artifactをSupersession replacementにはできません")
+        if self.structure_delta.previous != self.predecessor.promotion.artifact.conditional_candidate:
+            raise ValueError("StructureDeltaのpreviousがpredecessorと一致していません")
+        if self.structure_delta.current != self.replacement.promotion.artifact.conditional_candidate:
+            raise ValueError("StructureDeltaのcurrentがreplacementと一致していません")
+        if self.context != self.request.context:
+            raise ValueError("SupersessionのBoundaryがRelearning requestと一致していません")
+
+
+def record_conditional_supersession(
+    predecessor: ConditionalActivationRecord,
+    replacement: ConditionalActivationRecord,
+    request: ConditionalRelearningRequest,
+    delta: ConditionalStructureDelta,
+    context: BoundaryContext,
+    *,
+    provenance: Optional[Provenance] = None,
+) -> ConditionalSupersessionRecord:
+    """Record v1 to vNext replacement without deleting predecessor history."""
+    return ConditionalSupersessionRecord(
+        predecessor, replacement, request, delta, context, provenance,
+    )
+
+
+def build_conditional_vnext(
+    request: ConditionalRelearningRequest,
+    pattern: RelationPatternCandidate,
+    *,
+    conditions: Tuple[str, ...] = (),
+    structured_conditions: Tuple[ConditionDescription, ...] = (),
+    exceptions: Tuple[object, ...] = (),
+    provenance: Optional[Provenance] = None,
+) -> Tuple[ConditionalRelationCandidate, ConditionalStructureDelta]:
+    """Build a vNext candidate from prior lineage plus explicitly supplied new structure."""
+    previous = request.active.promotion.artifact.conditional_candidate
+    current = build_conditional_relation_candidate(
+        pattern,
+        conditions=conditions or previous.conditions,
+        structured_conditions=structured_conditions,
+        exceptions=exceptions or previous.exceptions,
+        context=request.context,
+        provenance=provenance or request.provenance or previous.provenance,
+    )
+    return current, ConditionalStructureDelta(previous, current)

@@ -294,6 +294,7 @@ class AdaptiveMBProfile:
     provenance: Optional[Provenance] = None
     prior_structure: Optional["StructureCandidate"] = None
     recompilation_reason: str = ""
+    relearning_evidence: Tuple[object, ...] = ()
 
     def __post_init__(self) -> None:
         profiles = tuple(self.profiles)
@@ -304,6 +305,7 @@ class AdaptiveMBProfile:
         if not isinstance(self.recompilation_reason, str):
             raise TypeError("recompilation_reasonは文字列である必要があります")
         object.__setattr__(self, "profiles", profiles)
+        object.__setattr__(self, "relearning_evidence", tuple(self.relearning_evidence))
 
 
 @dataclass(frozen=True)

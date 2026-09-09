@@ -65,9 +65,17 @@ from rdl_core import (
     ConditionSetObservation,
     evaluate_condition_set,
     ConditionalRuntimeObservation,
+    record_conditional_runtime_observation,
     RuntimeMismatchSummary,
     RupturePolicyDescription,
     evaluate_runtime_rupture,
+    ConditionalRelearningRequest,
+    request_conditional_relearning,
+    reintroduce_conditional_to_adaptive,
+    ConditionalStructureDelta,
+    build_conditional_vnext,
+    ConditionalSupersessionRecord,
+    record_conditional_supersession,
     ExceptionCandidate,
     ObservedVariableBinding,
     ConditionalValidationStatus,
@@ -454,6 +462,17 @@ class TestCoreContracts(unittest.TestCase):
             condition_set, {"subject": {"observed": True}}, conditional.context,
         )
         self.assertEqual(condition_set_observation.status, ConditionObservationStatus.MATCH)
+        with self.assertRaises(ValueError):
+            ConditionSetObservation(
+                condition_set, condition_set_observation.observations,
+                ConditionObservationStatus.UNRESOLVED, conditional.context,
+            )
+        canonical_runtime = record_conditional_runtime_observation(
+            conditional_artifact, condition_set,
+            {"subject": {"observed": True}}, conditional.context,
+            purpose="canonical runtime observation",
+        )
+        self.assertEqual(canonical_runtime.status, ConditionObservationStatus.MATCH)
         runtime_match = ConditionalRuntimeObservation(
             conditional_artifact, condition_set_observation,
             (("subject", {"observed": True}),), conditional.context,
@@ -500,6 +519,60 @@ class TestCoreContracts(unittest.TestCase):
             conditional_activation.active.artifact,
             conditional_artifact.generic_artifact,
         )
+        relearning = request_conditional_relearning(
+            conditional_activation, (detected,), conditional.context,
+            reason="runtime mismatch threshold",
+        )
+        self.assertIsInstance(relearning, ConditionalRelearningRequest)
+        adaptive_reentry = reintroduce_conditional_to_adaptive(
+            relearning, (left,),
+        )
+        self.assertEqual(
+            adaptive_reentry.prior_structure,
+            conditional_artifact.generic_artifact.structure,
+        )
+        self.assertEqual(adaptive_reentry.recompilation_reason, "runtime mismatch threshold")
+        self.assertEqual(adaptive_reentry.relearning_evidence, (detected,))
+        vnext, conditional_delta = build_conditional_vnext(
+            relearning, pattern,
+            conditions=("subject is observed", "runtime mismatch reviewed"),
+        )
+        self.assertIsInstance(conditional_delta, ConditionalStructureDelta)
+        self.assertEqual(conditional_delta.added_conditions, ("runtime mismatch reviewed",))
+        self.assertEqual(vnext.exceptions, conditional.exceptions)
+        self.assertIsNot(vnext, conditional)
+        vnext_validation = record_conditional_validation(
+            vnext, ConditionalValidationStatus.PASSED, conditional.context,
+        )
+        vnext_rupture = record_conditional_rupture(
+            vnext, ConditionalRuptureStatus.NOT_DETECTED, conditional.context,
+            check_id="vnext-counterexample",
+        )
+        vnext_lineage = compile_lineage_preserving_conditional_candidate(
+            vnext_validation, (vnext_rupture,),
+            FunctionDescription("rdl_core.conditional_relation_vnext", "2"),
+            purpose="conditional vNext compilation",
+            required_checks=("vnext-counterexample",),
+        )
+        vnext_evaluation = ConditionalCompilationEvaluation(
+            vnext_lineage, CompilationValidationStatus.PASSED, conditional.context,
+        )
+        vnext_record = record_evaluated_conditional_compilation(
+            vnext_lineage, vnext_evaluation,
+        )
+        vnext_artifact = materialize_conditional_compiled_artifact(vnext_record)
+        vnext_promotion = evaluate_conditional_compiled_promotion(
+            vnext_artifact, (vnext_rupture,), conditional.context,
+            required_checks=("vnext-counterexample",),
+        )
+        vnext_activation = activate_conditional_promotion_record(
+            vnext_promotion, conditional.context,
+        )
+        supersession = record_conditional_supersession(
+            conditional_activation, vnext_activation, relearning, conditional_delta,
+            conditional.context,
+        )
+        self.assertIsInstance(supersession, ConditionalSupersessionRecord)
         mismatched_generic = record_compilation_validation(
             lineage_candidate.function_candidate, CompilationValidationStatus.PASSED,
             BoundaryContext("different-compilation-boundary"),
