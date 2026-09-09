@@ -68,6 +68,7 @@ from .evolution_types import (
 from .rupture_types import RuptureObservation, RuptureObservationStatus, record_rupture_observation
 from .promotion_types import PromotionDecision, PromotionDecisionStatus, evaluate_promotion
 from .activation_types import ActiveCompiledMB, activate_promoted_artifact
+from .deactivation_types import DeactivationRecord, DeactivationStatus, record_deactivation
 
 __all__ = [
     "AuthorityConstraint",
@@ -127,6 +128,9 @@ __all__ = [
     "evaluate_promotion",
     "ActiveCompiledMB",
     "activate_promoted_artifact",
+    "DeactivationRecord",
+    "DeactivationStatus",
+    "record_deactivation",
     "CompilationValidationStatus",
     "extract_structure_candidate",
     "compile_function_candidate",

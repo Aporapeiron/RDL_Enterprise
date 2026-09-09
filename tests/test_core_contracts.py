@@ -56,6 +56,8 @@ from rdl_core import (
     evaluate_promotion,
     ActiveCompiledMB,
     activate_promoted_artifact,
+    DeactivationStatus,
+    record_deactivation,
 )
 
 
@@ -247,6 +249,11 @@ class TestCoreContracts(unittest.TestCase):
         self.assertIsInstance(active, ActiveCompiledMB)
         with self.assertRaises(ValueError):
             activate_promoted_artifact(unresolved_decision, BoundaryContext("activation"))
+        deactivation = record_deactivation(
+            active, DeactivationStatus.DEACTIVATED,
+            BoundaryContext("deactivation"), reason="recompile requested",
+        )
+        self.assertEqual(deactivation.status, DeactivationStatus.DEACTIVATED)
 
 
     def test_commitment_record_requires_valid_origin_and_time(self):
