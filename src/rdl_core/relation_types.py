@@ -32,6 +32,8 @@ class NodeDescription:
         if any(not isinstance(relation, ConstraintIdentity) for relation in self.relations):
             raise TypeError("relationsはConstraintIdentityのtupleである必要があります")
         object.__setattr__(self, "relations", tuple(self.relations))
+        if any(relation.subject != self.node_id for relation in self.relations):
+            raise ValueError("NodeDescriptionにattachedするRelationのsubjectはnode_idと一致する必要があります")
         for key, _ in self.attributes:
             if not isinstance(key, str) or not key.strip():
                 raise ValueError("attributesのキーは空にできません")

@@ -330,7 +330,7 @@ class TestCoreContracts(unittest.TestCase):
             record_bundle_evaluation(bundle, BoundaryContext("record-2"))
 
     def test_node_description_is_not_a_commitment(self):
-        relation = ConstraintIdentity("r1", "requester", "may_approve", "expense")
+        relation = ConstraintIdentity("r1", "node-1", "may_approve", "expense")
         node = NodeDescription(
             "node-1", "finance", relations=(relation,), attributes=(("config", {"mutable": True}),)
         )
@@ -354,7 +354,10 @@ class TestCoreContracts(unittest.TestCase):
             )
         with self.assertRaises(TypeError):
             RelationObservation(node, relation, BoundaryContext("boundary-3"), status="truth")
-        list_node = NodeDescription("node-2", "finance", relations=[relation])
+        list_node = NodeDescription(
+            "node-2", "finance",
+            relations=[ConstraintIdentity("r2", "node-2", "may_approve", "expense")],
+        )
         self.assertIsInstance(list_node.relations, tuple)
         with self.assertRaises(TypeError):
             BoundaryContext("boundary-4", conditions={"nested": {123: "invalid"}})
@@ -377,7 +380,7 @@ class TestCoreContracts(unittest.TestCase):
             relation_observation_from_mbnode,
         )
 
-        relation = ConstraintIdentity("r-mb", "requester", "may_approve", "expense")
+        relation = ConstraintIdentity("r-mb", "mb-1", "may_approve", "expense")
         node = MBNode(
             id="mb-1",
             domain="finance",
