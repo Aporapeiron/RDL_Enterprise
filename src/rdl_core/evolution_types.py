@@ -104,6 +104,42 @@ class StructureDelta:
     def unchanged(self) -> Tuple[RelationSemanticKey, ...]:
         return tuple(item for item in self.current.relations if item in self.previous.relations)
 
+    @property
+    def constraint_deltas(self) -> Tuple["RelationConstraintDelta", ...]:
+        previous = {item.identity.semantic_key: item for item in self.previous.supporting_profiles + self.previous.conflicting_profiles}
+        current = {item.identity.semantic_key: item for item in self.current.supporting_profiles + self.current.conflicting_profiles}
+        deltas = []
+        for key in self.unchanged:
+            if key in previous and key in current:
+                deltas.append(RelationConstraintDelta(previous[key], current[key]))
+        return tuple(deltas)
+
+
+@dataclass(frozen=True)
+class RelationConstraintDelta:
+    """Finite change record for one semantic relation constraint."""
+
+    previous: RelationConstraintProfile
+    current: RelationConstraintProfile
+
+    @property
+    def strength_changed(self) -> bool:
+        return self.previous.strength.value != self.current.strength.value
+
+    @property
+    def polarity_changed(self) -> bool:
+        return self.previous.strength.support != self.current.strength.support
+
+    @property
+    def provenance_changed(self) -> bool:
+        return self.previous.identity.provenance != self.current.identity.provenance
+
+    @property
+    def unresolved_changed(self) -> bool:
+        previous = self.previous.strength.support == EvidencePolarity.UNRESOLVED
+        current = self.current.strength.support == EvidencePolarity.UNRESOLVED
+        return previous != current
+
 
 def compare_structure_candidates(
     previous: StructureCandidate,
