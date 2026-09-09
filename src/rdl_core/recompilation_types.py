@@ -18,6 +18,7 @@ from .evolution_types import (
     FunctionCandidate,
     StructureCandidate,
     StructureDelta,
+    RecompiledStructureCandidate,
     compare_structure_candidates,
     compile_function_candidate,
 )
@@ -142,6 +143,24 @@ def record_replacement_candidate(
     )
     delta = compare_structure_candidates(request.active.artifact.structure, structure)
     return ReplacementCandidate(request.active.artifact, request, candidate, delta)
+
+
+def record_recompiled_replacement_candidate(
+    request: RecompilationRequest,
+    rebuilt: RecompiledStructureCandidate,
+    function: FunctionDescription,
+    *,
+    purpose: str = "recompilation",
+    config: Optional[dict] = None,
+    provenance: Optional[Provenance] = None,
+) -> ReplacementCandidate:
+    """Build a replacement candidate from the explicit vNext structure result."""
+    if rebuilt.delta is None:
+        raise ValueError("ReplacementCandidateには比較可能なStructureDeltaが必要です")
+    return record_replacement_candidate(
+        request, rebuilt.current, function,
+        purpose=purpose, config=config, provenance=provenance,
+    )
 
 
 def materialize_compiled_replacement(

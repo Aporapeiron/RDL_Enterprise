@@ -71,6 +71,7 @@ from rdl_core import (
     compile_replacement_candidate,
     ReplacementCandidate,
     record_replacement_candidate,
+    record_recompiled_replacement_candidate,
     CompiledReplacement,
     materialize_compiled_replacement,
     activate_compiled_replacement,
@@ -339,6 +340,10 @@ class TestCoreContracts(unittest.TestCase):
             adaptive_next, BoundaryContext("structure"), similarity=SimilarityVector(strength=0.95),
         )
         self.assertIsInstance(rebuilt, RecompiledStructureCandidate)
+        rebuilt_lineage = record_recompiled_replacement_candidate(
+            request, rebuilt, FunctionDescription("rdl_core.compiled_relation", "2"),
+        )
+        self.assertEqual(rebuilt_lineage.structure_delta.unchanged, (identity.semantic_key,))
         replacement_candidate = compile_replacement_candidate(
             request,
             StructureCandidate((identity.semantic_key,), BoundaryContext("recompile")),
