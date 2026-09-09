@@ -86,6 +86,36 @@ class StructureCandidate:
 
 
 @dataclass(frozen=True)
+class StructureDelta:
+    """Finite relation-structure difference between two candidates."""
+
+    previous: StructureCandidate
+    current: StructureCandidate
+
+    @property
+    def added(self) -> Tuple[RelationSemanticKey, ...]:
+        return tuple(item for item in self.current.relations if item not in self.previous.relations)
+
+    @property
+    def removed(self) -> Tuple[RelationSemanticKey, ...]:
+        return tuple(item for item in self.previous.relations if item not in self.current.relations)
+
+    @property
+    def unchanged(self) -> Tuple[RelationSemanticKey, ...]:
+        return tuple(item for item in self.current.relations if item in self.previous.relations)
+
+
+def compare_structure_candidates(
+    previous: StructureCandidate,
+    current: StructureCandidate,
+) -> StructureDelta:
+    """Record candidate structure change without interpreting its cause."""
+    if previous.context != current.context:
+        raise ValueError("Structure比較のBoundaryが一致していません")
+    return StructureDelta(previous, current)
+
+
+@dataclass(frozen=True)
 class FunctionCandidate:
     """Candidate Function derived from structure, pending validation."""
 

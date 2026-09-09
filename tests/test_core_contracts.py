@@ -45,6 +45,8 @@ from rdl_core import (
     SimilarityMetric,
     SimilarityVector,
     StructureCandidate,
+    StructureDelta,
+    compare_structure_candidates,
     extract_structure_candidate,
     compile_function_candidate,
     record_compilation_validation,
@@ -225,6 +227,11 @@ class TestCoreContracts(unittest.TestCase):
             purpose="structure compilation", config={"mode": "bounded"},
         )
         self.assertEqual(candidate.invocation.purpose, "structure compilation")
+        delta = compare_structure_candidates(
+            extracted, StructureCandidate((identity.semantic_key,), BoundaryContext("structure"))
+        )
+        self.assertEqual(delta.added, ())
+        self.assertEqual(delta.unchanged, (identity.semantic_key,))
         failed_record = record_compilation_validation(
             candidate, CompilationValidationStatus.FAILED, BoundaryContext("validation"),
         )
