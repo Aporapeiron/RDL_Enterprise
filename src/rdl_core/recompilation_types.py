@@ -9,6 +9,7 @@ from .deactivation_types import DeactivationRecord
 from .function_types import FunctionDescription
 from .similarity_types import RelationConstraintProfile
 from .evolution_types import AdaptiveMBProfile
+from .evolution_types import FunctionCandidate, StructureCandidate, compile_function_candidate
 
 
 @dataclass(frozen=True)
@@ -60,4 +61,20 @@ def reintroduce_to_adaptive(
         provenance=provenance or request.provenance,
         prior_structure=request.active.artifact.structure,
         recompilation_reason=request.reason,
+    )
+
+
+def compile_replacement_candidate(
+    request: RecompilationRequest,
+    structure: StructureCandidate,
+    function: FunctionDescription,
+    *,
+    purpose: str = "recompilation",
+    config: Optional[dict] = None,
+    provenance: Optional[Provenance] = None,
+) -> FunctionCandidate:
+    """Build a vNext candidate from a recompiled structure, without promotion."""
+    return compile_function_candidate(
+        structure, function, purpose=purpose, config=config,
+        provenance=provenance or request.provenance,
     )

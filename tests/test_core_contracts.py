@@ -65,6 +65,7 @@ from rdl_core import (
     project_current_function_state,
     request_recompilation,
     reintroduce_to_adaptive,
+    compile_replacement_candidate,
 )
 
 
@@ -320,6 +321,12 @@ class TestCoreContracts(unittest.TestCase):
         self.assertEqual(len(adaptive_next.profiles), 2)
         self.assertEqual(adaptive_next.prior_structure, active.artifact.structure)
         self.assertEqual(adaptive_next.recompilation_reason, "new boundary observed")
+        replacement_candidate = compile_replacement_candidate(
+            request,
+            StructureCandidate((identity.semantic_key,), BoundaryContext("recompile")),
+            FunctionDescription("rdl_core.compiled_relation", "2"),
+        )
+        self.assertEqual(replacement_candidate.function.version, "2")
 
 
     def test_commitment_record_requires_valid_origin_and_time(self):
