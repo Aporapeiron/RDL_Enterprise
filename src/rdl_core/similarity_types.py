@@ -112,3 +112,29 @@ def compare_relation_constraint_polarity(
         left, right, score, coverage, 0.0, status, context,
         evaluator=evaluator, provenance=provenance,
     )
+
+
+def compare_relation_constraint_provenance(
+    left: RelationConstraintProfile,
+    right: RelationConstraintProfile,
+    context: BoundaryContext,
+    *,
+    provenance: Optional[Provenance] = None,
+) -> RelationSimilarityObservation:
+    """Compare relation provenance without treating origin as truth or authority."""
+    evaluator = FunctionDescription("rdl_core.relation_provenance_similarity", "0")
+    left_source = left.identity.provenance.source if left.identity.provenance else None
+    right_source = right.identity.provenance.source if right.identity.provenance else None
+    unresolved = left_source is None or right_source is None
+    same_identity = left.identity == right.identity
+    coverage = 1.0 if same_identity else 0.0
+    score = 1.0 if not unresolved and left_source == right_source else 0.0
+    status = (
+        SimilarityObservationStatus.UNRESOLVED if unresolved
+        else SimilarityObservationStatus.SIMILAR if score == 1.0
+        else SimilarityObservationStatus.NOT_SIMILAR
+    )
+    return RelationSimilarityObservation(
+        left, right, score, coverage, 0.0, status, context,
+        evaluator=evaluator, provenance=provenance,
+    )

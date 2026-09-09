@@ -33,6 +33,7 @@ from rdl_core import (
     SimilarityObservationStatus,
     compare_relation_constraint_profiles,
     compare_relation_constraint_polarity,
+    compare_relation_constraint_provenance,
 )
 
 
@@ -107,6 +108,10 @@ class TestCoreContracts(unittest.TestCase):
         )
         self.assertEqual(polarity.status, SimilarityObservationStatus.SIMILAR)
         self.assertEqual(polarity.evaluator.function_id, "rdl_core.relation_polarity_similarity")
+        provenance = compare_relation_constraint_provenance(
+            left, right, BoundaryContext("similarity"),
+        )
+        self.assertEqual(provenance.status, SimilarityObservationStatus.UNRESOLVED)
 
     def test_commitment_record_requires_valid_origin_and_time(self):
         record = CommitmentRecord.from_dict_strict(
