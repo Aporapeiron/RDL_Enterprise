@@ -7,6 +7,8 @@ from .activation_types import ActiveCompiledMB
 from .contracts import BoundaryContext, Provenance
 from .deactivation_types import DeactivationRecord
 from .function_types import FunctionDescription
+from .activation_types import ActiveCompiledMB, activate_promoted_artifact
+from .promotion_types import PromotionDecision, PromotionDecisionStatus
 from .similarity_types import RelationConstraintProfile
 from .evolution_types import AdaptiveMBProfile
 from .evolution_types import (
@@ -153,3 +155,16 @@ def materialize_compiled_replacement(
         validation,
     )
     return CompiledReplacement(replacement.predecessor, replacement, validation, compiled)
+
+
+def activate_compiled_replacement(
+    replacement: CompiledReplacement,
+    promotion: PromotionDecision,
+    context: BoundaryContext,
+) -> ActiveCompiledMB:
+    """Return a vNext Active artifact only from a matching approved decision."""
+    if promotion.artifact != replacement.compiled:
+        raise ValueError("ReplacementのPromotion対象Artifactが一致していません")
+    if promotion.status != PromotionDecisionStatus.APPROVED:
+        raise ValueError("ReplacementのActivationにはAPPROVEDのPromotionDecisionが必要です")
+    return activate_promoted_artifact(promotion, context)

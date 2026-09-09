@@ -71,6 +71,7 @@ from rdl_core import (
     record_replacement_candidate,
     CompiledReplacement,
     materialize_compiled_replacement,
+    activate_compiled_replacement,
 )
 
 
@@ -357,6 +358,18 @@ class TestCoreContracts(unittest.TestCase):
             replacement_lineage, replacement_validation,
         )
         self.assertIsInstance(compiled_replacement, CompiledReplacement)
+        replacement_promotion = evaluate_promotion(
+            compiled_replacement.compiled, BoundaryContext("promotion-v2"),
+            ruptures=(record_rupture_observation(
+                replacement_lineage.candidate, RuptureObservationStatus.NOT_DETECTED,
+                BoundaryContext("rupture-v2"), check_id="counterexample",
+            ),),
+            required_checks=("counterexample",),
+        )
+        active_v2 = activate_compiled_replacement(
+            compiled_replacement, replacement_promotion, BoundaryContext("activation-v2"),
+        )
+        self.assertEqual(active_v2.artifact, compiled_replacement.compiled)
 
 
     def test_commitment_record_requires_valid_origin_and_time(self):
