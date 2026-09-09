@@ -351,3 +351,9 @@ class TestCoreContracts(unittest.TestCase):
                 BoundaryContext("boundary-2"),
                 RelationObservationStatus.OBSERVED,
             )
+        with self.assertRaises(TypeError):
+            RelationObservation(node, relation, BoundaryContext("boundary-3"), status="truth")
+        list_node = NodeDescription("node-2", "finance", relations=[relation])
+        self.assertIsInstance(list_node.relations, tuple)
+        with self.assertRaises(TypeError):
+            BoundaryContext("boundary-4", conditions={"nested": {123: "invalid"}})

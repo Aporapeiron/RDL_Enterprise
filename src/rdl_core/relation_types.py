@@ -29,6 +29,9 @@ class NodeDescription:
             raise ValueError("node_id は空にできません")
         if not isinstance(self.domain, str) or not self.domain.strip():
             raise ValueError("domain は空にできません")
+        if any(not isinstance(relation, ConstraintIdentity) for relation in self.relations):
+            raise TypeError("relationsはConstraintIdentityのtupleである必要があります")
+        object.__setattr__(self, "relations", tuple(self.relations))
         for key, _ in self.attributes:
             if not isinstance(key, str) or not key.strip():
                 raise ValueError("attributesのキーは空にできません")
@@ -49,5 +52,7 @@ class RelationObservation:
     status: RelationObservationStatus
 
     def __post_init__(self) -> None:
+        if not isinstance(self.status, RelationObservationStatus):
+            raise TypeError("statusはRelationObservationStatusである必要があります")
         if self.relation not in self.node.relations:
             raise ValueError("観測対象RelationはNodeDescriptionに登録されている必要があります")

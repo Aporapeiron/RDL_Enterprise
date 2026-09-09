@@ -43,6 +43,8 @@ BoundaryValue = BoundaryInputValue
 
 def _deep_freeze(value: Any) -> Any:
     if isinstance(value, Mapping):
+        if any(not isinstance(key, str) for key in value):
+            raise TypeError("Boundary mappingのkeyは文字列である必要があります")
         return MappingProxyType({key: _deep_freeze(item) for key, item in value.items()})
     if isinstance(value, (list, tuple)):
         return tuple(_deep_freeze(item) for item in value)
