@@ -113,3 +113,22 @@ class TestCoreContracts(unittest.TestCase):
             ConstraintStrength(value=0.5, support="truth")
         with self.assertRaises(ValueError):
             ConstraintIdentity("c2", 123, "relates", "object")
+
+    def test_enterprise_bundle_adapter_preserves_bounded_observation(self):
+        from types import SimpleNamespace
+        from rdl_enterprise.constraint_adapter import activation_from_bundle
+
+        bundle = SimpleNamespace(
+            constraint_score=0.7,
+            relevance=0.8,
+            freshness=0.6,
+            authority_weight=0.4,
+        )
+        activation = activation_from_bundle(
+            bundle,
+            ConstraintIdentity("c-adapter", "requester", "may_approve", "expense"),
+            BoundaryContext("b-adapter", question="approval"),
+            support=EvidencePolarity.UNRESOLVED,
+        )
+        self.assertEqual(activation.strength.value, 0.7)
+        self.assertEqual(activation.strength.support, EvidencePolarity.UNRESOLVED)
