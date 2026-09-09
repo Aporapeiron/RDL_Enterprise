@@ -17,6 +17,8 @@ from rdl_core import (
     ConstraintStrength,
     evaluate_constraint_strength,
     record_constraint_evaluation,
+    NodeDescription,
+    RelationObservation,
 )
 
 
@@ -324,3 +326,14 @@ class TestCoreContracts(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             record_bundle_evaluation(bundle, BoundaryContext("record-2"))
+
+    def test_node_description_is_not_a_commitment(self):
+        relation = ConstraintIdentity("r1", "requester", "may_approve", "expense")
+        node = NodeDescription(
+            "node-1", "finance", relations=(relation,), attributes=(("kind", "policy"),)
+        )
+        observation = RelationObservation(node, relation, "boundary-1", observed=True)
+        self.assertEqual(observation.node.node_id, "node-1")
+        self.assertIsNone(node.provenance)
+        with self.assertRaises(ValueError):
+            NodeDescription("", "finance")
