@@ -5,7 +5,7 @@ from enum import Enum
 from typing import Optional, Tuple
 
 from .constraint_types import RelationSemanticKey
-from .contracts import BoundaryContext, EvidencePolarity, Provenance
+from .contracts import BoundaryContext, EvidencePolarity, Provenance, BoundaryInputValue, FrozenBoundaryValue, freeze_boundary_value
 from .function_types import FunctionDescription, FunctionInvocation
 from .similarity_types import (
     RelationConstraintProfile,
@@ -38,6 +38,13 @@ class ConditionalValidationStatus(str, Enum):
 class ConditionalRuptureStatus(str, Enum):
     DETECTED = "detected"
     NOT_DETECTED = "not_detected"
+    UNRESOLVED = "unresolved"
+    NOT_EVALUATED = "not_evaluated"
+
+
+class ConditionObservationStatus(str, Enum):
+    MATCH = "match"
+    NOT_MATCH = "not_match"
     UNRESOLVED = "unresolved"
     NOT_EVALUATED = "not_evaluated"
 
@@ -108,7 +115,7 @@ class PatternSlotEvidence:
 
 @dataclass(frozen=True)
 class PatternVariableBinding:
-    """Observed finite values for one variable relation slot."""
+    """Observed finite values only; this is not a complete variable domain."""
 
     slot: str
     values: Tuple[str, ...]
@@ -120,6 +127,91 @@ class PatternVariableBinding:
         if not values or any(not isinstance(value, str) or not value for value in values):
             raise ValueError("valuesは空でない文字列の列である必要があります")
         object.__setattr__(self, "values", values)
+
+    @property
+    def observed_values(self) -> Tuple[str, ...]:
+        """Values observed in the selected finite boundary, not a closed domain."""
+        return self.values
+
+
+ObservedVariableBinding = PatternVariableBinding
+
+
+@dataclass(frozen=True)
+class ConditionDescription:
+    """Inspectable condition identity; construction is not evaluation or commitment."""
+
+    condition_id: str
+    evaluator: FunctionDescription
+    invocation: FunctionInvocation
+    operands: Tuple[Tuple[str, FrozenBoundaryValue], ...] = ()
+    variable_slots: Tuple[str, ...] = ()
+    provenance: Optional[Provenance] = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.condition_id, str) or not self.condition_id.strip():
+            raise ValueError("condition_idは空でない文字列である必要があります")
+        if not isinstance(self.evaluator, FunctionDescription):
+            raise TypeError("evaluatorはFunctionDescriptionである必要があります")
+        if not isinstance(self.invocation, FunctionInvocation):
+            raise TypeError("invocationはFunctionInvocationである必要があります")
+        if self.invocation.function != self.evaluator:
+            raise ValueError("condition evaluatorとinvocationのFunctionが一致していません")
+        operands = tuple(self.operands)
+        frozen = []
+        operand_names = set()
+        for item in operands:
+            if not isinstance(item, tuple) or len(item) != 2:
+                raise TypeError("operandsは(name, value)の列である必要があります")
+            name, value = item
+            if not isinstance(name, str) or not name.strip():
+                raise ValueError("operand nameは空でない文字列である必要があります")
+            if name in operand_names:
+                raise ValueError("operandsのnameは一意である必要があります")
+            operand_names.add(name)
+            frozen.append((name, freeze_boundary_value(value)))
+        variables = tuple(dict.fromkeys(self.variable_slots))
+        if any(not isinstance(item, str) or not item.strip() for item in variables):
+            raise ValueError("variable_slotsは空でない文字列の列である必要があります")
+        object.__setattr__(self, "operands", tuple(frozen))
+        object.__setattr__(self, "variable_slots", variables)
+
+
+@dataclass(frozen=True)
+class ConditionObservation:
+    """Finite condition result; unresolved is not a negative match."""
+
+    condition: ConditionDescription
+    status: ConditionObservationStatus
+    context: BoundaryContext
+    provenance: Optional[Provenance] = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.condition, ConditionDescription):
+            raise TypeError("conditionはConditionDescriptionである必要があります")
+        if not isinstance(self.status, ConditionObservationStatus):
+            raise TypeError("statusはConditionObservationStatusである必要があります")
+        if self.context != self.condition.invocation.context:
+            raise ValueError("Condition observationのBoundaryがInvocationと一致していません")
+
+
+@dataclass(frozen=True)
+class ExceptionCandidate:
+    """Finite exception observation, not universal negation."""
+
+    relation: RelationSemanticKey
+    condition: Optional[ConditionDescription] = None
+    context: Optional[BoundaryContext] = None
+    provenance: Optional[Provenance] = None
+    reason: str = ""
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.relation, RelationSemanticKey):
+            raise TypeError("relationはRelationSemanticKeyである必要があります")
+        if self.condition is not None and not isinstance(self.condition, ConditionDescription):
+            raise TypeError("conditionはConditionDescriptionである必要があります")
+        if not isinstance(self.reason, str):
+            raise TypeError("reasonは文字列である必要があります")
 
 
 @dataclass(frozen=True)
@@ -171,6 +263,8 @@ class StructureCandidate:
     similarity: Optional["SimilarityVector"] = None
     conditions: Tuple[str, ...] = ()
     exceptions: Tuple[RelationSemanticKey, ...] = ()
+    structured_conditions: Tuple[ConditionDescription, ...] = ()
+    exception_candidates: Tuple[ExceptionCandidate, ...] = ()
 
     def __post_init__(self) -> None:
         relations = tuple(self.relations)
@@ -192,6 +286,14 @@ class StructureCandidate:
             raise TypeError("exceptionsはRelationSemanticKeyの列である必要があります")
         object.__setattr__(self, "conditions", conditions)
         object.__setattr__(self, "exceptions", exceptions)
+        structured_conditions = tuple(self.structured_conditions)
+        if any(not isinstance(item, ConditionDescription) for item in structured_conditions):
+            raise TypeError("structured_conditionsはConditionDescriptionの列である必要があります")
+        object.__setattr__(self, "structured_conditions", structured_conditions)
+        exception_candidates = tuple(self.exception_candidates)
+        if any(not isinstance(item, ExceptionCandidate) for item in exception_candidates):
+            raise TypeError("exception_candidatesはExceptionCandidateの列である必要があります")
+        object.__setattr__(self, "exception_candidates", exception_candidates)
 
 
 @dataclass(frozen=True)
@@ -363,6 +465,8 @@ class ConditionalRelationCandidate:
     context: Optional[BoundaryContext] = None
     provenance: Optional[Provenance] = None
     variable_bindings: Tuple[PatternVariableBinding, ...] = ()
+    structured_conditions: Tuple[ConditionDescription, ...] = ()
+    exception_candidates: Tuple[ExceptionCandidate, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.pattern, RelationPatternCandidate):
@@ -387,6 +491,14 @@ class ConditionalRelationCandidate:
         object.__setattr__(self, "exceptions", exceptions)
         object.__setattr__(self, "unresolved_slots", unresolved)
         object.__setattr__(self, "variable_bindings", bindings)
+        structured = tuple(self.structured_conditions)
+        if any(not isinstance(item, ConditionDescription) for item in structured):
+            raise TypeError("structured_conditionsはConditionDescriptionの列である必要があります")
+        exceptions_with_shape = tuple(self.exception_candidates)
+        if any(not isinstance(item, ExceptionCandidate) for item in exceptions_with_shape):
+            raise TypeError("exception_candidatesはExceptionCandidateの列である必要があります")
+        object.__setattr__(self, "structured_conditions", structured)
+        object.__setattr__(self, "exception_candidates", exceptions_with_shape)
 
     @property
     def variable_slots(self) -> Tuple[str, ...]:
@@ -402,7 +514,7 @@ class ConditionalRelationCandidate:
             blockers.append("missing_context")
         if self.unresolved_slots:
             blockers.append("unresolved_slots")
-        if not self.conditions:
+        if not self.conditions and not self.structured_conditions:
             blockers.append("missing_conditions")
         if self.evidence is None or self.evidence.member_count < 1:
             blockers.append("missing_evidence")
@@ -417,6 +529,7 @@ def build_conditional_relation_candidate(
     pattern: RelationPatternCandidate,
     *,
     conditions: Tuple[str, ...] = (),
+    structured_conditions: Tuple[ConditionDescription, ...] = (),
     exceptions: Tuple[RelationSemanticKey, ...] = (),
     context: Optional[BoundaryContext] = None,
     provenance: Optional[Provenance] = None,
@@ -428,6 +541,7 @@ def build_conditional_relation_candidate(
     return ConditionalRelationCandidate(
         pattern=pattern,
         conditions=conditions,
+        structured_conditions=structured_conditions,
         exceptions=exceptions or inferred_exceptions,
         evidence=pattern.evidence,
         context=context or pattern.cluster.context,
@@ -490,6 +604,8 @@ def compile_conditional_function_candidate(
         provenance=candidate.provenance,
         conditions=candidate.conditions,
         exceptions=candidate.exceptions,
+        structured_conditions=candidate.structured_conditions,
+        exception_candidates=candidate.exception_candidates,
     )
     invocation = FunctionInvocation(
         function, structure.context, purpose=purpose, config=config or {},
@@ -549,6 +665,10 @@ class ConditionalFunctionCandidate:
             raise ValueError("ConditionalFunctionCandidateにはcompleteなrupture coverageが必要です")
         if self.function_candidate.structure.conditions != self.conditional_candidate.conditions:
             raise ValueError("FunctionCandidateの条件がConditional候補と一致していません")
+        if self.function_candidate.structure.structured_conditions != self.conditional_candidate.structured_conditions:
+            raise ValueError("FunctionCandidateの構造化条件がConditional候補と一致していません")
+        if self.function_candidate.structure.exception_candidates != self.conditional_candidate.exception_candidates:
+            raise ValueError("FunctionCandidateの例外候補がConditional候補と一致していません")
 
     @property
     def function(self) -> FunctionDescription:
@@ -965,6 +1085,100 @@ class CompiledMB:
             raise ValueError("CompiledMBのStructureとValidation候補が一致していません")
         if self.validation.validation_status != CompilationValidationStatus.PASSED:
             raise ValueError("CompiledMBにはPASSEDのCompilationRecordが必要です")
+
+
+@dataclass(frozen=True)
+class ConditionalCompilationRecord:
+    """Compilation record that retains the conditional learning lineage."""
+
+    candidate: ConditionalFunctionCandidate
+    generic_record: CompilationRecord
+    compilation_context: BoundaryContext
+    provenance: Optional[Provenance] = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.candidate, ConditionalFunctionCandidate):
+            raise TypeError("candidateはConditionalFunctionCandidateである必要があります")
+        if not isinstance(self.generic_record, CompilationRecord):
+            raise TypeError("generic_recordはCompilationRecordである必要があります")
+        if self.generic_record.candidate != self.candidate.function_candidate:
+            raise ValueError("generic CompilationRecordのCandidateがConditional lineageと一致していません")
+        if self.generic_record.validation_context != self.compilation_context:
+            raise ValueError("generic compilationのBoundaryがConditional compilationと一致していません")
+        if self.generic_record.validation_status != CompilationValidationStatus.PASSED:
+            raise ValueError("ConditionalCompilationRecordにはPASSEDの記録が必要です")
+
+
+@dataclass(frozen=True)
+class ConditionalCompiledMB:
+    """Generic compiled artifact plus recoverable conditional learning lineage."""
+
+    generic_artifact: CompiledMB
+    candidate: ConditionalFunctionCandidate
+    compilation: ConditionalCompilationRecord
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.generic_artifact, CompiledMB):
+            raise TypeError("generic_artifactはCompiledMBである必要があります")
+        if not isinstance(self.candidate, ConditionalFunctionCandidate):
+            raise TypeError("candidateはConditionalFunctionCandidateである必要があります")
+        if not isinstance(self.compilation, ConditionalCompilationRecord):
+            raise TypeError("compilationはConditionalCompilationRecordである必要があります")
+        if self.compilation.candidate != self.candidate:
+            raise ValueError("Conditional compilationのCandidateが一致していません")
+        if self.generic_artifact.validation != self.compilation.generic_record:
+            raise ValueError("CompiledMBのValidationがConditional compilationと一致していません")
+
+    @property
+    def conditional_validation(self) -> ConditionalValidationRecord:
+        """Return the original conditional validation observation."""
+        return self.candidate.validation
+
+    @property
+    def conditional_candidate(self) -> ConditionalRelationCandidate:
+        """Return the original relation candidate before Function wrapping."""
+        return self.candidate.conditional_candidate
+
+    @property
+    def generic_compilation(self) -> CompilationRecord:
+        """Return the generic compilation record used by the lifecycle."""
+        return self.compilation.generic_record
+
+    @property
+    def rupture_coverage(self) -> "ConditionalRuptureCoverage":
+        """Return the candidate-matched rupture evidence."""
+        return self.candidate.rupture_coverage
+
+    @property
+    def artifact(self) -> CompiledMB:
+        """Expose the generic lifecycle artifact without activating it."""
+        return self.generic_artifact
+
+
+def record_conditional_compilation(
+    candidate: ConditionalFunctionCandidate,
+    validation_context: BoundaryContext,
+    *,
+    provenance: Optional[Provenance] = None,
+) -> ConditionalCompilationRecord:
+    """Create a lineage-preserving record from a verified conditional candidate."""
+    generic = record_compilation_validation(
+        candidate.function_candidate,
+        CompilationValidationStatus.PASSED,
+        validation_context,
+        provenance=provenance or candidate.validation.provenance,
+    )
+    return ConditionalCompilationRecord(candidate, generic, validation_context, provenance)
+
+
+def materialize_conditional_compiled_artifact(
+    compilation: ConditionalCompilationRecord,
+) -> ConditionalCompiledMB:
+    """Materialize generic CompiledMB while retaining conditional lineage."""
+    if not isinstance(compilation, ConditionalCompilationRecord):
+        raise TypeError("compilationはConditionalCompilationRecordである必要があります")
+    artifact = compile_validated_candidate(compilation.generic_record)
+    return ConditionalCompiledMB(artifact, compilation.candidate, compilation)
 
 
 def extract_structure_candidate(
