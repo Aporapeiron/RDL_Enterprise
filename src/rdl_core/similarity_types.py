@@ -54,6 +54,38 @@ class RelationSimilarityObservation:
         object.__setattr__(self, "invocation", invocation)
 
 
+@dataclass(frozen=True)
+class FunctionEvaluationComparison:
+    """Compare outputs only when the finite relation inputs are shared."""
+
+    left: RelationSimilarityObservation
+    right: RelationSimilarityObservation
+
+    @property
+    def same_inputs(self) -> bool:
+        return (
+            self.left.left.identity.semantic_key == self.right.left.identity.semantic_key
+            and self.left.right.identity.semantic_key == self.right.right.identity.semantic_key
+        )
+
+    @property
+    def comparable(self) -> bool:
+        return (
+            self.left.invocation.context == self.right.invocation.context
+            and self.left.invocation.purpose == self.right.invocation.purpose
+            and self.left.invocation.config == self.right.invocation.config
+            and self.same_inputs
+        )
+
+    def raw_delta(self) -> float:
+        return self.left.score - self.right.score
+
+    def delta(self) -> float:
+        if not self.comparable:
+            raise ValueError("Function評価のBoundary、設定、目的、入力が一致していません")
+        return self.raw_delta()
+
+
 def compare_relation_constraint_profiles(
     left: RelationConstraintProfile,
     right: RelationConstraintProfile,

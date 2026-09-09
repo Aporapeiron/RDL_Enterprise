@@ -30,6 +30,7 @@ from rdl_core import (
     FunctionDescription,
     FunctionInvocation,
     RelationConstraintProfile,
+    FunctionEvaluationComparison,
     RelationSimilarityObservation,
     SimilarityObservationStatus,
     compare_relation_constraint_profiles,
@@ -122,7 +123,7 @@ class TestCoreContracts(unittest.TestCase):
             left, right, BoundaryContext("similarity"),
             invocation=FunctionInvocation(
                 FunctionDescription("rdl_core.relation_polarity_similarity", "0"),
-                BoundaryContext("similarity"), purpose="polarity comparison",
+                BoundaryContext("similarity"),
             ),
         )
         self.assertEqual(polarity.status, SimilarityObservationStatus.SIMILAR)
@@ -145,6 +146,9 @@ class TestCoreContracts(unittest.TestCase):
         )
         self.assertEqual(provenance_comparison.coverage, 1.0)
         self.assertEqual(provenance_comparison.status, SimilarityObservationStatus.NOT_SIMILAR)
+        evaluation_comparison = FunctionEvaluationComparison(observation, polarity)
+        self.assertTrue(evaluation_comparison.comparable)
+        self.assertAlmostEqual(evaluation_comparison.delta(), -0.2)
 
 
     def test_commitment_record_requires_valid_origin_and_time(self):

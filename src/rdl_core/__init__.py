@@ -42,6 +42,7 @@ from .trigger_types import (
 from .function_types import FunctionDescription, FunctionInvocation
 from .similarity_types import (
     RelationConstraintProfile,
+    FunctionEvaluationComparison,
     RelationSimilarityObservation,
     SimilarityObservationStatus,
     compare_relation_constraint_polarity,
@@ -85,6 +86,7 @@ __all__ = [
     "FunctionDescription",
     "FunctionInvocation",
     "RelationConstraintProfile",
+    "FunctionEvaluationComparison",
     "RelationSimilarityObservation",
     "SimilarityObservationStatus",
     "compare_relation_constraint_profiles",
