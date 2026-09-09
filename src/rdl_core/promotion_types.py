@@ -49,7 +49,9 @@ def evaluate_promotion(
 ) -> PromotionDecision:
     """Evaluate a promotion gate without activating the Compiled M_B."""
     observations = tuple(ruptures)
-    if any(item.status == RuptureObservationStatus.DETECTED for item in observations):
+    if not observations:
+        status = PromotionDecisionStatus.NOT_EVALUATED
+    elif any(item.status == RuptureObservationStatus.DETECTED for item in observations):
         status = PromotionDecisionStatus.REJECTED
     elif any(item.status in (RuptureObservationStatus.UNRESOLVED, RuptureObservationStatus.NOT_EVALUATED)
              for item in observations):

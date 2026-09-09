@@ -58,6 +58,8 @@ from rdl_core import (
     activate_promoted_artifact,
     DeactivationStatus,
     record_deactivation,
+    RegistryStatus,
+    project_current_function_state,
 )
 
 
@@ -240,12 +242,20 @@ class TestCoreContracts(unittest.TestCase):
             compile_validated_candidate(failed_record)
         approved = compile_validated_candidate(passed_record)
         decision = evaluate_promotion(approved, BoundaryContext("promotion"))
-        self.assertEqual(decision.status, PromotionDecisionStatus.APPROVED)
+        self.assertEqual(decision.status, PromotionDecisionStatus.NOT_EVALUATED)
+        checked_decision = evaluate_promotion(
+            approved, BoundaryContext("promotion"),
+            ruptures=(record_rupture_observation(
+                candidate, RuptureObservationStatus.NOT_DETECTED,
+                BoundaryContext("rupture"),
+            ),),
+        )
+        self.assertEqual(checked_decision.status, PromotionDecisionStatus.APPROVED)
         unresolved_decision = evaluate_promotion(
             approved, BoundaryContext("promotion"), ruptures=(rupture,)
         )
         self.assertEqual(unresolved_decision.status, PromotionDecisionStatus.UNRESOLVED)
-        active = activate_promoted_artifact(decision, BoundaryContext("activation"))
+        active = activate_promoted_artifact(checked_decision, BoundaryContext("activation"))
         self.assertIsInstance(active, ActiveCompiledMB)
         with self.assertRaises(ValueError):
             activate_promoted_artifact(unresolved_decision, BoundaryContext("activation"))
@@ -254,6 +264,11 @@ class TestCoreContracts(unittest.TestCase):
             BoundaryContext("deactivation"), reason="recompile requested",
         )
         self.assertEqual(deactivation.status, DeactivationStatus.DEACTIVATED)
+        self.assertEqual(project_current_function_state(active).status, RegistryStatus.ACTIVE)
+        self.assertEqual(
+            project_current_function_state(active, deactivation=deactivation).status,
+            RegistryStatus.INACTIVE,
+        )
 
 
     def test_commitment_record_requires_valid_origin_and_time(self):
