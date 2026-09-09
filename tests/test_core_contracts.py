@@ -67,6 +67,8 @@ from rdl_core import (
     request_recompilation,
     reintroduce_to_adaptive,
     compile_replacement_candidate,
+    ReplacementCandidate,
+    record_replacement_candidate,
 )
 
 
@@ -333,6 +335,18 @@ class TestCoreContracts(unittest.TestCase):
             FunctionDescription("rdl_core.compiled_relation", "2"),
         )
         self.assertEqual(replacement_candidate.function.version, "2")
+        replacement_lineage = record_replacement_candidate(
+            request,
+            StructureCandidate((identity.semantic_key,), BoundaryContext("structure")),
+            FunctionDescription("rdl_core.compiled_relation", "2"),
+        )
+        self.assertIsInstance(replacement_lineage, ReplacementCandidate)
+        with self.assertRaises(ValueError):
+            record_replacement_candidate(
+                request,
+                StructureCandidate((identity.semantic_key,), BoundaryContext("adaptive")),
+                FunctionDescription("rdl_core.compiled_relation", "1"),
+            )
 
 
     def test_commitment_record_requires_valid_origin_and_time(self):

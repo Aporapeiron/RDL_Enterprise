@@ -78,6 +78,8 @@ from .recompilation_types import (
     request_recompilation,
     reintroduce_to_adaptive,
     compile_replacement_candidate,
+    ReplacementCandidate,
+    record_replacement_candidate,
 )
 
 __all__ = [
@@ -152,6 +154,8 @@ __all__ = [
     "request_recompilation",
     "reintroduce_to_adaptive",
     "compile_replacement_candidate",
+    "ReplacementCandidate",
+    "record_replacement_candidate",
     "CompilationValidationStatus",
     "extract_structure_candidate",
     "compile_function_candidate",

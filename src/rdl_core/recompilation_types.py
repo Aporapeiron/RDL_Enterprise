@@ -9,7 +9,14 @@ from .deactivation_types import DeactivationRecord
 from .function_types import FunctionDescription
 from .similarity_types import RelationConstraintProfile
 from .evolution_types import AdaptiveMBProfile
-from .evolution_types import FunctionCandidate, StructureCandidate, compile_function_candidate
+from .evolution_types import (
+    CompiledMB,
+    FunctionCandidate,
+    StructureCandidate,
+    StructureDelta,
+    compare_structure_candidates,
+    compile_function_candidate,
+)
 
 
 @dataclass(frozen=True)
@@ -28,6 +35,22 @@ class RecompilationRequest:
             raise ValueError("RecompilationRequestのActive artifactが一致していません")
         if not isinstance(self.reason, str):
             raise TypeError("reasonは文字列である必要があります")
+
+
+@dataclass(frozen=True)
+class ReplacementCandidate:
+    """Candidate lineage from a prior Compiled M_B to a vNext Function."""
+
+    predecessor: CompiledMB
+    request: RecompilationRequest
+    candidate: FunctionCandidate
+    structure_delta: StructureDelta
+
+    def __post_init__(self) -> None:
+        if self.request.active.artifact != self.predecessor:
+            raise ValueError("ReplacementCandidateのRequestとpredecessorが一致していません")
+        if self.candidate.function == self.predecessor.function:
+            raise ValueError("ReplacementCandidateには新しいFunction identity/versionが必要です")
 
 
 def request_recompilation(
@@ -78,3 +101,20 @@ def compile_replacement_candidate(
         structure, function, purpose=purpose, config=config,
         provenance=provenance or request.provenance,
     )
+
+
+def record_replacement_candidate(
+    request: RecompilationRequest,
+    structure: StructureCandidate,
+    function: FunctionDescription,
+    *,
+    purpose: str = "recompilation",
+    config: Optional[dict] = None,
+    provenance: Optional[Provenance] = None,
+) -> ReplacementCandidate:
+    candidate = compile_replacement_candidate(
+        request, structure, function, purpose=purpose,
+        config=config, provenance=provenance,
+    )
+    delta = compare_structure_candidates(request.active.artifact.structure, structure)
+    return ReplacementCandidate(request.active.artifact, request, candidate, delta)
