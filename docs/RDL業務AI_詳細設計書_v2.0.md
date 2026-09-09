@@ -6,7 +6,7 @@
 
 ## 0. 運用語彙規約（Operational Lexicon）
 
-本仕様における「一致」「再現」「十分性」「閉包」「検証成立」は、明示または暗黙に設定された有限境界 $B$、問い $Q$、時点 $t$、観測断面 $O$、および運用目的 $P$ に対する性質であり、終端的完全性・世界そのものの決定論性・絶対的真理性を意味しない。いかなる運用閉包においても $\xi$ は残存する。
+本仕様における「一致」「再現」「十分性」「閉包」「検証成立」は、明示または暗黙に設定された有限境界 $B$、問い $Q$、時点 $t$、観測断面 $O$、および運用目的 $P$ に対する性質であり、終端的完全性・世界そのものの決定論性・絶対的真理性・絶対的安全性を意味しない。いかなる運用閉包においても $\xi$ は残存する。
 
 強い述語 $P$ を用いる場合は、その成立域となる有限関係条件を回収可能にする。
 
@@ -32,13 +32,19 @@ does not eliminate ξ(B)
 | 成功 | 局所安定 / 運用成立 | 現在の有限観測で期待した応答関係が成立した |
 | 必要 | 境界内必要性 | 現在の $B/Q/t/Purpose$ で操作成立に必要と扱う |
 | 十分 | 運用十分性 | 現在の $B/Q/t/Purpose$ で追加探索なしに作用可能と扱う |
-| 安全 | 現在検査境界での許容リスク内 | 指定検査・観測断面で破断条件を超えていない |
+| 安全 | Authority/Policy に束縛された許容リスク内 | 指定された $B/Q/t/O/Purpose$、権限主体、損失関数、閾値のもとで破断条件を超えていない |
 | 保証 | 契約上の遮断 / 境界内検証成立 | 指定された実装契約・検査境界で逸脱経路を遮断する |
 | 実証 | 有限条件下検証 / 運用観測 | 指定条件のシナリオまたは運用観測で成立を確認した |
-| 正解 | 現在 $B$ で支持された解釈 | 世界そのものの正解ではなく、現在境界内で支持される $F$ |
-| 真実 | 強く支持された関係拘束 | 強拘束は絶対真理を意味せず、$\xi$ は残存する |
+| 正解 | 現在 $B/Q/t/Purpose$ で運用採用された解釈 | 世界そのものの正解ではなく、現在境界内で採用される $F$ |
+| 真実 / 真理性 | 内部確定しない外部述語 | 世界そのものの真理状態へ直接写像せず、支持・対向・権威・来歴・拘束強度として有限記述する |
 
 実装識別子としての `exact`、`content_hash`、`deterministic_replay`、`SUCCESS` などは、ビット列・データ構造・API状態ラベルとして保持する。ただし、それらの結果をRDL意味層で読む際は、常に上記の有限化された意味へ写像する。
+
+### 0.1 内部述語と外部保留述語
+
+RDL内部で扱う述語は、関係・拘束・支持・対向・Commitment・provenance・authority・threshold・$F/F'/E/H/\xi$・局所安定・運用十分性・境界内同値である。これらは有限境界内での観測・採用・遮断・更新を記述するための内部語彙であり、世界そのものの真理状態を確定するものではない。
+
+RDLは内部状態として、Truth、Reality itself、absolute correctness、absolute safety、completeness を直接認証しない。これらの語を運用文書で参照する場合は、上表のように成立境界・権限主体・観測断面・閾値・残存する $\xi$ を回収可能な形へ移す。
 
 ## 1. システム概要と基本思想
 
@@ -168,12 +174,12 @@ graph TD
 * **Canary 熱隔離**:
   * Canary 展開中のバージョンにおいて発生した不整合・タイムアウト熱は、本番（Production）の `HState` を一切汚染せず、`CanaryManager` 固有の熱状態に蓄積される。
 * **自動ロールバック**:
-  * Canary 熱が閾値 $\theta_{canary}$ を超過した場合、またはシャドウ反実仮想評価で改悪率が許容限界を超えた場合、即座に本番バージョンへ安全にロールバックされる。
+  * Canary 熱が閾値 $\theta_{canary}$ を超過した場合、またはシャドウ反実仮想評価で改悪率が許容限界を超えた場合、現在の Authority/Policy と閾値に従って本番バージョンからロールバックされる。
 
 ### 3.6 認知的ライフサイクルの分離（Description $\to$ Commitment $\to$ Active Constraint）
 * **オブジェクト生成と支持証拠の厳格分離（BASE v2.0 §4.2: Description ≠ Commitment）**:
   * 単なる Python クラス `MBNode(...)` のインスタンス化（関係の記述・仮説定義）をもって、正の支持証拠 `last_support_at` や `freshness` を自己生成・捏造することを禁止。
-  * **Constructor Forgery の境界内排除 (新P0)**: 公開コンストラクタ引数 `commitment_origin`, `committed_at`, `commitment_record` は安全のため無視・無効化され、バイパス引数（`_internal_commitment`）も API から撤去する。公開コンストラクタはいかなる引数を用いても未コミットノードしか生成できない。
+  * **Constructor Forgery の境界内排除 (新P0)**: 公開コンストラクタ引数 `commitment_origin`, `committed_at`, `commitment_record` は契約上の遮断として無視・無効化され、バイパス引数（`_internal_commitment`）も API から撤去する。公開コンストラクタはいかなる引数を用いても未コミットノードしか生成できない。
   * **属性イミュータビリティ (P0-P1)**: コミットメント関連プロパティ（`commitment_origin`, `committed_at`, `commitment_record`）および内部保持フィールド `_commitment_record` への直接代入は `AttributeError` で拒絶される（契約上の遮断）。
 * **正規コミットメントゲートウェイ（`MBGraph.commit_node()`）**:
   * 記述を $M_B$ の正統な構成要素として昇格・定着させる唯一の手段として `commit_node(node, origin, actor, authority_context, commit_time, evidence_time)` を規定。
@@ -187,7 +193,7 @@ graph TD
     * `commit_node()` はすでにコミット済みのノード（`node.is_committed == True`）の再コミット試行を `ValueError` で即座に拒絶。一度確立されたコミットメント出所・刻印時刻・lineage の事後改ざん・上書きを防止する。
 * **未コミットノードのフェイルクローズ境界内排除（多層防御）**:
   * `MBGraph.add_or_update(node)` は `node.is_committed` を厳格検証し、未コミットの記述オブジェクトの直接注入を `ValueError` で拒絶。
-  * `InterpCascade`（推論カスケード）は未コミットノードを `eligible_nodes` および Level 0 キャッシュ参照から 100% 排除（未コミット記述のみでは即時 Tier 3 `ask_human` に安全フォールバック）。
+  * `InterpCascade`（推論カスケード）は未コミットノードを `eligible_nodes` および Level 0 キャッシュ参照から 100% 排除（未コミット記述のみでは即時 Tier 3 `ask_human` へ契約上フォールバック）。
   * `RelationConstraintLocator` は未コミットノードに対する主束縛解決を拒絶し、`locate_bundle_for_node()` は `None` を返却。
 * **直列化データの自己申告偽造排除とロード時完全性照合 (P0-P1)**:
   * **`CommitmentRecord.from_dict_strict()`**: `from_dict()` におけるデフォルト値補完を全廃。直列化データ内の `origin`（既知Enum値検証）、`committed_at` / `evidence_at`（ISO-8601 時刻妥当性）、`actor`（必須）の厳格検証を行い、外側フィールドとの不一致や欠損は `ValueError` で拒絶。
