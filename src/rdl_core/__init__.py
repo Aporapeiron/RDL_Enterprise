@@ -54,6 +54,7 @@ from .function_composition_types import FunctionComposition
 from .evolution_types import (
     AdaptiveMBProfile,
     CompilationRecord,
+    CompiledMB,
     CompilationValidationStatus,
     FunctionCandidate,
     SimilarityMetric,
@@ -62,6 +63,7 @@ from .evolution_types import (
     extract_structure_candidate,
     compile_function_candidate,
     record_compilation_validation,
+    compile_validated_candidate,
 )
 from .rupture_types import RuptureObservation, RuptureObservationStatus, record_rupture_observation
 
@@ -114,6 +116,7 @@ __all__ = [
     "StructureCandidate",
     "FunctionCandidate",
     "CompilationRecord",
+    "CompiledMB",
     "RuptureObservation",
     "RuptureObservationStatus",
     "record_rupture_observation",
@@ -121,4 +124,5 @@ __all__ = [
     "extract_structure_candidate",
     "compile_function_candidate",
     "record_compilation_validation",
+    "compile_validated_candidate",
 ]

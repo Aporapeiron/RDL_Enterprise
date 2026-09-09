@@ -120,6 +120,23 @@ class CompilationRecord:
         object.__setattr__(self, "validation_status", status)
 
 
+@dataclass(frozen=True)
+class CompiledMB:
+    """Validated compiled local M_B; creation requires an explicit pass."""
+
+    function: FunctionDescription
+    structure: StructureCandidate
+    validation: CompilationRecord
+
+    def __post_init__(self) -> None:
+        if self.validation.candidate.function != self.function:
+            raise ValueError("CompiledMBのFunctionとValidation候補が一致していません")
+        if self.validation.candidate.structure != self.structure:
+            raise ValueError("CompiledMBのStructureとValidation候補が一致していません")
+        if self.validation.validation_status != CompilationValidationStatus.PASSED:
+            raise ValueError("CompiledMBにはPASSEDのCompilationRecordが必要です")
+
+
 def extract_structure_candidate(
     profile: AdaptiveMBProfile,
     context: BoundaryContext,
@@ -171,4 +188,13 @@ def record_compilation_validation(
         validation_context=validation_context,
         provenance=provenance or candidate.provenance,
         validation_status=status,
+    )
+
+
+def compile_validated_candidate(record: CompilationRecord) -> CompiledMB:
+    """Materialize Compiled M_B only after explicit validation success."""
+    return CompiledMB(
+        function=record.candidate.function,
+        structure=record.candidate.structure,
+        validation=record,
     )
