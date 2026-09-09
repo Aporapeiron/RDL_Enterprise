@@ -3,7 +3,8 @@
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, Optional
+from types import MappingProxyType
+from typing import Any, Dict, Mapping, Optional
 
 
 class EvidencePolarity(str, Enum):
@@ -13,12 +14,29 @@ class EvidencePolarity(str, Enum):
 
 
 class CommitmentOrigin(str, Enum):
+    """Canonical origins; domain policies may add namespaced origin kinds."""
     AUTHORITY = "authority"
     VERIFIED_EXPERIENCE = "experience"
     AUTHORITATIVE_SEED = "seed"
     PROMOTION = "promotion"
     MIGRATION_VERIFIED = "migration"
     TEST_FIXTURE = "test_fixture"
+
+
+def _deep_freeze(value: Any) -> Any:
+    if isinstance(value, dict):
+        return MappingProxyType({key: _deep_freeze(item) for key, item in value.items()})
+    if isinstance(value, list):
+        return tuple(_deep_freeze(item) for item in value)
+    if isinstance(value, set):
+        return frozenset(_deep_freeze(item) for item in value)
+    return value
+
+
+def _valid_origin(origin: str) -> bool:
+    canonical = {item.value for item in CommitmentOrigin}
+    # Domain-specific taxonomies use a recoverable namespace, e.g. game:rumor.
+    return origin in canonical or (":" in origin and all(part.strip() for part in origin.split(":", 1)))
 
 
 @dataclass(frozen=True)
@@ -36,7 +54,10 @@ class BoundaryContext:
     question: Optional[str] = None
     observation_time: Optional[str] = None
     purpose: Optional[str] = None
-    conditions: Dict[str, Any] = field(default_factory=dict)
+    conditions: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "conditions", _deep_freeze(dict(self.conditions)))
 
 
 @dataclass(frozen=True)
@@ -84,13 +105,15 @@ class CommitmentRecord:
         if not isinstance(actor, str) or not actor.strip():
             raise ValueError("commitment_record.actor は必須の非空文字列です")
 
-        valid_origins = {item.value for item in CommitmentOrigin}
-        if origin not in valid_origins:
-            raise ValueError(f"無効または未知の commitment origin: '{origin}'。有効値: {valid_origins}")
+        if not _valid_origin(origin):
+            valid_origins = sorted(item.value for item in CommitmentOrigin)
+            raise ValueError(f"無効または名前空間のない commitment origin: '{origin}'。標準値: {valid_origins}")
 
         for field_name in ("committed_at", "evidence_at"):
             value = rec_dict.get(field_name)
             if value is not None:
+                if not isinstance(value, str) or not value.strip():
+                    raise ValueError(f"commitment_record.{field_name} は非空の文字列である必要があります")
                 try:
                     datetime.fromisoformat(value.replace("Z", "+00:00"))
                 except (ValueError, TypeError) as exc:
