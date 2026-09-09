@@ -56,3 +56,22 @@ class RelationObservation:
             raise TypeError("statusはRelationObservationStatusである必要があります")
         if self.relation not in self.node.relations:
             raise ValueError("観測対象RelationはNodeDescriptionに登録されている必要があります")
+
+
+@dataclass(frozen=True)
+class NodeDescriptionGraph:
+    """Minimal immutable graph of Core node descriptions."""
+
+    nodes: Tuple[NodeDescription, ...] = ()
+
+    def __post_init__(self) -> None:
+        nodes = tuple(self.nodes)
+        if any(not isinstance(node, NodeDescription) for node in nodes):
+            raise TypeError("nodesはNodeDescriptionのtupleである必要があります")
+        ids = [node.node_id for node in nodes]
+        if len(ids) != len(set(ids)):
+            raise ValueError("NodeDescriptionGraph内のnode_idは一意である必要があります")
+        object.__setattr__(self, "nodes", nodes)
+
+    def get(self, node_id: str) -> Optional[NodeDescription]:
+        return next((node for node in self.nodes if node.node_id == node_id), None)

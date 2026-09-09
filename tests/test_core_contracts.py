@@ -18,6 +18,7 @@ from rdl_core import (
     evaluate_constraint_strength,
     record_constraint_evaluation,
     NodeDescription,
+    NodeDescriptionGraph,
     RelationObservation,
     RelationObservationStatus,
 )
@@ -358,6 +359,11 @@ class TestCoreContracts(unittest.TestCase):
         with self.assertRaises(TypeError):
             BoundaryContext("boundary-4", conditions={"nested": {123: "invalid"}})
 
+        graph = NodeDescriptionGraph((node, list_node))
+        self.assertIs(graph.get("node-1"), node)
+        with self.assertRaises(ValueError):
+            NodeDescriptionGraph((node, node))
+
     def test_mbnode_projection_preserves_selected_core_slice(self):
         from rdl_enterprise.mb_graph import MBNode
         from rdl_enterprise.mb_graph_adapter import (
@@ -398,6 +404,15 @@ class TestCoreContracts(unittest.TestCase):
         self.assertEqual(observations[1].status, RelationObservationStatus.UNRESOLVED)
         self.assertEqual(observations[0].node.provenance.source, "policy-1")
         self.assertEqual(observations[0].node.provenance.lineage, "policy-v1")
+        selected_slice = tuple(
+            (item.relation.subject, item.relation.relation, item.relation.object, item.status.value)
+            for item in observations
+        )
+        self.assertEqual(
+            selected_slice,
+            (("mb-edges", "support", "mb-support", "observed"),
+             ("mb-edges", "unknown", "mb-unknown", "unresolved")),
+        )
         node.node_relations["bad"] = "truth"
         with self.assertRaises(ValueError):
             relation_observations_from_mbnode(node, BoundaryContext("edge-b"))

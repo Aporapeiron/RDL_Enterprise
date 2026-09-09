@@ -23,7 +23,7 @@ from .constraint_types import (
     evaluate_constraint_strength,
     record_constraint_evaluation,
 )
-from .relation_types import NodeDescription, RelationObservation, RelationObservationStatus
+from .relation_types import NodeDescription, NodeDescriptionGraph, RelationObservation, RelationObservationStatus
 
 __all__ = [
     "AuthorityConstraint",
@@ -46,6 +46,7 @@ __all__ = [
     "evaluate_constraint_strength",
     "record_constraint_evaluation",
     "NodeDescription",
+    "NodeDescriptionGraph",
     "RelationObservation",
     "RelationObservationStatus",
 ]
