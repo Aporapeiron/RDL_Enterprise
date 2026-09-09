@@ -62,6 +62,12 @@ from rdl_core import (
     ConditionObservation,
     ConditionSet,
     evaluate_condition,
+    ConditionSetObservation,
+    evaluate_condition_set,
+    ConditionalRuntimeObservation,
+    RuntimeMismatchSummary,
+    RupturePolicyDescription,
+    evaluate_runtime_rupture,
     ExceptionCandidate,
     ObservedVariableBinding,
     ConditionalValidationStatus,
@@ -444,6 +450,42 @@ class TestCoreContracts(unittest.TestCase):
         self.assertEqual(conditional_artifact.generic_compilation, conditional_compilation.generic_record)
         self.assertEqual(conditional_artifact.rupture_coverage, lineage_candidate.rupture_coverage)
         self.assertEqual(conditional_artifact.artifact, conditional_artifact.generic_artifact)
+        condition_set_observation = evaluate_condition_set(
+            condition_set, {"subject": {"observed": True}}, conditional.context,
+        )
+        self.assertEqual(condition_set_observation.status, ConditionObservationStatus.MATCH)
+        runtime_match = ConditionalRuntimeObservation(
+            conditional_artifact, condition_set_observation,
+            (("subject", {"observed": True}),), conditional.context,
+            "conditional runtime test", lineage_candidate.function,
+        )
+        mismatch_set_observation = evaluate_condition_set(
+            condition_set, {"subject": {"observed": False}}, conditional.context,
+        )
+        self.assertEqual(mismatch_set_observation.status, ConditionObservationStatus.NOT_MATCH)
+        runtime_mismatch = ConditionalRuntimeObservation(
+            conditional_artifact, mismatch_set_observation,
+            (("subject", {"observed": False}),), conditional.context,
+            "conditional runtime test", lineage_candidate.function,
+        )
+        summary = RuntimeMismatchSummary(
+            conditional, (runtime_mismatch,), conditional.context,
+        )
+        policy = RupturePolicyDescription(
+            lineage_candidate.function, (ConditionObservationStatus.NOT_MATCH,), 2,
+            conditional.context, "runtime rupture threshold",
+        )
+        one_mismatch = evaluate_runtime_rupture(
+            summary, policy, check_id="runtime-mismatch",
+        )
+        self.assertEqual(one_mismatch.status, ConditionalRuptureStatus.NOT_DETECTED)
+        detected_summary = RuntimeMismatchSummary(
+            conditional, (runtime_mismatch, runtime_mismatch), conditional.context,
+        )
+        detected = evaluate_runtime_rupture(
+            detected_summary, policy, check_id="runtime-mismatch",
+        )
+        self.assertEqual(detected.status, ConditionalRuptureStatus.DETECTED)
         conditional_promotion = evaluate_conditional_compiled_promotion(
             conditional_artifact, (verified_rupture,),
             BoundaryContext("canonical-conditional-promotion"),

@@ -140,6 +140,14 @@ from .recompilation_types import (
     activate_compiled_replacement,
 )
 from .supersession_types import SupersessionRecord, record_supersession
+from .runtime_types import (
+    ConditionSetObservation,
+    evaluate_condition_set,
+    ConditionalRuntimeObservation,
+    RuntimeMismatchSummary,
+    RupturePolicyDescription,
+    evaluate_runtime_rupture,
+)
 
 __all__ = [
     "AuthorityConstraint",
@@ -248,6 +256,12 @@ __all__ = [
     "activate_compiled_replacement",
     "SupersessionRecord",
     "record_supersession",
+    "ConditionSetObservation",
+    "evaluate_condition_set",
+    "ConditionalRuntimeObservation",
+    "RuntimeMismatchSummary",
+    "RupturePolicyDescription",
+    "evaluate_runtime_rupture",
     "CompilationValidationStatus",
     "extract_structure_candidate",
     "induce_structure_candidate",
