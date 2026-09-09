@@ -14,6 +14,7 @@ from .contracts import (
 from .constraint_types import (
     ConstraintActivation,
     ConstraintEvaluation,
+    ConstraintEvaluationComparison,
     ConstraintEvaluationDelta,
     ConstraintEvaluationWeights,
     ConstraintIdentity,
@@ -34,6 +35,7 @@ __all__ = [
     "Provenance",
     "ConstraintActivation",
     "ConstraintEvaluation",
+    "ConstraintEvaluationComparison",
     "ConstraintEvaluationDelta",
     "ConstraintEvaluationWeights",
     "ConstraintIdentity",

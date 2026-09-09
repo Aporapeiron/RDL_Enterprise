@@ -45,6 +45,8 @@ class ConstraintEvaluation:
     provenance: Optional[Provenance] = None
 
     def __post_init__(self) -> None:
+        if not isinstance(self.evaluator_id, str) or not isinstance(self.evaluator_version, str):
+            raise TypeError("evaluator identity/version は文字列である必要があります")
         if not self.evaluator_id.strip() or not self.evaluator_version.strip():
             raise ValueError("evaluator identity/version は空にできません")
 
@@ -64,6 +66,36 @@ class ConstraintEvaluationDelta:
     @property
     def same_boundary(self) -> bool:
         return self.left_evaluation.context == self.right_evaluation.context
+
+
+@dataclass(frozen=True)
+class ConstraintEvaluationComparison:
+    """Comparison eligibility and delta for two finite evaluation records."""
+
+    left: ConstraintEvaluation
+    right: ConstraintEvaluation
+
+    @property
+    def same_boundary(self) -> bool:
+        return self.left.context == self.right.context
+
+    @property
+    def same_inputs(self) -> bool:
+        return (
+            self.left.relevance == self.right.relevance
+            and self.left.freshness == self.right.freshness
+            and self.left.authority == self.right.authority
+            and self.left.source == self.right.source
+            and self.left.convergence == self.right.convergence
+            and self.left.weights == self.right.weights
+        )
+
+    @property
+    def eligible(self) -> bool:
+        return self.same_boundary and self.same_inputs
+
+    def delta(self, provenance: Optional[Provenance] = None) -> ConstraintEvaluationDelta:
+        return ConstraintEvaluationDelta(self.left, self.right, provenance=provenance)
 
 
 def evaluate_constraint_strength(

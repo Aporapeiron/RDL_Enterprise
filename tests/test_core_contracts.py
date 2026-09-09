@@ -11,6 +11,7 @@ from rdl_core import (
     ConstraintActivation,
     ConstraintEvaluationWeights,
     ConstraintEvaluation,
+    ConstraintEvaluationComparison,
     ConstraintEvaluationDelta,
     ConstraintIdentity,
     ConstraintStrength,
@@ -156,6 +157,19 @@ class TestCoreContracts(unittest.TestCase):
         delta = ConstraintEvaluationDelta(left, evaluation)
         self.assertAlmostEqual(delta.value, left.strength.value - evaluation.strength.value)
         self.assertTrue(delta.same_boundary)
+        comparison = ConstraintEvaluationComparison(left, evaluation)
+        self.assertTrue(comparison.eligible)
+        self.assertEqual(comparison.delta().value, delta.value)
+        different_context = record_constraint_evaluation(
+            context=BoundaryContext("eval-2"), relevance=1.0, freshness=0.5,
+            authority=0.0, source=0.5, convergence=1.0,
+        )
+        self.assertFalse(ConstraintEvaluationComparison(left, different_context).eligible)
+        with self.assertRaises(TypeError):
+            record_constraint_evaluation(
+                context=context, relevance=1.0, freshness=0.5, authority=0.0,
+                source=0.5, convergence=1.0, evaluator_id=123,
+            )
 
     def test_enterprise_bundle_adapter_preserves_bounded_observation(self):
         from types import SimpleNamespace
