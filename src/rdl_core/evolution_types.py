@@ -28,6 +28,12 @@ class CompilationValidationStatus(str, Enum):
     NOT_EVALUATED = "not_evaluated"
 
 
+class PatternSlotKind(str, Enum):
+    FIXED = "fixed"
+    VARIABLE = "variable"
+    UNRESOLVED = "unresolved"
+
+
 @dataclass(frozen=True)
 class SimilarityVector:
     """Metric-separated similarity values; dimensions are not implicitly aggregated."""
@@ -167,6 +173,15 @@ class RelationPatternCandidate:
     subject: Optional[str]
     relation: Optional[str]
     object: Optional[str]
+
+    @property
+    def slot_kinds(self) -> Tuple[PatternSlotKind, ...]:
+        return tuple(
+            PatternSlotKind.FIXED if value is not None
+            else PatternSlotKind.UNRESOLVED if self.cluster.unresolved_edges
+            else PatternSlotKind.VARIABLE
+            for value in (self.subject, self.relation, self.object)
+        )
 
     @property
     def fully_specified(self) -> bool:
