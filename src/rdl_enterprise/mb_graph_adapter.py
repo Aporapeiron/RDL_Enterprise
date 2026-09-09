@@ -17,7 +17,7 @@ from rdl_core import (
 _RELATION_STATUS = {
     "support": RelationObservationStatus.OBSERVED,
     "contradict": RelationObservationStatus.OBSERVED,
-    "independent": RelationObservationStatus.NOT_OBSERVED,
+    "independent": RelationObservationStatus.OBSERVED,
     "unknown": RelationObservationStatus.UNRESOLVED,
 }
 
@@ -32,9 +32,13 @@ def provenance_from_mbnode(node: object) -> Optional[Provenance]:
     """Recover MBNode source fields without inventing a missing source."""
     source_id = getattr(node, "source_id", None)
     lineage = getattr(node, "source_lineage", None)
+    source_id = source_id.strip() if isinstance(source_id, str) else source_id
+    lineage = lineage.strip() if isinstance(lineage, str) else lineage
     if source_id is None and lineage is None:
         return None
-    return Provenance(source=str(source_id or lineage), lineage=lineage)
+    if not source_id and not lineage:
+        return None
+    return Provenance(source=str(source_id or lineage), lineage=lineage or None)
 
 
 def relations_from_mbnode(node: object) -> Tuple[ConstraintIdentity, ...]:
@@ -92,7 +96,9 @@ def project_mbgraph(
         raise TypeError("MBGraph.nodes はmappingである必要があります")
     descriptions = []
     observations = []
-    for node in nodes.values():
+    for key, node in nodes.items():
+        if getattr(node, "id", None) != key:
+            raise ValueError("MBGraph.nodesのkeyとMBNode.idが一致していません")
         node_provenance = provenance if provenance is not None else provenance_from_mbnode(node)
         relations = relations_from_mbnode(node)
         descriptions.append(node_description_from_mbnode(node, relations, provenance=node_provenance))

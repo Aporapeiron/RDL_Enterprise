@@ -417,6 +417,11 @@ class TestCoreContracts(unittest.TestCase):
         with self.assertRaises(ValueError):
             relation_observations_from_mbnode(node, BoundaryContext("edge-b"))
 
+        node.node_relations.pop("bad")
+        node.node_relations["mb-independent"] = "independent"
+        independent = relation_observations_from_mbnode(node, BoundaryContext("edge-b"))[-1]
+        self.assertEqual(independent.status, RelationObservationStatus.OBSERVED)
+
     def test_mbgraph_projection_returns_core_graph_and_observation_slice(self):
         from types import SimpleNamespace
         from rdl_enterprise.mb_graph import MBNode
@@ -437,3 +442,16 @@ class TestCoreContracts(unittest.TestCase):
         self.assertEqual(len(projection.observations), 1)
         self.assertEqual(projection.observations[0].status, RelationObservationStatus.OBSERVED)
         self.assertEqual(projection.observations[0].boundary.purpose, "projection")
+
+        node_a.source_id = "  "
+        node_a.source_lineage = None
+        blank_source_projection = project_mbgraph(
+            SimpleNamespace(nodes={"graph-a": node_a, "graph-b": node_b}),
+            BoundaryContext("graph-boundary"),
+        )
+        self.assertIsNone(blank_source_projection.graph.get("graph-a").provenance)
+        with self.assertRaises(ValueError):
+            project_mbgraph(
+                SimpleNamespace(nodes={"wrong-key": node_a}),
+                BoundaryContext("graph-boundary"),
+            )
