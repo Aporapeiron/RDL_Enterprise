@@ -10,7 +10,7 @@
 
 ## 1. 世界そのものをCoreの状態にしない
 
-`world_truth`、`ground_truth`、`is_true`、`true_answer` をRDL Coreの内部状態として安易に導入しない。必要な外部参照は `environment_reference`、`fixture_condition`、`observed_outcome`、`external_reference` など、有限観測または実験条件として表現する。Simulationのoracleも真理ではなくfixtureである。
+RDL Core MUST NOT internally certify world truth, reality itself, or an absolute answer. `world_truth`、`ground_truth`、`is_true`、`true_answer` という名前自体は禁止しないが、外部fixture、benchmark label、simulation oracle、external referenceをTruth状態へ昇格させてはならない。必要な外部参照は `environment_reference`、`fixture_condition`、`observed_outcome`、`external_reference` など、有限観測または実験条件として型・境界を明示する。
 
 ## 2. DescriptionとCommitmentを分離する
 
@@ -72,6 +72,21 @@ State Digestは現在の観測境界で後続遷移に影響すると扱う遷�
 ## 13. RDL自身を例外にしない
 
 「RDL helperだから」「Core内部だから」「system ruleだから」という理由で検査・来歴・更新管理を免除しない。threshold、promotion policy、authority rule、cache rule、LLM selection ruleも、通常の関係拘束と同じく境界・権限・provenance・検証対象である。
+
+## Normative Core Rules
+
+以下はBASE/SPECに直結するCore規範であり、単なる設計上の好みではない。
+
+- Object creation MUST NOT imply Commitment or Active Constraint.
+- `UNKNOWN` MUST NOT collapse into `FAILURE`、`OPPOSE`、または `SUPPORT`。
+- Authority MUST NOT imply Truth。Authority、Scope、Target、Relationは分離して評価する。
+- FとF' MUST use the same pre-update $M_B$。比較対象の解釈後に$M_B$を更新してはならない。
+- 意味遷移に影響する外生条件 MUST be recoverable through Context or Provenance。
+- LLM output MUST NOT be committed directly。
+- 強い拘束状態、再現成立、テスト成功 MUST NOT be promoted to Truth or Completeness。
+- RDL internal rules MUST NOT self-exempt from boundary、provenance、authority、threshold、または verification。
+
+その他の設計選択は、原則として `SHOULD` / `SHOULD NOT` として扱い、用途・媒体・性能・運用境界に応じた理由を記録する。
 
 ## 参照実装と規範の分離
 
