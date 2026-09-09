@@ -311,6 +311,8 @@ class TestCoreContracts(unittest.TestCase):
             request, (left, right), BoundaryContext("adaptive-next"),
         )
         self.assertEqual(len(adaptive_next.profiles), 2)
+        self.assertEqual(adaptive_next.prior_structure, active.artifact.structure)
+        self.assertEqual(adaptive_next.recompilation_reason, "new boundary observed")
 
 
     def test_commitment_record_requires_valid_origin_and_time(self):

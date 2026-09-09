@@ -58,4 +58,6 @@ def reintroduce_to_adaptive(
         profiles=profiles,
         context=context,
         provenance=provenance or request.provenance,
+        prior_structure=request.active.artifact.structure,
+        recompilation_reason=request.reason,
     )

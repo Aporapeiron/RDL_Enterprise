@@ -45,11 +45,17 @@ class AdaptiveMBProfile:
     profiles: Tuple[RelationConstraintProfile, ...]
     context: BoundaryContext
     provenance: Optional[Provenance] = None
+    prior_structure: Optional["StructureCandidate"] = None
+    recompilation_reason: str = ""
 
     def __post_init__(self) -> None:
         profiles = tuple(self.profiles)
         if any(not isinstance(profile, RelationConstraintProfile) for profile in profiles):
             raise TypeError("profilesはRelationConstraintProfileの列である必要があります")
+        if self.prior_structure is not None and not isinstance(self.prior_structure, StructureCandidate):
+            raise TypeError("prior_structureはStructureCandidateである必要があります")
+        if not isinstance(self.recompilation_reason, str):
+            raise TypeError("recompilation_reasonは文字列である必要があります")
         object.__setattr__(self, "profiles", profiles)
 
 
