@@ -34,6 +34,7 @@ from rdl_core import (
     compare_relation_constraint_profiles,
     compare_relation_constraint_polarity,
     compare_relation_constraint_provenance,
+    FunctionComparison,
 )
 
 
@@ -83,6 +84,19 @@ class TestCoreContracts(unittest.TestCase):
         self.assertEqual(invocation.config["threshold"], 0.7)
         with self.assertRaises(TypeError):
             invocation.config["threshold"] = 0.1
+        comparison = FunctionComparison(invocation, invocation)
+        self.assertTrue(comparison.comparable)
+        self.assertTrue(comparison.same_function)
+        changed = FunctionInvocation(
+            FunctionDescription("rdl_core.constraint_strength", "1"),
+            invocation.context,
+            purpose=invocation.purpose,
+            config=invocation.config,
+            provenance=invocation.provenance,
+        )
+        changed_comparison = FunctionComparison(invocation, changed)
+        self.assertTrue(changed_comparison.comparable)
+        self.assertFalse(changed_comparison.same_function)
 
     def test_relation_similarity_is_bounded_and_not_truth(self):
         identity = ConstraintIdentity("c-sim", "a", "supports", "b")
@@ -112,6 +126,7 @@ class TestCoreContracts(unittest.TestCase):
             left, right, BoundaryContext("similarity"),
         )
         self.assertEqual(provenance.status, SimilarityObservationStatus.UNRESOLVED)
+
 
     def test_commitment_record_requires_valid_origin_and_time(self):
         record = CommitmentRecord.from_dict_strict(
