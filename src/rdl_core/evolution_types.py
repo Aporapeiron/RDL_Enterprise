@@ -35,6 +35,26 @@ class PatternSlotKind(str, Enum):
 
 
 @dataclass(frozen=True)
+class PatternEvidence:
+    """Finite evidence summary; not confidence, truth, or commitment."""
+
+    member_count: int
+    cohesion: float
+    conflicting_edge_count: int
+    unresolved_edge_count: int
+    specificity: float
+
+    def __post_init__(self) -> None:
+        if self.member_count < 1 or not isinstance(self.member_count, int):
+            raise ValueError("member_countは1以上の整数である必要があります")
+        for name, value in (("cohesion", self.cohesion), ("specificity", self.specificity)):
+            if not isinstance(value, (int, float)) or not 0.0 <= value <= 1.0:
+                raise ValueError(f"{name}は0以上1以下である必要があります")
+        if self.conflicting_edge_count < 0 or self.unresolved_edge_count < 0:
+            raise ValueError("edge countは0以上である必要があります")
+
+
+@dataclass(frozen=True)
 class SimilarityVector:
     """Metric-separated similarity values; dimensions are not implicitly aggregated."""
 
@@ -200,6 +220,16 @@ class RelationPatternCandidate:
     @property
     def specificity(self) -> float:
         return 1.0 - (len(self.varying_slots) / 3.0)
+
+    @property
+    def evidence(self) -> PatternEvidence:
+        return PatternEvidence(
+            member_count=len(self.cluster.members),
+            cohesion=self.cluster.cohesion,
+            conflicting_edge_count=len(self.cluster.conflicting_edges),
+            unresolved_edge_count=len(self.cluster.unresolved_edges),
+            specificity=self.specificity,
+        )
 
 
 def derive_relation_pattern(cluster: RelationClusterCandidate) -> RelationPatternCandidate:

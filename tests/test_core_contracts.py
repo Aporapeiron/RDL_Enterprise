@@ -51,6 +51,7 @@ from rdl_core import (
     RelationClusterCandidate,
     RelationPatternCandidate,
     PatternSlotKind,
+    PatternEvidence,
     StructureDelta,
     RecompiledStructureCandidate,
     RelationConstraintDelta,
@@ -212,6 +213,9 @@ class TestCoreContracts(unittest.TestCase):
         self.assertEqual(pattern.slot_kinds, (
             PatternSlotKind.VARIABLE, PatternSlotKind.FIXED, PatternSlotKind.FIXED,
         ))
+        self.assertIsInstance(pattern.evidence, PatternEvidence)
+        self.assertEqual(pattern.evidence.member_count, 2)
+        self.assertAlmostEqual(pattern.evidence.specificity, 2 / 3)
         self.assertEqual(pattern.varying_slots, ("subject",))
         self.assertAlmostEqual(pattern.specificity, 2 / 3)
         clustered = induce_structure_candidate_with_clusters(
