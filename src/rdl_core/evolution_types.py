@@ -594,9 +594,10 @@ class ConditionalRelationCandidate:
 def build_conditional_relation_candidate(
     pattern: RelationPatternCandidate,
     *,
-    conditions: Tuple[str, ...] = (),
-    structured_conditions: Tuple[ConditionDescription, ...] = (),
-    exceptions: Tuple[RelationSemanticKey, ...] = (),
+    conditions: Optional[Tuple[str, ...]] = None,
+    structured_conditions: Optional[Tuple[ConditionDescription, ...]] = None,
+    exceptions: Optional[Tuple[RelationSemanticKey, ...]] = None,
+    exception_candidates: Optional[Tuple[ExceptionCandidate, ...]] = None,
     context: Optional[BoundaryContext] = None,
     provenance: Optional[Provenance] = None,
 ) -> ConditionalRelationCandidate:
@@ -606,9 +607,10 @@ def build_conditional_relation_candidate(
     ))
     return ConditionalRelationCandidate(
         pattern=pattern,
-        conditions=conditions,
-        structured_conditions=structured_conditions,
-        exceptions=exceptions or inferred_exceptions,
+        conditions=conditions or (),
+        structured_conditions=structured_conditions or (),
+        exceptions=exceptions if exceptions is not None else inferred_exceptions,
+        exception_candidates=exception_candidates or (),
         evidence=pattern.evidence,
         context=context or pattern.cluster.context,
         provenance=provenance or pattern.cluster.provenance,

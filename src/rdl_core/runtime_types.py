@@ -18,6 +18,7 @@ from .evolution_types import (
     ConditionDescription,
     ExceptionCandidate,
     RelationPatternCandidate,
+    RelationSemanticKey,
     build_conditional_relation_candidate,
     evaluate_condition,
 )
@@ -307,6 +308,35 @@ class ConditionalStructureDelta:
     def removed_exceptions(self) -> Tuple[object, ...]:
         return tuple(item for item in self.previous.exceptions if item not in self.current.exceptions)
 
+    @property
+    def added_structured_conditions(self) -> Tuple[ConditionDescription, ...]:
+        return tuple(item for item in self.current.structured_conditions
+                     if item not in self.previous.structured_conditions)
+
+    @property
+    def removed_structured_conditions(self) -> Tuple[ConditionDescription, ...]:
+        return tuple(item for item in self.previous.structured_conditions
+                     if item not in self.current.structured_conditions)
+
+    @property
+    def added_exception_candidates(self) -> Tuple[ExceptionCandidate, ...]:
+        return tuple(item for item in self.current.exception_candidates
+                     if item not in self.previous.exception_candidates)
+
+    @property
+    def removed_exception_candidates(self) -> Tuple[ExceptionCandidate, ...]:
+        return tuple(item for item in self.previous.exception_candidates
+                     if item not in self.current.exception_candidates)
+
+    @property
+    def changed_structured_conditions(self) -> Tuple[Tuple[ConditionDescription, ConditionDescription], ...]:
+        previous_by_id = {item.condition_id: item for item in self.previous.structured_conditions}
+        return tuple(
+            (previous_by_id[item.condition_id], item)
+            for item in self.current.structured_conditions
+            if item.condition_id in previous_by_id and previous_by_id[item.condition_id] != item
+        )
+
 
 @dataclass(frozen=True)
 class ConditionalSupersessionRecord:
@@ -351,18 +381,22 @@ def build_conditional_vnext(
     request: ConditionalRelearningRequest,
     pattern: RelationPatternCandidate,
     *,
-    conditions: Tuple[str, ...] = (),
-    structured_conditions: Tuple[ConditionDescription, ...] = (),
-    exceptions: Tuple[object, ...] = (),
+    conditions: Optional[Tuple[str, ...]] = None,
+    structured_conditions: Optional[Tuple[ConditionDescription, ...]] = None,
+    exceptions: Optional[Tuple[RelationSemanticKey, ...]] = None,
+    exception_candidates: Optional[Tuple[ExceptionCandidate, ...]] = None,
     provenance: Optional[Provenance] = None,
 ) -> Tuple[ConditionalRelationCandidate, ConditionalStructureDelta]:
     """Build a vNext candidate from prior lineage plus explicitly supplied new structure."""
     previous = request.active.promotion.artifact.conditional_candidate
     current = build_conditional_relation_candidate(
         pattern,
-        conditions=conditions or previous.conditions,
-        structured_conditions=structured_conditions,
-        exceptions=exceptions or previous.exceptions,
+        conditions=previous.conditions if conditions is None else conditions,
+        structured_conditions=(previous.structured_conditions
+                               if structured_conditions is None else structured_conditions),
+        exceptions=previous.exceptions if exceptions is None else exceptions,
+        exception_candidates=(previous.exception_candidates
+                              if exception_candidates is None else exception_candidates),
         context=request.context,
         provenance=provenance or request.provenance or previous.provenance,
     )

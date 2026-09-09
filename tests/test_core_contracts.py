@@ -541,6 +541,19 @@ class TestCoreContracts(unittest.TestCase):
         self.assertEqual(conditional_delta.added_conditions, ("runtime mismatch reviewed",))
         self.assertEqual(vnext.exceptions, conditional.exceptions)
         self.assertIsNot(vnext, conditional)
+        inherited_vnext, _ = build_conditional_vnext(relearning, pattern)
+        self.assertEqual(inherited_vnext.conditions, conditional.conditions)
+        self.assertEqual(inherited_vnext.exceptions, conditional.exceptions)
+        cleared_vnext, cleared_delta = build_conditional_vnext(
+            relearning, pattern, conditions=(), exceptions=(),
+        )
+        self.assertEqual(cleared_vnext.conditions, ())
+        self.assertEqual(cleared_vnext.exceptions, ())
+        self.assertEqual(cleared_delta.removed_conditions, conditional.conditions)
+        self.assertEqual(cleared_delta.removed_exceptions, conditional.exceptions)
+        structured_delta = ConditionalStructureDelta(structured, structured_with_set)
+        self.assertEqual(structured_delta.added_structured_conditions, ())
+        self.assertEqual(structured_delta.removed_structured_conditions, ())
         vnext_validation = record_conditional_validation(
             vnext, ConditionalValidationStatus.PASSED, conditional.context,
         )
