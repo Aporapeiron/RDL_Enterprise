@@ -13,10 +13,13 @@ from .contracts import (
 )
 from .constraint_types import (
     ConstraintActivation,
+    ConstraintEvaluation,
+    ConstraintEvaluationDelta,
     ConstraintEvaluationWeights,
     ConstraintIdentity,
     ConstraintStrength,
     evaluate_constraint_strength,
+    record_constraint_evaluation,
 )
 
 __all__ = [
@@ -30,8 +33,11 @@ __all__ = [
     "EvidencePolarity",
     "Provenance",
     "ConstraintActivation",
+    "ConstraintEvaluation",
+    "ConstraintEvaluationDelta",
     "ConstraintEvaluationWeights",
     "ConstraintIdentity",
     "ConstraintStrength",
     "evaluate_constraint_strength",
+    "record_constraint_evaluation",
 ]

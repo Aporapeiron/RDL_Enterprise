@@ -10,9 +10,12 @@ from rdl_core import (
     Provenance,
     ConstraintActivation,
     ConstraintEvaluationWeights,
+    ConstraintEvaluation,
+    ConstraintEvaluationDelta,
     ConstraintIdentity,
     ConstraintStrength,
     evaluate_constraint_strength,
+    record_constraint_evaluation,
 )
 
 
@@ -135,6 +138,19 @@ class TestCoreContracts(unittest.TestCase):
                 relevance=1.1, freshness=0.5, authority=0.5, source=0.5, convergence=0.5
             )
 
+    def test_constraint_evaluation_retains_inputs_and_evaluator_delta(self):
+        context = BoundaryContext("eval-1", question="approval", purpose="compare")
+        evaluation = record_constraint_evaluation(
+            context=context, relevance=1.0, freshness=0.5, authority=0.0,
+            source=0.5, convergence=1.0, provenance=Provenance("enterprise-bundle"),
+        )
+        self.assertIsInstance(evaluation, ConstraintEvaluation)
+        self.assertEqual(evaluation.source, 0.5)
+        self.assertEqual(evaluation.convergence, 1.0)
+        self.assertEqual(evaluation.context.boundary_id, "eval-1")
+        delta = ConstraintEvaluationDelta(0.99, evaluation.strength.value, context)
+        self.assertAlmostEqual(delta.value, 0.99 - evaluation.strength.value)
+
     def test_enterprise_bundle_adapter_preserves_bounded_observation(self):
         from types import SimpleNamespace
         from rdl_enterprise.constraint_adapter import activation_from_bundle
@@ -252,3 +268,21 @@ class TestCoreContracts(unittest.TestCase):
         )
         self.assertEqual(strength.value, 0.75)
         self.assertEqual(strength.support, EvidencePolarity.OPPOSE)
+
+    def test_enterprise_bundle_evaluation_record_retains_components(self):
+        from types import SimpleNamespace
+        from rdl_core import ConstraintEvaluation
+        from rdl_enterprise.constraint_adapter import record_bundle_evaluation
+
+        bundle = SimpleNamespace(
+            relevance=0.8, freshness=0.6, authority_weight=0.4,
+            source_strength=0.5, convergence=0.7,
+        )
+        evaluation = record_bundle_evaluation(
+            bundle,
+            BoundaryContext("record-1"),
+            provenance=Provenance("bundle-observation"),
+        )
+        self.assertIsInstance(evaluation, ConstraintEvaluation)
+        self.assertEqual(evaluation.source, 0.5)
+        self.assertEqual(evaluation.provenance.source, "bundle-observation")

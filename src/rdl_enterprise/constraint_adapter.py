@@ -6,11 +6,13 @@ from rdl_core import (
     AuthorityConstraint,
     BoundaryContext,
     ConstraintActivation,
+    ConstraintEvaluation,
     ConstraintIdentity,
     ConstraintStrength,
     EvidencePolarity,
     ConstraintEvaluationWeights,
     evaluate_constraint_strength,
+    record_constraint_evaluation,
 )
 
 
@@ -75,4 +77,26 @@ def evaluate_bundle_strength(
         convergence=_required_score(bundle, "convergence"),
         support=support,
         weights=weights or ConstraintEvaluationWeights(),
+    )
+
+
+def record_bundle_evaluation(
+    bundle: object,
+    context: BoundaryContext,
+    *,
+    support: EvidencePolarity = EvidencePolarity.UNRESOLVED,
+    weights: Optional[ConstraintEvaluationWeights] = None,
+    provenance=None,
+) -> ConstraintEvaluation:
+    """Retain Bundle components and evaluation weights as a recoverable record."""
+    return record_constraint_evaluation(
+        context=context,
+        relevance=_required_score(bundle, "relevance"),
+        freshness=_required_score(bundle, "freshness"),
+        authority=_required_score(bundle, "authority_weight"),
+        source=_required_score(bundle, "source_strength"),
+        convergence=_required_score(bundle, "convergence"),
+        support=support,
+        weights=weights or ConstraintEvaluationWeights(),
+        provenance=provenance,
     )

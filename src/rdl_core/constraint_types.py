@@ -28,6 +28,35 @@ class ConstraintEvaluationWeights:
             raise ValueError("Constraint評価の重み合計は正である必要があります")
 
 
+@dataclass(frozen=True)
+class ConstraintEvaluation:
+    """Recoverable record of one bounded constraint evaluation."""
+
+    strength: "ConstraintStrength"
+    relevance: float
+    freshness: float
+    authority: float
+    source: float
+    convergence: float
+    weights: ConstraintEvaluationWeights
+    context: BoundaryContext
+    provenance: Optional[Provenance] = None
+
+
+@dataclass(frozen=True)
+class ConstraintEvaluationDelta:
+    """Difference between two finite evaluators, not error against reality."""
+
+    legacy_score: float
+    core_score: float
+    context: BoundaryContext
+    provenance: Optional[Provenance] = None
+
+    @property
+    def value(self) -> float:
+        return self.legacy_score - self.core_score
+
+
 def evaluate_constraint_strength(
     *,
     relevance: float,
@@ -61,6 +90,35 @@ def evaluate_constraint_strength(
         relevance=components["relevance"],
         freshness=components["freshness"],
         authority=components["authority"],
+    )
+
+
+def record_constraint_evaluation(
+    *,
+    context: BoundaryContext,
+    relevance: float,
+    freshness: float,
+    authority: float,
+    source: float,
+    convergence: float,
+    support: EvidencePolarity = EvidencePolarity.UNRESOLVED,
+    weights: ConstraintEvaluationWeights = ConstraintEvaluationWeights(),
+    provenance: Optional[Provenance] = None,
+) -> ConstraintEvaluation:
+    strength = evaluate_constraint_strength(
+        relevance=relevance, freshness=freshness, authority=authority,
+        source=source, convergence=convergence, support=support, weights=weights,
+    )
+    return ConstraintEvaluation(
+        strength=strength,
+        relevance=strength.relevance,
+        freshness=strength.freshness,
+        authority=strength.authority,
+        source=_unit_interval(source, "source"),
+        convergence=_unit_interval(convergence, "convergence"),
+        weights=weights,
+        context=context,
+        provenance=provenance,
     )
 
 
