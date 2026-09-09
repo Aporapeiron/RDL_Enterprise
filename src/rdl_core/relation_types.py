@@ -1,10 +1,17 @@
 """Minimal relation and node description types for RDL Core."""
 
 from dataclasses import dataclass
+from enum import Enum
 from typing import Optional, Tuple
 
 from .constraint_types import ConstraintIdentity
-from .contracts import BoundaryInputValue, Provenance
+from .contracts import BoundaryContext, FrozenBoundaryValue, Provenance, freeze_boundary_value
+
+
+class RelationObservationStatus(str, Enum):
+    OBSERVED = "observed"
+    NOT_OBSERVED = "not_observed"
+    UNRESOLVED = "unresolved"
 
 
 @dataclass(frozen=True)
@@ -14,7 +21,7 @@ class NodeDescription:
     node_id: str
     domain: str
     relations: Tuple[ConstraintIdentity, ...] = ()
-    attributes: Tuple[Tuple[str, BoundaryInputValue], ...] = ()
+    attributes: Tuple[Tuple[str, FrozenBoundaryValue], ...] = ()
     provenance: Optional[Provenance] = None
 
     def __post_init__(self) -> None:
@@ -25,6 +32,11 @@ class NodeDescription:
         for key, _ in self.attributes:
             if not isinstance(key, str) or not key.strip():
                 raise ValueError("attributesのキーは空にできません")
+        object.__setattr__(
+            self,
+            "attributes",
+            tuple((key, freeze_boundary_value(value)) for key, value in self.attributes),
+        )
 
 
 @dataclass(frozen=True)
@@ -33,9 +45,9 @@ class RelationObservation:
 
     node: NodeDescription
     relation: ConstraintIdentity
-    boundary_id: str
-    observed: bool
+    boundary: BoundaryContext
+    status: RelationObservationStatus
 
     def __post_init__(self) -> None:
-        if not isinstance(self.boundary_id, str) or not self.boundary_id.strip():
-            raise ValueError("boundary_id は空にできません")
+        if self.relation not in self.node.relations:
+            raise ValueError("観測対象RelationはNodeDescriptionに登録されている必要があります")

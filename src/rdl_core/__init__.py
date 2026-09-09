@@ -6,6 +6,7 @@ from .contracts import (
     BoundaryInputValue,
     BoundaryValue,
     FrozenBoundaryValue,
+    freeze_boundary_value,
     CommitmentOrigin,
     CommitmentRecord,
     EvidencePolarity,
@@ -22,7 +23,7 @@ from .constraint_types import (
     evaluate_constraint_strength,
     record_constraint_evaluation,
 )
-from .relation_types import NodeDescription, RelationObservation
+from .relation_types import NodeDescription, RelationObservation, RelationObservationStatus
 
 __all__ = [
     "AuthorityConstraint",
@@ -30,6 +31,7 @@ __all__ = [
     "BoundaryInputValue",
     "BoundaryValue",
     "FrozenBoundaryValue",
+    "freeze_boundary_value",
     "CommitmentOrigin",
     "CommitmentRecord",
     "EvidencePolarity",
@@ -45,4 +47,5 @@ __all__ = [
     "record_constraint_evaluation",
     "NodeDescription",
     "RelationObservation",
+    "RelationObservationStatus",
 ]

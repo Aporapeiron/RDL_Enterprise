@@ -19,6 +19,7 @@ from rdl_core import (
     record_constraint_evaluation,
     NodeDescription,
     RelationObservation,
+    RelationObservationStatus,
 )
 
 
@@ -330,10 +331,23 @@ class TestCoreContracts(unittest.TestCase):
     def test_node_description_is_not_a_commitment(self):
         relation = ConstraintIdentity("r1", "requester", "may_approve", "expense")
         node = NodeDescription(
-            "node-1", "finance", relations=(relation,), attributes=(("kind", "policy"),)
+            "node-1", "finance", relations=(relation,), attributes=(("config", {"mutable": True}),)
         )
-        observation = RelationObservation(node, relation, "boundary-1", observed=True)
+        observation = RelationObservation(
+            node, relation, BoundaryContext("boundary-1", question="approval"),
+            status=RelationObservationStatus.UNRESOLVED,
+        )
         self.assertEqual(observation.node.node_id, "node-1")
+        self.assertEqual(observation.boundary.question, "approval")
         self.assertIsNone(node.provenance)
+        with self.assertRaises(TypeError):
+            node.attributes[0][1]["mutable"] = False
         with self.assertRaises(ValueError):
             NodeDescription("", "finance")
+        with self.assertRaises(ValueError):
+            RelationObservation(
+                node,
+                ConstraintIdentity("unattached", "s", "r", "o"),
+                BoundaryContext("boundary-2"),
+                RelationObservationStatus.OBSERVED,
+            )

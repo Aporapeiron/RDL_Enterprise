@@ -53,6 +53,11 @@ def _deep_freeze(value: Any) -> Any:
     raise TypeError(f"BoundaryContext.conditions に対応しない値型です: {type(value).__name__}")
 
 
+def freeze_boundary_value(value: Any) -> Any:
+    """Freeze one value using the Core-supported boundary value domain."""
+    return _deep_freeze(value)
+
+
 def _valid_origin(origin: str) -> bool:
     canonical = {item.value for item in CommitmentOrigin}
     # Domain-specific taxonomies use a recoverable namespace, e.g. game:rumor.
