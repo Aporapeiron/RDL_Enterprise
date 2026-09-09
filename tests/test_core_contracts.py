@@ -37,6 +37,7 @@ from rdl_core import (
     compare_relation_constraint_polarity,
     compare_relation_constraint_provenance,
     FunctionComparison,
+    FunctionComposition,
 )
 
 
@@ -99,6 +100,24 @@ class TestCoreContracts(unittest.TestCase):
         changed_comparison = FunctionComparison(invocation, changed)
         self.assertTrue(changed_comparison.comparable)
         self.assertFalse(changed_comparison.same_function)
+
+        composition = FunctionComposition(
+            invocation,
+            FunctionInvocation(
+                FunctionDescription("rdl_core.next", "0"),
+                invocation.context,
+                provenance=Provenance("next-function"),
+            ),
+            left_output="relation_profile",
+            right_input="relation_profile",
+        )
+        self.assertTrue(composition.composable)
+        self.assertFalse(FunctionComposition(
+            invocation,
+            composition.right,
+            left_output="other",
+            right_input="relation_profile",
+        ).semantic_types_compatible)
 
     def test_relation_similarity_is_bounded_and_not_truth(self):
         identity = ConstraintIdentity("c-sim", "a", "supports", "b")

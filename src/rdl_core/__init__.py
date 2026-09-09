@@ -50,6 +50,7 @@ from .similarity_types import (
     compare_relation_constraint_profiles,
 )
 from .function_comparison_types import FunctionComparison
+from .function_composition_types import FunctionComposition
 
 __all__ = [
     "AuthorityConstraint",
@@ -93,4 +94,5 @@ __all__ = [
     "compare_relation_constraint_polarity",
     "compare_relation_constraint_provenance",
     "FunctionComparison",
+    "FunctionComposition",
 ]
