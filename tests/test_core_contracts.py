@@ -48,6 +48,7 @@ from rdl_core import (
     StructureDelta,
     RecompiledStructureCandidate,
     RelationConstraintDelta,
+    ProfileCorrespondence,
     compare_structure_candidates,
     extract_structure_candidate,
     extract_recompiled_structure_candidate,
@@ -247,7 +248,8 @@ class TestCoreContracts(unittest.TestCase):
         )
         self.assertEqual(delta.added, ())
         self.assertEqual(delta.unchanged, (identity.semantic_key,))
-        self.assertEqual(len(delta.constraint_deltas), 4)
+        self.assertEqual(len(delta.constraint_deltas), 2)
+        self.assertIsInstance(delta.profile_correspondences[0], ProfileCorrespondence)
         self.assertFalse(delta.constraint_deltas[0].strength_changed)
         failed_record = record_compilation_validation(
             candidate, CompilationValidationStatus.FAILED, BoundaryContext("validation"),

@@ -106,18 +106,21 @@ class StructureDelta:
 
     @property
     def constraint_deltas(self) -> Tuple["RelationConstraintDelta", ...]:
-        previous = {}
-        for item in self.previous.supporting_profiles + self.previous.conflicting_profiles:
-            previous.setdefault(item.identity.semantic_key, []).append(item)
-        current = {}
-        for item in self.current.supporting_profiles + self.current.conflicting_profiles:
-            current.setdefault(item.identity.semantic_key, []).append(item)
-        deltas = []
-        for key in self.unchanged:
-            for old_profile in previous.get(key, ()):
-                for new_profile in current.get(key, ()):
-                    deltas.append(RelationConstraintDelta(old_profile, new_profile))
-        return tuple(deltas)
+        return tuple(
+            RelationConstraintDelta(old, new)
+            for correspondence in self.profile_correspondences
+            for old, new in correspondence.matched
+        )
+
+    @property
+    def profile_correspondences(self) -> Tuple["ProfileCorrespondence", ...]:
+        previous = self.previous.supporting_profiles + self.previous.conflicting_profiles
+        current = self.current.supporting_profiles + self.current.conflicting_profiles
+        keys = tuple(dict.fromkeys(item.identity.semantic_key for item in previous + current))
+        return tuple(
+            correspond_profiles(previous, current, key)
+            for key in keys if key in self.unchanged
+        )
 
 
 @dataclass(frozen=True)
@@ -144,6 +147,48 @@ class RelationConstraintDelta:
         previous = self.previous.strength.support == EvidencePolarity.UNRESOLVED
         current = self.current.strength.support == EvidencePolarity.UNRESOLVED
         return previous != current
+
+
+@dataclass(frozen=True)
+class ProfileCorrespondence:
+    semantic_key: RelationSemanticKey
+    matched: Tuple[Tuple[RelationConstraintProfile, RelationConstraintProfile], ...]
+    unmatched_previous: Tuple[RelationConstraintProfile, ...]
+    unmatched_current: Tuple[RelationConstraintProfile, ...]
+
+
+def correspond_profiles(
+    previous: Tuple[RelationConstraintProfile, ...],
+    current: Tuple[RelationConstraintProfile, ...],
+    semantic_key: RelationSemanticKey,
+) -> ProfileCorrespondence:
+    old = [item for item in previous if item.identity.semantic_key == semantic_key]
+    new = [item for item in current if item.identity.semantic_key == semantic_key]
+    pairs = []
+    used = set()
+    for old_item in old:
+        source = old_item.identity.provenance.source if old_item.identity.provenance else None
+        match_index = next(
+            (index for index, item in enumerate(new)
+             if index not in used
+             and (item.identity.provenance.source if item.identity.provenance else None) == source),
+            None,
+        )
+        if match_index is not None:
+            used.add(match_index)
+            pairs.append((old_item, new[match_index]))
+    matched_old_indexes = {index for index, item in enumerate(old) if any(item is pair[0] for pair in pairs)}
+    remaining_old = [item for index, item in enumerate(old) if index not in matched_old_indexes]
+    remaining_new = [item for index, item in enumerate(new) if index not in used]
+    for old_item, new_item in zip(remaining_old, remaining_new):
+        pairs.append((old_item, new_item))
+    matched_old_indexes = {index for index, item in enumerate(old) if any(item is pair[0] for pair in pairs)}
+    matched_new_indexes = {index for index, item in enumerate(new) if any(item is pair[1] for pair in pairs)}
+    return ProfileCorrespondence(
+        semantic_key, tuple(pairs),
+        tuple(item for index, item in enumerate(old) if index not in matched_old_indexes),
+        tuple(item for index, item in enumerate(new) if index not in matched_new_indexes),
+    )
 
 
 @dataclass(frozen=True)
