@@ -120,6 +120,10 @@ class TestCoreContracts(unittest.TestCase):
         self.assertEqual(unresolved.status, SimilarityObservationStatus.UNRESOLVED)
         polarity = compare_relation_constraint_polarity(
             left, right, BoundaryContext("similarity"),
+            invocation=FunctionInvocation(
+                FunctionDescription("rdl_core.relation_polarity_similarity", "0"),
+                BoundaryContext("similarity"), purpose="polarity comparison",
+            ),
         )
         self.assertEqual(polarity.status, SimilarityObservationStatus.SIMILAR)
         self.assertEqual(polarity.evaluator.function_id, "rdl_core.relation_polarity_similarity")

@@ -92,6 +92,7 @@ def compare_relation_constraint_polarity(
     context: BoundaryContext,
     *,
     provenance: Optional[Provenance] = None,
+    invocation: Optional[FunctionInvocation] = None,
 ) -> RelationSimilarityObservation:
     """Compare polarity independently from numeric constraint strength."""
     evaluator = FunctionDescription("rdl_core.relation_polarity_similarity", "0")
@@ -110,7 +111,7 @@ def compare_relation_constraint_polarity(
     )
     return RelationSimilarityObservation(
         left, right, score, coverage, 0.0, status, context,
-        evaluator=evaluator, provenance=provenance,
+        evaluator=evaluator, provenance=provenance, invocation=invocation,
     )
 
 
@@ -120,6 +121,7 @@ def compare_relation_constraint_provenance(
     context: BoundaryContext,
     *,
     provenance: Optional[Provenance] = None,
+    invocation: Optional[FunctionInvocation] = None,
 ) -> RelationSimilarityObservation:
     """Compare relation provenance without treating origin as truth or authority."""
     evaluator = FunctionDescription("rdl_core.relation_provenance_similarity", "0")
@@ -136,5 +138,5 @@ def compare_relation_constraint_provenance(
     )
     return RelationSimilarityObservation(
         left, right, score, coverage, 0.0, status, context,
-        evaluator=evaluator, provenance=provenance,
+        evaluator=evaluator, provenance=provenance, invocation=invocation,
     )
