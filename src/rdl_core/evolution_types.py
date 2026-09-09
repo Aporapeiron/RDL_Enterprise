@@ -521,6 +521,60 @@ def compile_conditionally_verified_function_candidate(
     )
 
 
+@dataclass(frozen=True)
+class ConditionalFunctionCandidate:
+    """Lineage-preserving wrapper for a conditionally verified candidate."""
+
+    function_candidate: "FunctionCandidate"
+    conditional_candidate: ConditionalRelationCandidate
+    validation: ConditionalValidationRecord
+    rupture_coverage: "ConditionalRuptureCoverage"
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.function_candidate, FunctionCandidate):
+            raise TypeError("function_candidateはFunctionCandidateである必要があります")
+        if not isinstance(self.conditional_candidate, ConditionalRelationCandidate):
+            raise TypeError("conditional_candidateはConditionalRelationCandidateである必要があります")
+        if not isinstance(self.validation, ConditionalValidationRecord):
+            raise TypeError("validationはConditionalValidationRecordである必要があります")
+        if not isinstance(self.rupture_coverage, ConditionalRuptureCoverage):
+            raise TypeError("rupture_coverageはConditionalRuptureCoverageである必要があります")
+        if self.validation.candidate != self.conditional_candidate:
+            raise ValueError("Conditional validationの候補が系譜と一致していません")
+        if any(item.candidate != self.conditional_candidate for item in self.rupture_coverage.records):
+            raise ValueError("Conditional rupture coverageの候補が系譜と一致していません")
+        if self.validation.status != ConditionalValidationStatus.PASSED:
+            raise ValueError("ConditionalFunctionCandidateにはPASSED validationが必要です")
+        if not self.rupture_coverage.complete:
+            raise ValueError("ConditionalFunctionCandidateにはcompleteなrupture coverageが必要です")
+        if self.function_candidate.structure.conditions != self.conditional_candidate.conditions:
+            raise ValueError("FunctionCandidateの条件がConditional候補と一致していません")
+
+    @property
+    def function(self) -> FunctionDescription:
+        return self.function_candidate.function
+
+
+def compile_lineage_preserving_conditional_candidate(
+    validation: ConditionalValidationRecord,
+    ruptures: Tuple["ConditionalRuptureRecord", ...],
+    function: FunctionDescription,
+    *,
+    purpose: str,
+    config: Optional[dict] = None,
+    required_checks: Tuple[str, ...] = (),
+) -> ConditionalFunctionCandidate:
+    """Build a verified conditional candidate without erasing its learning lineage."""
+    candidate = compile_conditionally_verified_function_candidate(
+        validation, ruptures, function, purpose=purpose, config=config,
+        required_checks=required_checks,
+    )
+    coverage = inspect_conditional_rupture_coverage(ruptures, required_checks=required_checks)
+    return ConditionalFunctionCandidate(
+        candidate, validation.candidate, validation, coverage,
+    )
+
+
 def record_conditional_compilation_validation(
     validation: ConditionalValidationRecord,
     ruptures: Tuple["ConditionalRuptureRecord", ...],

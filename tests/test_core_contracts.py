@@ -55,6 +55,7 @@ from rdl_core import (
     PatternSlotEvidence,
     PatternVariableBinding,
     ConditionalRelationCandidate,
+    ConditionalFunctionCandidate,
     ConditionalValidationStatus,
     ConditionalValidationRecord,
     ConditionalRuptureStatus,
@@ -75,6 +76,7 @@ from rdl_core import (
     record_conditional_rupture,
     inspect_conditional_rupture_coverage,
     compile_conditionally_verified_function_candidate,
+    compile_lineage_preserving_conditional_candidate,
     record_conditional_compilation_validation,
     materialize_conditional_compiled_mb,
     translate_conditional_ruptures_to_function,
@@ -298,6 +300,16 @@ class TestCoreContracts(unittest.TestCase):
             required_checks=("counterexample-v1",),
         )
         self.assertEqual(verified_candidate.invocation.purpose, "verified conditional compilation")
+        lineage_candidate = compile_lineage_preserving_conditional_candidate(
+            conditional_record, (verified_rupture,),
+            FunctionDescription("rdl_core.conditional_relation_lineage", "1"),
+            purpose="lineage-preserving conditional compilation",
+            required_checks=("counterexample-v1",),
+        )
+        self.assertIsInstance(lineage_candidate, ConditionalFunctionCandidate)
+        self.assertEqual(lineage_candidate.conditional_candidate, conditional)
+        self.assertEqual(lineage_candidate.rupture_coverage.detected_checks, ())
+        self.assertTrue(lineage_candidate.rupture_coverage.complete)
         compilation_record = record_conditional_compilation_validation(
             conditional_record, (verified_rupture,),
             FunctionDescription("rdl_core.conditional_relation_recorded", "1"),
