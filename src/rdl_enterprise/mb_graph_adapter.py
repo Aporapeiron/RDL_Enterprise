@@ -12,6 +12,66 @@ from rdl_core import (
 )
 
 
+_RELATION_STATUS = {
+    "support": RelationObservationStatus.OBSERVED,
+    "contradict": RelationObservationStatus.OBSERVED,
+    "independent": RelationObservationStatus.NOT_OBSERVED,
+    "unknown": RelationObservationStatus.UNRESOLVED,
+}
+
+
+def provenance_from_mbnode(node: object) -> Optional[Provenance]:
+    """Recover MBNode source fields without inventing a missing source."""
+    source_id = getattr(node, "source_id", None)
+    lineage = getattr(node, "source_lineage", None)
+    if source_id is None and lineage is None:
+        return None
+    return Provenance(source=str(source_id or lineage), lineage=lineage)
+
+
+def relations_from_mbnode(node: object) -> Tuple[ConstraintIdentity, ...]:
+    """Translate explicit MBNode relation edges into Core identities."""
+    node_id = getattr(node, "id", None)
+    edges = getattr(node, "node_relations", None)
+    if not isinstance(node_id, str) or not node_id.strip():
+        raise ValueError("MBNode.id は必須です")
+    if edges is None:
+        return ()
+    if not isinstance(edges, dict):
+        raise TypeError("MBNode.node_relations はmappingである必要があります")
+    relations = []
+    for target_id, relation_kind in edges.items():
+        if not isinstance(target_id, str) or not target_id.strip():
+            raise ValueError("MBNode.node_relationsのtarget idは非空文字列である必要があります")
+        if relation_kind not in _RELATION_STATUS:
+            raise ValueError(f"未知のMBNode relation kindです: {relation_kind}")
+        relations.append(ConstraintIdentity(
+            constraint_id=f"{node_id}:{relation_kind}:{target_id}",
+            subject=node_id,
+            relation=relation_kind,
+            object=target_id,
+        ))
+    return tuple(relations)
+
+
+def relation_observations_from_mbnode(
+    node: object,
+    boundary: BoundaryContext,
+    *,
+    provenance: Optional[Provenance] = None,
+) -> Tuple[RelationObservation, ...]:
+    """Project MBNode relation edges as status-separated Core observations."""
+    resolved_provenance = provenance if provenance is not None else provenance_from_mbnode(node)
+    relations = relations_from_mbnode(node)
+    description = node_description_from_mbnode(node, relations, provenance=resolved_provenance)
+    return tuple(
+        RelationObservation(
+            description, relation, boundary, _RELATION_STATUS[relation.relation]
+        )
+        for relation in relations
+    )
+
+
 def node_description_from_mbnode(
     node: object,
     relations: Iterable[ConstraintIdentity] = (),
@@ -29,7 +89,7 @@ def node_description_from_mbnode(
         node_id=node_id,
         domain=domain,
         relations=tuple(relations),
-        provenance=provenance,
+        provenance=provenance if provenance is not None else provenance_from_mbnode(node),
     )
 
 

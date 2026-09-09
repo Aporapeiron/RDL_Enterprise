@@ -382,3 +382,22 @@ class TestCoreContracts(unittest.TestCase):
         self.assertEqual(description.relations, (relation,))
         self.assertEqual(observation.boundary.boundary_id, "mb-boundary")
         self.assertIsNone(description.provenance.authority_ref)
+
+    def test_mbnode_relation_edges_and_provenance_are_projected_by_kind(self):
+        from rdl_enterprise.mb_graph import MBNode
+        from rdl_enterprise.mb_graph_adapter import relation_observations_from_mbnode
+
+        node = MBNode(
+            id="mb-edges", domain="finance", trigger_pattern={}, action_template={},
+            source_id="policy-1", source_lineage="policy-v1",
+            node_relations={"mb-support": "support", "mb-unknown": "unknown"},
+        )
+        observations = relation_observations_from_mbnode(node, BoundaryContext("edge-b"))
+        self.assertEqual(len(observations), 2)
+        self.assertEqual(observations[0].status, RelationObservationStatus.OBSERVED)
+        self.assertEqual(observations[1].status, RelationObservationStatus.UNRESOLVED)
+        self.assertEqual(observations[0].node.provenance.source, "policy-1")
+        self.assertEqual(observations[0].node.provenance.lineage, "policy-v1")
+        node.node_relations["bad"] = "truth"
+        with self.assertRaises(ValueError):
+            relation_observations_from_mbnode(node, BoundaryContext("edge-b"))
