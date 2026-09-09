@@ -57,8 +57,11 @@ from rdl_core import (
     ConditionalRelationCandidate,
     ConditionalFunctionCandidate,
     ConditionObservationStatus,
+    ConditionComposition,
     ConditionDescription,
     ConditionObservation,
+    ConditionSet,
+    evaluate_condition,
     ExceptionCandidate,
     ObservedVariableBinding,
     ConditionalValidationStatus,
@@ -83,8 +86,14 @@ from rdl_core import (
     compile_conditionally_verified_function_candidate,
     compile_lineage_preserving_conditional_candidate,
     ConditionalCompilationRecord,
+    ConditionalCompilationEvaluation,
     ConditionalCompiledMB,
+    ConditionalPromotionRecord,
+    ConditionalActivationRecord,
     record_conditional_compilation,
+    record_evaluated_conditional_compilation,
+    evaluate_conditional_compiled_promotion,
+    activate_conditional_promotion_record,
     materialize_conditional_compiled_artifact,
     record_conditional_compilation_validation,
     materialize_conditional_compiled_mb,
@@ -275,6 +284,18 @@ class TestCoreContracts(unittest.TestCase):
             variable_slots=("subject",),
         )
         self.assertEqual(condition.operands[0][0], "subject")
+        exact_observation = evaluate_condition(
+            condition, {"subject": {"observed": True}}, conditional.context,
+        )
+        self.assertEqual(exact_observation.status, ConditionObservationStatus.MATCH)
+        unresolved_observation = evaluate_condition(
+            condition, {}, conditional.context,
+        )
+        self.assertEqual(unresolved_observation.status, ConditionObservationStatus.UNRESOLVED)
+        not_match_observation = evaluate_condition(
+            condition, {"subject": {"observed": False}}, conditional.context,
+        )
+        self.assertEqual(not_match_observation.status, ConditionObservationStatus.NOT_MATCH)
         condition_observation = ConditionObservation(
             condition, ConditionObservationStatus.UNRESOLVED, conditional.context,
         )
@@ -284,18 +305,43 @@ class TestCoreContracts(unittest.TestCase):
             context=conditional.context, reason="finite exception observation",
         )
         self.assertEqual(exception.relation.object, "b")
+        with self.assertRaises(ValueError):
+            ExceptionCandidate(
+                RelationSemanticKey("z", "supports", "b"), condition=condition,
+                context=BoundaryContext("different-exception-boundary"),
+            )
         structured = ConditionalRelationCandidate(
             pattern, structured_conditions=(condition,), exception_candidates=(exception,),
             context=conditional.context, evidence=pattern.evidence,
         )
         self.assertNotIn("missing_conditions", structured.validation_blockers)
         self.assertEqual(structured.structured_conditions, (condition,))
+        condition_set = ConditionSet((condition,), ConditionComposition.AND)
+        self.assertEqual(condition_set.composition, ConditionComposition.AND)
+        structured_with_set = ConditionalRelationCandidate(
+            pattern, condition_set=condition_set, exception_candidates=(exception,),
+            context=conditional.context, evidence=pattern.evidence,
+        )
+        self.assertEqual(structured_with_set.structured_conditions, (condition,))
+        other_function = FunctionDescription("rdl_core.other_condition", "1")
+        same_id_other_meaning = ConditionDescription(
+            "condition-1", other_function,
+            FunctionInvocation(other_function, conditional.context, purpose="condition"),
+        )
         with self.assertRaises(ValueError):
             record_conditional_validation(
                 structured, ConditionalValidationStatus.PASSED,
                 conditional.context,
                 condition_observations=(ConditionObservation(
                     condition, ConditionObservationStatus.UNRESOLVED,
+                    conditional.context,
+                ),),
+            )
+        with self.assertRaises(ValueError):
+            record_conditional_validation(
+                structured, ConditionalValidationStatus.PASSED, conditional.context,
+                condition_observations=(ConditionObservation(
+                    same_id_other_meaning, ConditionObservationStatus.MATCH,
                     conditional.context,
                 ),),
             )
@@ -398,6 +444,20 @@ class TestCoreContracts(unittest.TestCase):
         self.assertEqual(conditional_artifact.generic_compilation, conditional_compilation.generic_record)
         self.assertEqual(conditional_artifact.rupture_coverage, lineage_candidate.rupture_coverage)
         self.assertEqual(conditional_artifact.artifact, conditional_artifact.generic_artifact)
+        conditional_promotion = evaluate_conditional_compiled_promotion(
+            conditional_artifact, (verified_rupture,),
+            BoundaryContext("canonical-conditional-promotion"),
+            required_checks=("counterexample-v1",),
+        )
+        self.assertIsInstance(conditional_promotion, ConditionalPromotionRecord)
+        conditional_activation = activate_conditional_promotion_record(
+            conditional_promotion, BoundaryContext("canonical-conditional-activation"),
+        )
+        self.assertIsInstance(conditional_activation, ConditionalActivationRecord)
+        self.assertEqual(
+            conditional_activation.active.artifact,
+            conditional_artifact.generic_artifact,
+        )
         mismatched_generic = record_compilation_validation(
             lineage_candidate.function_candidate, CompilationValidationStatus.PASSED,
             BoundaryContext("different-compilation-boundary"),
@@ -407,6 +467,23 @@ class TestCoreContracts(unittest.TestCase):
                 lineage_candidate, mismatched_generic,
                 BoundaryContext("conditional-lineage-compilation"),
             )
+        explicit_evaluation = ConditionalCompilationEvaluation(
+            lineage_candidate, CompilationValidationStatus.PASSED,
+            BoundaryContext("explicit-compilation"), reason="bounded compilation check",
+        )
+        explicit_record = record_evaluated_conditional_compilation(
+            lineage_candidate, explicit_evaluation,
+        )
+        self.assertEqual(explicit_record.evaluation, explicit_evaluation)
+        failed_evaluation = ConditionalCompilationEvaluation(
+            lineage_candidate, CompilationValidationStatus.FAILED,
+            BoundaryContext("failed-compilation"), reason="finite check failed",
+        )
+        failed_record = record_evaluated_conditional_compilation(
+            lineage_candidate, failed_evaluation,
+        )
+        with self.assertRaises(ValueError):
+            materialize_conditional_compiled_artifact(failed_record)
         compilation_record = record_conditional_compilation_validation(
             conditional_record, (verified_rupture,),
             FunctionDescription("rdl_core.conditional_relation_recorded", "1"),
