@@ -61,6 +61,7 @@ from rdl_core import (
     RegistryStatus,
     project_current_function_state,
     request_recompilation,
+    reintroduce_to_adaptive,
 )
 
 
@@ -288,6 +289,10 @@ class TestCoreContracts(unittest.TestCase):
             reason="new boundary observed",
         )
         self.assertEqual(request.active, active)
+        adaptive_next = reintroduce_to_adaptive(
+            request, (left, right), BoundaryContext("adaptive-next"),
+        )
+        self.assertEqual(len(adaptive_next.profiles), 2)
 
 
     def test_commitment_record_requires_valid_origin_and_time(self):

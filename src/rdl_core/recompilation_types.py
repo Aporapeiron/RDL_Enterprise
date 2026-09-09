@@ -7,6 +7,8 @@ from .activation_types import ActiveCompiledMB
 from .contracts import BoundaryContext, Provenance
 from .deactivation_types import DeactivationRecord
 from .function_types import FunctionDescription
+from .similarity_types import RelationConstraintProfile
+from .evolution_types import AdaptiveMBProfile
 
 
 @dataclass(frozen=True)
@@ -39,4 +41,21 @@ def request_recompilation(
     """Create a reinspection request without mutating the active artifact."""
     return RecompilationRequest(
         active, deactivation, context, evaluator, reason=reason, provenance=provenance,
+    )
+
+
+def reintroduce_to_adaptive(
+    request: RecompilationRequest,
+    profiles: tuple[RelationConstraintProfile, ...],
+    context: BoundaryContext,
+    *,
+    provenance: Optional[Provenance] = None,
+) -> AdaptiveMBProfile:
+    """Return new finite observations to Adaptive M_B for later inspection."""
+    if not isinstance(profiles, tuple):
+        profiles = tuple(profiles)
+    return AdaptiveMBProfile(
+        profiles=profiles,
+        context=context,
+        provenance=provenance or request.provenance,
     )
