@@ -5,24 +5,7 @@ from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from enum import Enum
 from typing import Optional, Dict, List, Any
-
-
-class EvidencePolarity(str, Enum):
-    """確定証拠の極性 (BASE v2.0 §4.2: evidence != supporting evidence)"""
-    SUPPORT = "support"
-    OPPOSE = "oppose"
-    UNRESOLVED = "unresolved"
-
-
-class CommitmentOrigin(str, Enum):
-    """M_B へのコミットメント出所・正統性 (BASE v2.0 §4.2: Description != Commitment)"""
-    AUTHORITY = "authority"                # 認可された方針注入 (inject_authoritative_rule)
-    VERIFIED_EXPERIENCE = "experience"    # 解決確認済みの経験沈澱 (crystallize_rule)
-    AUTHORITATIVE_SEED = "seed"           # 明示的シード知識 (seed load)
-    PROMOTION = "promotion"               # M_Δ ハーネス・シャドウ通過昇格 (Leap)
-    MIGRATION_VERIFIED = "migration"      # 来歴検証済み移行
-    TEST_FIXTURE = "test_fixture"         # テスト用明示コミット
-
+from rdl_core import CommitmentOrigin, CommitmentRecord, EvidencePolarity
 
 class IntegrityError(Exception):
     """
@@ -31,94 +14,6 @@ class IntegrityError(Exception):
     ※ Checksum (完全性・改ざん検出) であり、電子署名等の Authenticity (真正性) とは区別される。
     """
     pass
-
-
-@dataclass(frozen=True)
-class CommitmentRecord:
-    """
-    不変コミットメント証跡レコード (BASE v2.0 §4.2: 不変性・改ざん防止)
-    ノードがいつ、誰によって、どのような出所・系譜で M_B にコミットされたかを境界内証跡として記録。
-    """
-    origin: str
-    committed_at: str
-    actor: str
-    evidence_at: Optional[str] = None
-    lineage: Optional[str] = None
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "origin": self.origin,
-            "committed_at": self.committed_at,
-            "actor": self.actor,
-            "evidence_at": self.evidence_at,
-            "lineage": self.lineage,
-        }
-
-    @classmethod
-    def from_dict_strict(
-        cls,
-        rec_dict: Any,
-        outer_origin: Optional[str] = None,
-        outer_committed_at: Optional[str] = None,
-    ) -> "CommitmentRecord":
-        """
-        直列化データから CommitmentRecord を厳格復元・検証 (P0)。
-        (B5 Zero Trust: 欠損・未知origin・タイムスタンプ不正・外側フィールド不整合を即座に拒絶)
-        """
-        if not isinstance(rec_dict, dict):
-            raise ValueError(f"commitment_record は辞書型である必要があります: {type(rec_dict)}")
-
-        origin = rec_dict.get("origin")
-        committed_at = rec_dict.get("committed_at")
-        actor = rec_dict.get("actor")
-
-        if not origin or not isinstance(origin, str) or not origin.strip():
-            raise ValueError("commitment_record.origin は必須の非空文字列です")
-        if not committed_at or not isinstance(committed_at, str) or not committed_at.strip():
-            raise ValueError("commitment_record.committed_at は必須の非空文字列です")
-        if not actor or not isinstance(actor, str) or not actor.strip():
-            raise ValueError("commitment_record.actor は必須の非空文字列です")
-
-        # 1. origin が CommitmentOrigin の正当な定義値であるかを検証
-        valid_origins = {o.value for o in CommitmentOrigin}
-        if origin not in valid_origins:
-            raise ValueError(f"無効または未知の commitment origin: '{origin}'。有効値: {valid_origins}")
-
-        # 2. committed_at が有効な ISO-8601 時刻文字列であるかを検証
-        try:
-            datetime.fromisoformat(committed_at.replace("Z", "+00:00"))
-        except (ValueError, TypeError) as e:
-            raise ValueError(f"commitment_record.committed_at は有効な ISO-8601 時刻文字列である必要があります: '{committed_at}' ({e})")
-
-        # 3. evidence_at の検証（指定されている場合）
-        evidence_at = rec_dict.get("evidence_at")
-        if evidence_at is not None:
-            if not isinstance(evidence_at, str) or not evidence_at.strip():
-                raise ValueError("commitment_record.evidence_at は非空の文字列である必要があります")
-            try:
-                datetime.fromisoformat(evidence_at.replace("Z", "+00:00"))
-            except (ValueError, TypeError) as e:
-                raise ValueError(f"commitment_record.evidence_at は有効な ISO-8601 時刻文字列である必要があります: '{evidence_at}' ({e})")
-
-        lineage = rec_dict.get("lineage")
-
-        # 4. 外側フィールド（commitment_origin, committed_at）との厳格一致検証
-        if outer_origin is not None and outer_origin != origin:
-            raise ValueError(
-                f"commitment_record の origin ('{origin}') と外側フィールド commitment_origin ('{outer_origin}') が不一致です"
-            )
-        if outer_committed_at is not None and outer_committed_at != committed_at:
-            raise ValueError(
-                f"commitment_record の committed_at ('{committed_at}') と外側フィールド committed_at ('{outer_committed_at}') が不一致です"
-            )
-
-        return cls(
-            origin=origin,
-            committed_at=committed_at,
-            actor=actor,
-            evidence_at=evidence_at,
-            lineage=lineage,
-        )
 
 
 @dataclass(frozen=True)
