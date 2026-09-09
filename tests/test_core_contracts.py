@@ -22,6 +22,9 @@ from rdl_core import (
     RelationObservation,
     RelationObservationStatus,
     RelationTargetScope,
+    MatchingObservationStatus,
+    TriggerDescription,
+    observe_exact_keys,
 )
 
 
@@ -486,3 +489,16 @@ class TestCoreContracts(unittest.TestCase):
                 SimpleNamespace(nodes={"wrong-key": node_a}),
                 BoundaryContext("graph-boundary"),
             )
+
+    def test_exact_key_matching_is_an_observation_not_a_commitment(self):
+        context = BoundaryContext("trigger-boundary", question="password reset")
+        trigger = TriggerDescription(exact_keys=("password", "reset"))
+        matched = observe_exact_keys(trigger, "password reset request", context)
+        self.assertEqual(matched.status, MatchingObservationStatus.MATCHED)
+        self.assertEqual(matched.matched_keys, ("password", "reset"))
+        not_matched = observe_exact_keys(trigger, "wifi issue", context)
+        self.assertEqual(not_matched.status, MatchingObservationStatus.NOT_MATCHED)
+        unresolved = observe_exact_keys(TriggerDescription(), "anything", context)
+        self.assertEqual(unresolved.status, MatchingObservationStatus.UNRESOLVED)
+        with self.assertRaises(ValueError):
+            TriggerDescription(exact_keys=("password", 123))

@@ -30,6 +30,7 @@ from .relation_types import (
     RelationObservationStatus,
     RelationTargetScope,
 )
+from .trigger_types import MatchingObservation, MatchingObservationStatus, TriggerDescription, observe_exact_keys
 
 __all__ = [
     "AuthorityConstraint",
@@ -56,4 +57,8 @@ __all__ = [
     "RelationObservation",
     "RelationObservationStatus",
     "RelationTargetScope",
+    "MatchingObservation",
+    "MatchingObservationStatus",
+    "TriggerDescription",
+    "observe_exact_keys",
 ]
