@@ -191,8 +191,18 @@ class TestCoreContracts(unittest.TestCase):
         self.assertEqual(len(profile.profiles), 2)
         self.assertFalse(record.validated)
         self.assertEqual(record.validation_status, CompilationValidationStatus.NOT_EVALUATED)
-        extracted = extract_structure_candidate(profile, BoundaryContext("structure"))
+        with self.assertRaises(ValueError):
+            CompilationRecord(
+                candidate, validated=True,
+                validation_context=BoundaryContext("validation"),
+                validation_status=CompilationValidationStatus.FAILED,
+            )
+        extracted = extract_structure_candidate(
+            profile, BoundaryContext("structure"),
+            similarity=SimilarityVector(strength=0.9),
+        )
         self.assertEqual(extracted.relations, (identity.semantic_key,))
+        self.assertEqual(extracted.similarity.strength, 0.9)
         self.assertEqual(len(extracted.supporting_profiles), 2)
         candidate = compile_function_candidate(
             extracted, FunctionDescription("rdl_core.compiled_relation", "1"),

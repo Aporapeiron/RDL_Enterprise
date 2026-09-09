@@ -63,6 +63,7 @@ class StructureCandidate:
     supporting_profiles: Tuple[RelationConstraintProfile, ...] = ()
     conflicting_profiles: Tuple[RelationConstraintProfile, ...] = ()
     unresolved_count: int = 0
+    similarity: Optional["SimilarityVector"] = None
 
     def __post_init__(self) -> None:
         relations = tuple(self.relations)
@@ -114,6 +115,8 @@ class CompilationRecord:
             raise TypeError("validation_statusはCompilationValidationStatusである必要があります")
         if status == CompilationValidationStatus.PASSED and not self.validated:
             raise ValueError("PASSEDのCompilationRecordはvalidated=Trueである必要があります")
+        if status != CompilationValidationStatus.PASSED and self.validated:
+            raise ValueError("PASSED以外のCompilationRecordはvalidated=Falseである必要があります")
         object.__setattr__(self, "validation_status", status)
 
 
@@ -122,6 +125,7 @@ def extract_structure_candidate(
     context: BoundaryContext,
     *,
     provenance: Optional[Provenance] = None,
+    similarity: Optional[SimilarityVector] = None,
 ) -> StructureCandidate:
     """Extract unique semantic relation keys without creating a Commitment."""
     relations = tuple(dict.fromkeys(item.identity.semantic_key for item in profile.profiles))
@@ -131,7 +135,7 @@ def extract_structure_candidate(
     return StructureCandidate(
         relations, context, provenance=provenance or profile.provenance,
         supporting_profiles=supporting, conflicting_profiles=conflicting,
-        unresolved_count=unresolved,
+        unresolved_count=unresolved, similarity=similarity,
     )
 
 
