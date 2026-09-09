@@ -84,3 +84,31 @@ def compare_relation_constraint_profiles(
         left, right, score, coverage, conflict, status, context,
         evaluator=evaluator, provenance=provenance, invocation=invocation,
     )
+
+
+def compare_relation_constraint_polarity(
+    left: RelationConstraintProfile,
+    right: RelationConstraintProfile,
+    context: BoundaryContext,
+    *,
+    provenance: Optional[Provenance] = None,
+) -> RelationSimilarityObservation:
+    """Compare polarity independently from numeric constraint strength."""
+    evaluator = FunctionDescription("rdl_core.relation_polarity_similarity", "0")
+    same_identity = left.identity == right.identity
+    coverage = 1.0 if same_identity else 0.0
+    unresolved = (
+        left.strength.support == EvidencePolarity.UNRESOLVED
+        or right.strength.support == EvidencePolarity.UNRESOLVED
+    )
+    same_polarity = left.strength.support == right.strength.support
+    score = 1.0 if same_polarity and same_identity else 0.0
+    status = (
+        SimilarityObservationStatus.UNRESOLVED if unresolved
+        else SimilarityObservationStatus.SIMILAR if score == 1.0
+        else SimilarityObservationStatus.NOT_SIMILAR
+    )
+    return RelationSimilarityObservation(
+        left, right, score, coverage, 0.0, status, context,
+        evaluator=evaluator, provenance=provenance,
+    )

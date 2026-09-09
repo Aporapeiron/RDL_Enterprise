@@ -43,6 +43,7 @@ from .similarity_types import (
     RelationConstraintProfile,
     RelationSimilarityObservation,
     SimilarityObservationStatus,
+    compare_relation_constraint_polarity,
     compare_relation_constraint_profiles,
 )
 
@@ -83,4 +84,5 @@ __all__ = [
     "RelationSimilarityObservation",
     "SimilarityObservationStatus",
     "compare_relation_constraint_profiles",
+    "compare_relation_constraint_polarity",
 ]
