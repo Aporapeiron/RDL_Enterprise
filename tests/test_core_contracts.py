@@ -185,3 +185,27 @@ class TestCoreContracts(unittest.TestCase):
                 "purpose": "bounded-equivalence",
             },
         )
+
+    def test_enterprise_adapter_rejects_missing_observation_instead_of_zero(self):
+        from types import SimpleNamespace
+        from rdl_enterprise.constraint_adapter import activation_from_bundle
+
+        identity = ConstraintIdentity("c-missing", "s", "rel", "o")
+        context = BoundaryContext("b-missing")
+        incomplete = SimpleNamespace(
+            constraint_score=0.7,
+            relevance=0.8,
+            # freshness is intentionally absent
+            authority_weight=0.4,
+        )
+        with self.assertRaises(ValueError):
+            activation_from_bundle(incomplete, identity, context)
+
+        explicit_unknown = SimpleNamespace(
+            constraint_score=0.7,
+            relevance=0.8,
+            freshness=None,
+            authority_weight=0.4,
+        )
+        with self.assertRaises(ValueError):
+            activation_from_bundle(explicit_unknown, identity, context)

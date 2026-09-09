@@ -12,6 +12,19 @@ from rdl_core import (
 )
 
 
+def _required_score(bundle: object, field_name: str) -> float:
+    """Read a required observed score without collapsing missing into zero."""
+    if not hasattr(bundle, field_name):
+        raise ValueError(f"ConstraintBundle に必須観測値 '{field_name}' がありません")
+    value = getattr(bundle, field_name)
+    if value is None:
+        raise ValueError(f"ConstraintBundle の観測値 '{field_name}' は未確定です")
+    try:
+        return float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"ConstraintBundle の観測値 '{field_name}' は数値である必要があります") from exc
+
+
 def activation_from_bundle(
     bundle: object,
     identity: ConstraintIdentity,
@@ -26,11 +39,11 @@ def activation_from_bundle(
     numeric scores. Polarity must be supplied explicitly by the caller.
     """
     strength = ConstraintStrength(
-        value=float(getattr(bundle, "constraint_score", 0.0)),
+        value=_required_score(bundle, "constraint_score"),
         support=support,
-        relevance=float(getattr(bundle, "relevance", 0.0)),
-        freshness=float(getattr(bundle, "freshness", 0.0)),
-        authority=float(getattr(bundle, "authority_weight", 0.0)),
+        relevance=_required_score(bundle, "relevance"),
+        freshness=_required_score(bundle, "freshness"),
+        authority=_required_score(bundle, "authority_weight"),
     )
     return ConstraintActivation(
         identity=identity,
