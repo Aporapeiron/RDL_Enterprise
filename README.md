@@ -10,6 +10,8 @@ Core抽出時の受入条件と候補分類は、[RDL Core Extraction Gate](docs
 
 Enterprise `MBNode` のfield分類とCore投影範囲は、[MBNode Field Projection Map](docs/RDL_MBNode_Field_Projection.md) に定義します。
 
+`trigger_pattern` の意味分類とCore昇格条件は、[RDL Trigger Semantics](docs/RDL_Trigger_Semantics.md) に定義します。
+
 本リポジトリにおける「一致」「再現」「十分性」「閉包」は、明示または暗黙に設定された有限境界 $B$、問い $Q$、時点 $t$、観測断面 $O$、運用目的 $P$ に対する性質です。終端的完全性・世界そのものの決定論性・絶対的真理性・絶対的安全性を意味せず、いかなる運用閉包においても $\xi$ は残存します。RDL内部では、真理・現実そのもの・絶対的正解を直接認証せず、支持・対向・権威・来歴・拘束強度・運用採用として有限記述します。
 
 ---
