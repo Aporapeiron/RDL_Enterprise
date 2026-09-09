@@ -61,7 +61,12 @@ class EnterpriseSimAdapter:
                 expired_results = self.runtime.expire_pending_tickets(to_expire)
                 for res in expired_results:
                     cohort = self._ticket_cohort_map.get(res.ticket_id, "general")
-                    world.metrics.record_feedback(cohort=cohort, user_resolved=None, complaint=False)
+                    world.metrics.record_feedback(
+                        ticket_id=res.ticket_id,
+                        cohort=cohort,
+                        user_resolved=None,
+                        complaint=False,
+                    )
 
     def _handle_user_ticket(self, ev: SimEvent, world: SimulationWorld) -> None:
         """利用者の問い合わせを受信し、推論を実行"""
@@ -88,6 +93,7 @@ class EnterpriseSimAdapter:
 
         # メトリクス記録
         world.metrics.record_ticket(
+            ticket_id=ticket_id,
             cost_tier=resp.cost_tier,
             cohort=cohort,
             hitl_triggered=resp.hitl_required,
@@ -147,6 +153,7 @@ class EnterpriseSimAdapter:
 
         # メトリクス記録
         world.metrics.record_feedback(
+            ticket_id=ticket_id,
             cohort=cohort,
             user_resolved=user_resolved,
             complaint=complaint,
@@ -169,6 +176,7 @@ class EnterpriseSimAdapter:
             scope=scope,
             actor_type="human",
             authenticated_by="idp_sso",
+            timestamp=world.clock.iso_time,
         )
 
         domain = payload.get("domain", "security")
@@ -192,9 +200,9 @@ class EnterpriseSimAdapter:
                 category=domain,
                 authority=auth_ctx,
             )
-            print(f"\n🔐 [方針注入成功] {verifier_id} ({role}) がドメイン '{domain}' に正式方針をコミットしました。")
+            print(f"\n[方針注入成功] {verifier_id} ({role}) がドメイン '{domain}' に正式方針をコミットしました。")
         except PermissionError as pe:
-            print(f"\n🚫 [越境介入遮断] {verifier_id} ({role}) によるドメイン '{domain}' への介入がフェイルクローズ遮断されました: {pe}")
+            print(f"\n[越境介入遮断] {verifier_id} ({role}) によるドメイン '{domain}' への介入がフェイルクローズ遮断されました: {pe}")
 
     def _handle_timeout_trigger(self, ev: SimEvent, world: SimulationWorld) -> None:
         """タイムアウトバッチ明示発火"""
@@ -205,7 +213,12 @@ class EnterpriseSimAdapter:
         timed_out = self.runtime.expire_pending_tickets(target_ids)
         for res in timed_out:
             cohort = self._ticket_cohort_map.get(res.ticket_id, "general")
-            world.metrics.record_feedback(cohort=cohort, user_resolved=None, complaint=False)
+            world.metrics.record_feedback(
+                ticket_id=res.ticket_id,
+                cohort=cohort,
+                user_resolved=None,
+                complaint=False,
+            )
 
     def get_dynamics_state(self) -> Dict[str, Any]:
         """力学状態の現在値を取得"""

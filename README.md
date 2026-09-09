@@ -70,6 +70,7 @@ RDL_Enterprise/
 │   ├── test_promotion_gate.py           # 昇格ゲート・シャドウ評価テスト
 │   ├── test_shadow.py                   # 反実仮想シャドウ推論テスト
 │   ├── test_simulation_harness.py       # シミュレーションハーネス単体・結合テスト
+│   ├── test_simulation_scenarios.py     # 長期シナリオ・権威衝突・決定論・摂動受入アサーションテスト
 │   └── test_social_adapter.py           # ソーシャル摂動フィクスチャテスト
 ├── run_simulation.py                    # 5大実証シナリオ実行スクリプト
 ├── run_multiagent_sim.py                # 長期・複数主体・イベント駆動シミュレーション実行スクリプト
@@ -129,4 +130,4 @@ py -m pytest -o pythonpath=src
 py -m unittest discover tests
 ```
 
-全 **151件** の単体・結合・受入テストが高速（約0.1秒）にパスします。
+全 **156件** の単体・結合・受入テストが高速（約1.4秒）にパスします。

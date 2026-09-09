@@ -55,7 +55,7 @@ def build_world(scenario_name: str) -> SimulationWorld:
 
     adapter = EnterpriseSimAdapter(
         runtime=runtime,
-        oracle_answers={"account": "SSOポータル", "workflow": "旧ポータル"},
+        oracle_answers={"account": "sso.corp.internal", "workflow": "旧ポータル"},
     )
 
     world = SimulationWorld(minutes_per_tick=15, rdl_adapter=adapter)
@@ -67,9 +67,54 @@ def build_world(scenario_name: str) -> SimulationWorld:
         new_oracle = payload.get("new_oracle")
         if cat and new_oracle and hasattr(w.rdl_adapter, "oracle_answers"):
             w.rdl_adapter.oracle_answers[cat] = new_oracle
-            print(f"\n⚡ [環境激変] {cat} の制度・ツールが更新されました！ (新Oracle: {new_oracle})")
+            print(f"\n[環境激変] {cat} の制度・ツールが更新されました！ (新Oracle: {new_oracle})")
 
     world.register_event_handler(EventType.ENVIRONMENT_CHANGE.value, handle_env_change)
+
+    # シャドウ並行推論開始ハンドラ
+    def handle_start_shadow(ev: SimEvent, w: SimulationWorld):
+        rt = w.rdl_adapter.runtime
+        if rt.pending_reorganizations:
+            latest_prop_id = list(rt.pending_reorganizations.keys())[-1]
+            prop = rt.pending_reorganizations[latest_prop_id]
+            cand_node = prop.candidate_mb.get(prop.hot_node_id)
+            if cand_node:
+                was_frozen = cand_node.is_frozen
+                if was_frozen:
+                    cand_node.unfreeze()
+                cand_node.action_template = {
+                    "type": "direct_reply",
+                    "payload": "新SaaSポータル(https://saas-pwd.corp.com)より本人認証を行って再設定してください。",
+                }
+                if was_frozen:
+                    cand_node.freeze()
+            rt.enable_shadow_mode(latest_prop_id)
+            print(f"\n[シャドウ開始] プロポーザル '{latest_prop_id}' の並行反実仮想評価を開始しました。")
+
+    world.register_event_handler("start_shadow", handle_start_shadow)
+
+    # シャドウ評価案件流入ハンドラ
+    def handle_shadow_eval(ev: SimEvent, w: SimulationWorld):
+        rt = w.rdl_adapter.runtime
+        from rdl_enterprise.snapshot import BusinessInput, FeedbackResult
+        efp_shadow = BusinessInput(
+            ticket_id="TICK-SHADOW-TEST",
+            user_id="user_shadow",
+            category="account",
+            query_text="パスワードリセットの方法を教えてください",
+        )
+        rt.dispatch_ticket(efp_shadow)
+        rt.resolve_ticket_feedback(
+            "TICK-SHADOW-TEST",
+            FeedbackResult(
+                user_resolved=False,
+                human_rejected=True,
+                feedback_comment="旧URLは使えません",
+                new_knowledge_provided="新SaaSポータル(https://saas-pwd.corp.com)より再設定してください。",
+            ),
+        )
+
+    world.register_event_handler("shadow_eval_ticket", handle_shadow_eval)
 
     # 管理者承認ハンドラ
     def handle_manager_promote(ev: SimEvent, w: SimulationWorld):
@@ -86,12 +131,12 @@ def build_world(scenario_name: str) -> SimulationWorld:
             try:
                 success = rt.promote_candidate_mb(prop_id, authority=mgr_auth)
                 if success:
-                    print(f"\n👑 [マネージャー承認] プロポーザル '{prop_id}' が正式承認され、本番反映(Leap)されました！")
+                    print(f"\n[マネージャー承認] プロポーザル '{prop_id}' が正式承認され、本番反映(Leap)されました！")
                     w.metrics.record_promotion()
                 else:
-                    print(f"\n⚠️ [マネージャー承認失敗] 昇格ゲートを通過できませんでした。")
+                    print(f"\n[マネージャー承認失敗] 昇格ゲートを通過できませんでした。")
             except Exception as e:
-                print(f"\n⚠️ [マネージャー承認失敗] {e}")
+                print(f"\n[マネージャー承認失敗] {e}")
 
     world.register_event_handler("manager_promote", handle_manager_promote)
 

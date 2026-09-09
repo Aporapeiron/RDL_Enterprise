@@ -93,16 +93,40 @@ class TestSimulationHarness(unittest.TestCase):
         scenario = DummyScenario()
         world.load_scenario(scenario)
 
-        # Day 1, hour 10 = tick (10*60)//15 = 40 ticks
-        # 39 ticks 進めてもまだ発火しない
-        for _ in range(39):
+        # Day 1, hour 10:00 は start_time (09:00) から 1時間後 = 4 ticks
+        # 3 ticks 進めてもまだ発火しない
+        for _ in range(3):
             world.step()
         self.assertEqual(len(received_events), 0)
 
-        # 40 tick 目で発火
+        # 4 tick 目で発火
         world.step()
         self.assertEqual(len(received_events), 1)
         self.assertEqual(received_events[0].payload["msg"], "hello")
+
+    def test_replayer_determinism_comparison(self):
+        from rdl_simulation.replay import SimulationReplayer, TraceRecord
+
+        t1 = [
+            TraceRecord(tick=4, day=1, event_type="test", source_id="u1", target_id="ai", payload={"q": "v"}),
+            TraceRecord(tick=8, day=1, event_type="fb", source_id="u1", target_id="ai", payload={"r": True}),
+        ]
+        t2 = [
+            TraceRecord(tick=4, day=1, event_type="test", source_id="u1", target_id="ai", payload={"q": "v"}),
+            TraceRecord(tick=8, day=1, event_type="fb", source_id="u1", target_id="ai", payload={"r": True}),
+        ]
+        t3 = [
+            TraceRecord(tick=4, day=1, event_type="test", source_id="u1", target_id="ai", payload={"q": "v"}),
+            TraceRecord(tick=9, day=1, event_type="fb", source_id="u1", target_id="ai", payload={"r": True}),
+        ]
+
+        ok, msg = SimulationReplayer.compare_traces(t1, t2)
+        self.assertTrue(ok)
+        self.assertIsNone(msg)
+
+        ok_bad, msg_bad = SimulationReplayer.compare_traces(t1, t3)
+        self.assertFalse(ok_bad)
+        self.assertIn("Tick 不一致", msg_bad)
 
 
 if __name__ == "__main__":

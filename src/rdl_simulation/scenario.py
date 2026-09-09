@@ -4,17 +4,34 @@ RDL Simulation Harness - Scenario System
 """
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from rdl_simulation.world import SimulationWorld
 
 
+@dataclass(frozen=True)
+class SimulationRunContext:
+    """
+    シミュレーション実行の外生固定条件コンテキスト (BASE v2.0 §4.2 ReplayToken 整合)。
+    同一の RunContext からの実行は、同一のイベント順序および結果を決定論的に再現する。
+    """
+    seed: int
+    clock_start_iso: str
+    minutes_per_tick: int
+    scenario_name: str
+    scenario_version: str = "v1.0"
+    initial_mb_hash: Optional[str] = None
+    created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+
+
 @dataclass
 class ScenarioEvent:
     day: int
     hour: int = 9
+    minute: int = 0
     event_type: str = "custom"
     source_id: str = "scenario"
     target_id: str = "world"
@@ -27,18 +44,20 @@ class ScenarioPack(ABC):
     シミュレーションシナリオの定義パック。
     長期ライフサイクル、権威管轄衝突、摂動ストレスなどをカプセル化する。
     """
-    def __init__(self, name: str, description: str = ""):
+    def __init__(self, name: str, description: str = "", version: str = "v1.0"):
         self.name = name
         self.description = description
+        self.version = version
         self.scheduled_events: List[ScenarioEvent] = []
 
     def schedule_event(
         self,
         day: int,
         hour: int,
-        event_type: str,
-        source_id: str,
-        target_id: str,
+        minute: int = 0,
+        event_type: str = "custom",
+        source_id: str = "scenario",
+        target_id: str = "world",
         payload: Optional[Dict[str, Any]] = None,
         priority: int = 5,
     ) -> None:
@@ -46,6 +65,7 @@ class ScenarioPack(ABC):
             ScenarioEvent(
                 day=day,
                 hour=hour,
+                minute=minute,
                 event_type=event_type,
                 source_id=source_id,
                 target_id=target_id,

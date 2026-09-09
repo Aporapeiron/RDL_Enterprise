@@ -7,7 +7,6 @@ RDL Enterprise - Perturbation Stress Scenario
 4. コホート別局所破断率 (初心者 vs 短気 vs 慎重) の比較
 """
 
-import random
 from rdl_simulation.scenario import ScenarioPack
 from rdl_simulation.world import SimulationWorld
 from rdl_simulation.agent import Persona, UserAgent
@@ -40,22 +39,30 @@ class PerturbationStressScenario(ScenarioPack):
             "ログインできないパスワード",
         ]
 
-        tick = 10
-        for day in range(1, 15):
+        # 偶数日は通常クエリ（成功期待）、奇数日は破断・未知クエリ（失敗・苦情期待）を明示交互注入
+        for day in range(1, 31):
             for i, u in enumerate(users):
-                q = random.choice(base_queries)
+                q = base_queries[i % len(base_queries)]
+                # 30% の確率で表記揺れノイズを付与
+                if (day + i) % 3 == 0:
+                    q = f"【至急】{q}！動かないです"
+
                 query_data = u.create_query(q, category="account")
 
-                world.event_queue.push(
-                    scheduled_tick=tick,
+                # 奇数日は未知カテゴリーや誤作動を混ぜて失敗を誘発
+                cat = "account" if day % 2 == 0 else "unknown_trouble"
+
+                self.schedule_event(
+                    day=day,
+                    hour=10 + (i * 2),
+                    minute=0,
                     event_type=EventType.USER_TICKET.value,
                     source_id=u.agent_id,
                     target_id="enterprise_ai",
                     payload={
                         "ticket_id": f"TICK-STRESS-D{day:02d}-{i}",
                         "query_text": query_data["query_text"],
-                        "category": "account",
+                        "category": cat,
                         "cohort": u.persona.cohort,
                     },
                 )
-                tick += 4

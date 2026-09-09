@@ -651,7 +651,14 @@ class MBGraph:
                     f"無効な CommitmentOrigin: {origin}。CommitmentOrigin Enum のみを許可します。"
                 )
 
-        now_commit_iso = (commit_time or datetime.utcnow()).isoformat()
+        if commit_time is not None:
+            now_commit_iso = commit_time.isoformat() if isinstance(commit_time, datetime) else str(commit_time)
+        elif authority_context is not None and getattr(authority_context, "timestamp", None):
+            auth_ts = getattr(authority_context, "timestamp")
+            now_commit_iso = auth_ts.isoformat() if isinstance(auth_ts, datetime) else str(auth_ts)
+        else:
+            now_commit_iso = datetime.utcnow().isoformat()
+
         origin_str = origin.value
 
         # 2. 出所別の正統性・来歴の確立
@@ -688,7 +695,7 @@ class MBGraph:
         # - レガシー移行 (origin == MIGRATION_VERIFIED かつ last_support_at が None)
         # - 曖昧なレガシー証拠 (legacy_evidence_at があり last_support_at が None)
         if evidence_time is not None:
-            node.last_support_at = evidence_time.isoformat()
+            node.last_support_at = evidence_time.isoformat() if isinstance(evidence_time, datetime) else str(evidence_time)
         elif (
             node.last_support_at is None
             and node.last_opposing_at is None

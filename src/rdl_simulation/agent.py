@@ -21,6 +21,14 @@ class Persona:
     patience: float = 0.7                 # 忍耐度 (低いと未解決時に放置しやすく、TIMEOUT/UNKNOWN化を誘発)
     feedback_reliability: float = 0.9    # 報告の正確性 (低いと解決したのに未解決と誤認したり逆を報告)
     ambiguity: float = 0.2                # 表現の曖昧さ・主観性 (高いとクエリやフィードバックにノイズ混入)
+    seed: Optional[int] = None
+    rng: random.Random = field(init=False, repr=False)
+
+    def __post_init__(self):
+        self.rng = random.Random(self.seed if self.seed is not None else 42)
+
+    def set_rng(self, rng: random.Random) -> None:
+        self.rng = rng
 
     def evaluate_response(
         self,
@@ -41,7 +49,7 @@ class Persona:
         # 2. 忍耐度による放置（未返信/無反応）の判定
         # 忍耐度が低く、かつ回答がピンとこない場合は放置（フィードバック送信せず放置）
         will_abandon = False
-        if not is_actually_correct and random.random() > self.patience:
+        if not is_actually_correct and self.rng.random() > self.patience:
             will_abandon = True
 
         if will_abandon:
@@ -55,18 +63,18 @@ class Persona:
 
         # 3. フィードバック信頼性による認識ズレ
         perceived_success = is_actually_correct
-        if random.random() > self.feedback_reliability:
+        if self.rng.random() > self.feedback_reliability:
             # 誤認発生: 正しいのに失敗と判定、あるいは失敗なのに成功と勘違い
             perceived_success = not is_actually_correct
 
         # 4. 苦情（Complaint）判定: 忍耐度が低く、かつ不満（失敗）の時に発熱源となる苦情
         complaint = False
         if not perceived_success:
-            if random.random() > self.patience * 0.8:
+            if self.rng.random() > self.patience * 0.8:
                 complaint = True
 
         # 5. 返答までの遅延 (Tick数: 忍耐度やペルソナによって異なる)
-        delay_ticks = int(max(1, (1.0 - self.patience) * 4 + random.randint(1, 3)))
+        delay_ticks = int(max(1, (1.0 - self.patience) * 4 + self.rng.randint(1, 3)))
 
         return {
             "abandoned": False,
@@ -83,6 +91,9 @@ class SimAgent:
         self.agent_id = agent_id
         self.role = role
 
+    def set_rng(self, rng: random.Random) -> None:
+        pass
+
     def __repr__(self) -> str:
         return f"<{self.__class__.__name__} id={self.agent_id} role={self.role}>"
 
@@ -96,6 +107,9 @@ class UserAgent(SimAgent):
         self.persona = persona
         self.ticket_history: List[Dict[str, Any]] = []
 
+    def set_rng(self, rng: random.Random) -> None:
+        self.persona.set_rng(rng)
+
     def create_query(self, base_query: str, category: str = "general") -> Dict[str, Any]:
         """
         ペルソナの曖昧さ (ambiguity) に応じたノイズや表現揺れを付与したクエリを生成。
@@ -107,7 +121,7 @@ class UserAgent(SimAgent):
                 f"すみません、{query}の件で困ってます",
                 f"{query} お願いします",
             ]
-            query = random.choice(perturbations)
+            query = self.persona.rng.choice(perturbations)
         return {
             "user_id": self.agent_id,
             "cohort": self.persona.cohort,

@@ -7,9 +7,9 @@ from rdl_simulation.clock import SimulationClock
 from rdl_simulation.events import EventQueue, EventType, SimEvent
 from rdl_simulation.agent import SimAgent, Persona, UserAgent, AuthorityAgent, EnvironmentAgent
 from rdl_simulation.world import SimulationWorld
-from rdl_simulation.scenario import ScenarioPack, ScenarioEvent
+from rdl_simulation.scenario import ScenarioPack, ScenarioEvent, SimulationRunContext
 from rdl_simulation.metrics import SimMetricsCollector, DailySnapshot
-from rdl_simulation.replay import SimTraceLogger
+from rdl_simulation.replay import SimTraceLogger, SimulationReplayer
 
 __all__ = [
     "SimulationClock",
@@ -24,7 +24,9 @@ __all__ = [
     "SimulationWorld",
     "ScenarioPack",
     "ScenarioEvent",
+    "SimulationRunContext",
     "SimMetricsCollector",
     "DailySnapshot",
     "SimTraceLogger",
+    "SimulationReplayer",
 ]

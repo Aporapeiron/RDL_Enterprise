@@ -50,10 +50,10 @@ class LongTermLifecycleScenario(ScenarioPack):
         env = EnvironmentAgent("env_world")
         world.register_agent(env)
 
-        # 初期世界の正解 (Oracle): 旧SaaS / 旧ポータル
+        # 初期世界の正解 (Oracle): 旧社内ポータルURL
         if world.rdl_adapter and hasattr(world.rdl_adapter, "oracle_answers"):
             world.rdl_adapter.oracle_answers["workflow"] = "旧申請ポータル"
-            world.rdl_adapter.oracle_answers["account"] = "SSOポータル"
+            world.rdl_adapter.oracle_answers["account"] = "sso.corp.internal"
 
         # 2. 60日間のイベントスケジューリング
         # (Phase 1: Day 1〜15) 定型業務の反復 -> 沈澱
@@ -87,7 +87,8 @@ class LongTermLifecycleScenario(ScenarioPack):
         # (Phase 3: Day 31) 環境変化: 会社が新SaaSへの完全移行を発表！
         self.schedule_event(
             day=31,
-            hour=8,
+            hour=9,
+            minute=0,
             event_type=EventType.ENVIRONMENT_CHANGE.value,
             source_id="env_world",
             target_id="world",
@@ -107,16 +108,42 @@ class LongTermLifecycleScenario(ScenarioPack):
                 self.schedule_event(
                     day=day,
                     hour=10 + (i * 2),
+                    minute=0,
                     event_type=EventType.USER_TICKET.value,
                     source_id=uid,
                     target_id="enterprise_ai",
                     payload={"ticket_id": f"TICK-FAIL-D{day:02d}-{i}", "query_text": qtext, "category": cat, "cohort": world.get_agent(uid).persona.cohort},
                 )
 
-        # (Phase 5: Day 40) マネージャーによる正式承認・Leap
+        # (Phase 5-1: Day 37) シャドウ並行推論の開始
+        self.schedule_event(
+            day=37,
+            hour=10,
+            minute=0,
+            event_type="start_shadow",
+            source_id="tanaka_mgr",
+            target_id="enterprise_ai",
+            payload={"action": "enable_shadow"},
+            priority=2,
+        )
+
+        # (Phase 5-2: Day 38) シャドウ並行評価用案件の流入
+        self.schedule_event(
+            day=38,
+            hour=11,
+            minute=0,
+            event_type="shadow_eval_ticket",
+            source_id="tanaka_mgr",
+            target_id="enterprise_ai",
+            payload={"action": "evaluate_shadow_triplet"},
+            priority=2,
+        )
+
+        # (Phase 5-3: Day 40) マネージャーによる正式承認・Leap
         self.schedule_event(
             day=40,
             hour=14,
+            minute=0,
             event_type="manager_promote",
             source_id="tanaka_mgr",
             target_id="enterprise_ai",
@@ -129,6 +156,7 @@ class LongTermLifecycleScenario(ScenarioPack):
             self.schedule_event(
                 day=day,
                 hour=10,
+                minute=0,
                 event_type=EventType.USER_TICKET.value,
                 source_id="user_veteran",
                 target_id="enterprise_ai",

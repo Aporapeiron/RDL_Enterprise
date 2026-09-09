@@ -639,8 +639,13 @@ class InterpCascade:
             success_count=1,
             approval_count=1 if approved else 0,
             source_lineage=f"sedimentation:{origin}",
+            created_at=efp.created_at if efp and efp.created_at else None,
         )
-        self.mb_graph.commit_node(new_node, origin=CommitmentOrigin.VERIFIED_EXPERIENCE)
+        self.mb_graph.commit_node(
+            new_node,
+            origin=CommitmentOrigin.VERIFIED_EXPERIENCE,
+            commit_time=efp.created_at if efp and efp.created_at else None,
+        )
         # Level 0 キャッシュにも即座に登録（ドメイン境界付き）
         self.sediment_level0(category, efp.query_text, new_id)
         return new_node
@@ -658,6 +663,7 @@ class InterpCascade:
         caller trust や自己例外化を排除し、commit_node(origin=AUTHORITY) 経由で AuthorityContext.is_authorized_for() を検証する。
         """
         new_id = f"node_policy_{len(self.mb_graph.nodes) + 1:03d}"
+        created_ts = getattr(authority, "timestamp", None) if authority else (efp.created_at if efp else None)
         new_node = MBNode(
             id=new_id,
             domain=category,
@@ -675,8 +681,14 @@ class InterpCascade:
             approval_count=1,
             source_id=authority.actor_id if authority else None,
             source_lineage=f"authority:{authority.role}:{authority.actor_id}" if authority else None,
+            created_at=created_ts,
         )
-        self.mb_graph.commit_node(new_node, origin=CommitmentOrigin.AUTHORITY, authority_context=authority)
+        self.mb_graph.commit_node(
+            new_node,
+            origin=CommitmentOrigin.AUTHORITY,
+            authority_context=authority,
+            commit_time=created_ts,
+        )
         # 権限者による即時方針策定を Level 0 キャッシュへ登録
         self.sediment_level0(category, efp.query_text, new_id)
         return new_node

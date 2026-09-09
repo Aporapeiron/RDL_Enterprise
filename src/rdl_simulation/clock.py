@@ -19,12 +19,16 @@ class SimulationClock:
     current_time: datetime = datetime(2026, 9, 1, 9, 0, 0)
     minutes_per_tick: int = 15
 
+    def __post_init__(self):
+        if self.current_tick == 0:
+            self.current_time = self.start_time
+
     def tick(self, ticks: int = 1) -> None:
         """指定した Tick 数だけ時間を進める"""
         if ticks < 0:
             raise ValueError("時間の巻き戻し(負のtick)は許可されていません")
         self.current_tick += ticks
-        self.current_time += timedelta(minutes=self.minutes_per_tick * ticks)
+        self.current_time = self.start_time + timedelta(minutes=self.minutes_per_tick * self.current_tick)
 
     def advance_hours(self, hours: float) -> None:
         """指定時間だけ進める"""
@@ -35,6 +39,24 @@ class SimulationClock:
         """指定日数だけ進める"""
         ticks = int((days * 24 * 60) // self.minutes_per_tick)
         self.tick(ticks)
+
+    def datetime_to_tick(self, day: int, hour: int, minute: int = 0) -> int:
+        """
+        day (1-based), hour, minute から、start_time 起点の正確な tick 番号を算出する。
+        例: start_time が 09:00 の場合、Day 1, 10:00 は (10:00 - 09:00) = 60分 -> tick 4。
+        """
+        if day < 1:
+            raise ValueError(f"Day は 1 以上の整数を指定してください (指定値: {day})")
+        start_date = self.start_time.date()
+        target_date = start_date + timedelta(days=day - 1)
+        target_dt = datetime(target_date.year, target_date.month, target_date.day, hour, minute, 0)
+
+        delta = target_dt - self.start_time
+        total_minutes = delta.total_seconds() / 60.0
+        if total_minutes < 0:
+            raise ValueError(f"指定時刻 {target_dt} はシミュレーション開始時刻 {self.start_time} より過去です")
+
+        return int(total_minutes // self.minutes_per_tick)
 
     @property
     def current_day(self) -> int:

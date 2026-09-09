@@ -1,15 +1,12 @@
-"""
-RDL Simulation Harness - Simulation World
-クロック、イベントキュー、エージェント群、およびRDLランタイムを統合する中核モジュール。
-"""
-
+from datetime import datetime
+import random
 from typing import Any, Callable, Dict, List, Optional
 from rdl_simulation.clock import SimulationClock
 from rdl_simulation.events import EventQueue, SimEvent, EventType
 from rdl_simulation.agent import SimAgent, UserAgent, AuthorityAgent, EnvironmentAgent
 from rdl_simulation.metrics import SimMetricsCollector
 from rdl_simulation.replay import SimTraceLogger
-from rdl_simulation.scenario import ScenarioPack
+from rdl_simulation.scenario import ScenarioPack, SimulationRunContext
 
 
 class SimulationWorld:
@@ -19,20 +16,30 @@ class SimulationWorld:
     def __init__(
         self,
         start_day_str: str = "2026-09-01",
+        start_hour: int = 9,
+        start_minute: int = 0,
         minutes_per_tick: int = 15,
+        seed: int = 42,
         rdl_adapter: Optional[Any] = None,
     ):
-        self.clock = SimulationClock(minutes_per_tick=minutes_per_tick)
+        start_date = datetime.fromisoformat(start_day_str).date()
+        start_dt = datetime(start_date.year, start_date.month, start_date.day, start_hour, start_minute, 0)
+        self.clock = SimulationClock(start_time=start_dt, minutes_per_tick=minutes_per_tick)
+        self.seed = seed
+        self.rng = random.Random(seed)
         self.event_queue = EventQueue()
         self.agents: Dict[str, SimAgent] = {}
         self.metrics = SimMetricsCollector()
         self.trace_logger = SimTraceLogger()
         self.rdl_adapter = rdl_adapter
         self.active_scenario: Optional[ScenarioPack] = None
+        self.run_context: Optional[SimulationRunContext] = None
         self._custom_event_handlers: Dict[str, Callable[[SimEvent, "SimulationWorld"], None]] = {}
 
     def register_agent(self, agent: SimAgent) -> None:
-        """エージェントを登録"""
+        """エージェントを登録 (乱数シードをスコープ配布)"""
+        agent_seed = self.rng.randint(0, 10**9)
+        agent.set_rng(random.Random(agent_seed))
         self.agents[agent.agent_id] = agent
 
     def get_agent(self, agent_id: str) -> Optional[SimAgent]:
@@ -51,13 +58,26 @@ class SimulationWorld:
         self.active_scenario = scenario
         scenario.setup(self)
 
+        initial_mb_hash = None
+        if self.rdl_adapter and hasattr(self.rdl_adapter, "runtime"):
+            initial_mb_hash = self.rdl_adapter.runtime.mb_graph.content_hash()
+
+        self.run_context = SimulationRunContext(
+            seed=self.seed,
+            clock_start_iso=self.clock.start_time.isoformat(),
+            minutes_per_tick=self.clock.minutes_per_tick,
+            scenario_name=scenario.name,
+            scenario_version=getattr(scenario, "version", "v1.0"),
+            initial_mb_hash=initial_mb_hash,
+        )
+
         # スケジュールされたシナリオイベントをイベントキューに登録
         for sev in scenario.scheduled_events:
-            # day, hour から tick を計算
-            day_offset = sev.day - 1
-            hour_ticks = int((sev.hour * 60) // self.clock.minutes_per_tick)
-            ticks_per_day = int((24 * 60) // self.clock.minutes_per_tick)
-            target_tick = day_offset * ticks_per_day + hour_ticks
+            target_tick = self.clock.datetime_to_tick(
+                day=sev.day,
+                hour=sev.hour,
+                minute=sev.minute,
+            )
 
             self.event_queue.push(
                 scheduled_tick=max(0, target_tick),
