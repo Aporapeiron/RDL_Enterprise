@@ -6,20 +6,22 @@
 
 コード上の `exact`、`SUCCESS`、`oracle`、`confidence` などの識別子は、実装上必要であれば保持してよい。ただし、意味層では必ず有限境界 $B$、問い $Q$、時点 $t$、観測断面 $O$、運用目的 $Purpose$、権限・方針・閾値へ写像して読む。
 
+以下で `MUST` は規範上の必須条件、`SHOULD` は正当な理由がある場合に限り逸脱できる推奨条件を示す。各節のEnterprise固有名は規範そのものではなく、参照実装上の例である。
+
 ## 1. 世界そのものをCoreの状態にしない
 
 `world_truth`、`ground_truth`、`is_true`、`true_answer` をRDL Coreの内部状態として安易に導入しない。必要な外部参照は `environment_reference`、`fixture_condition`、`observed_outcome`、`external_reference` など、有限観測または実験条件として表現する。Simulationのoracleも真理ではなくfixtureである。
 
 ## 2. DescriptionとCommitmentを分離する
 
-`MBNode(...)` の生成は記述・候補の生成であり、$M_B$のActive Constraintではない。原則として、
+オブジェクト生成 MUST NOT imply Commitment or Active Constraint。Enterpriseの参照実装では `MBNode(...)` の生成は記述・候補の生成であり、$M_B$のActive Constraintではない。原則として、
 
 ```text
 Description -> Candidate -> Evidence / Authority / Verification
              -> Commitment -> Active Constraint
 ```
 
-を通過させる。constructorは `support`、`freshness`、`authority`、`commitment` を自己生成しない。
+を通過させる。constructor MUST NOT 自己の `support`、`freshness`、`authority`、`commitment` を生成する。
 
 ## 3. Evidence polarityを潰さない
 
@@ -27,11 +29,11 @@ Description -> Candidate -> Evidence / Authority / Verification
 
 ## 4. FとF'の解釈境界を固定する
 
-`F`と`F'`は同じpre-update $M_B$で解釈し、その差分を$E = Δ(F,F')$として扱う。比較途中で$M_B$を更新しない。Snapshot、ReplayToken、RunContextは、解釈に使った境界と時点を凍結・回収可能にする。
+`F`と`F'`は同じpre-update $M_B$で解釈し、その差分を$E = Δ(F,F')$として扱う。比較途中で$M_B$を更新してはならない。EnterpriseのSnapshot、ReplayToken、RunContextは、解釈に使った境界と時点を凍結・回収可能にする参照例である。
 
 ## 5. 外生条件を隠さない
 
-Core深部から `datetime.utcnow()` や `random.random()` を直接呼ばない。Observation Time、Evidence Time、Commitment Time、Simulation Time、seed、外部モデル、検索結果を明示的に注入する。時間・乱数・外部応答はすべてRunContextの構成要素である。
+意味遷移に影響する外生条件をCore深部から隠してはならない。Observation Time、Evidence Time、Commitment Time、Simulation Time、seed、外部モデル、検索結果のうち、F/F'、Constraint activation、Commitment、H、$M_Δ$、Actionに影響するもの MUST be recoverable through Context or Provenance。`datetime.utcnow()` や `random.random()` の直接呼出しは避ける。意味遷移に影響しないログ配送時刻、UI metadata、監査用wall clockなどは、意味境界の外部であることを明示すればよい。
 
 ## 6. AuthorityをTruthへ昇格させない
 
@@ -47,7 +49,7 @@ Core深部から `datetime.utcnow()` や `random.random()` を直接呼ばない
 
 ## 9. LLM出力を直接Commitmentしない
 
-LLM出力は候補関係材料であり、Evidence、Commitment、Truthではない。
+LLM出力 MUST NOT be committed directly。LLM出力は候補関係材料であり、Evidence、Commitment、Truthではない。
 
 ```text
 LLM -> Candidate -> RDL evaluation -> Adopt / Hold / Verify / HITL
@@ -71,6 +73,10 @@ State Digestは現在の観測境界で後続遷移に影響すると扱う遷�
 
 「RDL helperだから」「Core内部だから」「system ruleだから」という理由で検査・来歴・更新管理を免除しない。threshold、promotion policy、authority rule、cache rule、LLM selection ruleも、通常の関係拘束と同じく境界・権限・provenance・検証対象である。
 
+## 参照実装と規範の分離
+
+RDL Coreへ移植する際は、Enterpriseのクラス名・API名をそのまま規範とみなさない。`MBNode`、`ReplayToken`、`RunContext`、`Authority` は、Description/Commitmentの分離、境界固定、権限拘束という規範を具体化した参照実装である。Gameでは `Rumor`、`Belief Candidate`、`Committed Belief`、`Behavioral Constraint` など別の型へ写像してよいが、規範上の関係は維持しなければならない。
+
 ## 実装レビュー時の最小チェック
 
 - 世界の真理・現実・絶対安全を内部状態へ直接入れていないか
@@ -82,4 +88,3 @@ State Digestは現在の観測境界で後続遷移に影響すると扱う遷�
 - LLM出力を検証前にCommitmentしていないか
 - Replay、Digest、Verificationに有限境界があるか
 - RDL自身の規則にもprovenanceと検証を適用しているか
-
