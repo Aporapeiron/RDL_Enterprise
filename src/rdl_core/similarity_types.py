@@ -6,7 +6,7 @@ from typing import Optional
 
 from .constraint_types import ConstraintIdentity, ConstraintStrength
 from .contracts import BoundaryContext, EvidencePolarity, Provenance
-from .function_types import FunctionDescription
+from .function_types import FunctionDescription, FunctionInvocation
 
 
 class SimilarityObservationStatus(str, Enum):
@@ -36,6 +36,7 @@ class RelationSimilarityObservation:
     context: BoundaryContext
     evaluator: FunctionDescription = FunctionDescription("rdl_core.relation_similarity", "0")
     provenance: Optional[Provenance] = None
+    invocation: Optional[FunctionInvocation] = None
 
     def __post_init__(self) -> None:
         for name, value in (("score", self.score), ("coverage", self.coverage), ("conflict", self.conflict)):
@@ -45,6 +46,12 @@ class RelationSimilarityObservation:
             raise TypeError("statusはSimilarityObservationStatusである必要があります")
         if not isinstance(self.evaluator, FunctionDescription):
             raise TypeError("evaluatorはFunctionDescriptionである必要があります")
+        invocation = self.invocation or FunctionInvocation(
+            self.evaluator, self.context, provenance=self.provenance
+        )
+        if invocation.function != self.evaluator or invocation.context != self.context:
+            raise ValueError("invocationのFunctionまたはBoundaryが観測記録と一致していません")
+        object.__setattr__(self, "invocation", invocation)
 
 
 def compare_relation_constraint_profiles(
@@ -54,6 +61,7 @@ def compare_relation_constraint_profiles(
     *,
     evaluator: FunctionDescription = FunctionDescription("rdl_core.relation_similarity", "0"),
     provenance: Optional[Provenance] = None,
+    invocation: Optional[FunctionInvocation] = None,
 ) -> RelationSimilarityObservation:
     """Compare two finite relation profiles without inferring truth."""
     same_identity = left.identity == right.identity
@@ -74,5 +82,5 @@ def compare_relation_constraint_profiles(
     )
     return RelationSimilarityObservation(
         left, right, score, coverage, conflict, status, context,
-        evaluator=evaluator, provenance=provenance,
+        evaluator=evaluator, provenance=provenance, invocation=invocation,
     )

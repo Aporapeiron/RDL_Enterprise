@@ -93,6 +93,8 @@ class TestCoreContracts(unittest.TestCase):
         self.assertEqual(observation.status, SimilarityObservationStatus.SIMILAR)
         self.assertEqual(observation.coverage, 1.0)
         self.assertAlmostEqual(observation.score, 0.8)
+        self.assertEqual(observation.invocation.context, observation.context)
+        self.assertEqual(observation.invocation.function, observation.evaluator)
         unresolved = compare_relation_constraint_profiles(
             left,
             RelationConstraintProfile(identity, ConstraintStrength(0.6)),
