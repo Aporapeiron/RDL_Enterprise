@@ -60,6 +60,7 @@ from rdl_core import (
     record_deactivation,
     RegistryStatus,
     project_current_function_state,
+    request_recompilation,
 )
 
 
@@ -269,6 +270,11 @@ class TestCoreContracts(unittest.TestCase):
             project_current_function_state(active, deactivation=deactivation).status,
             RegistryStatus.INACTIVE,
         )
+        request = request_recompilation(
+            active, deactivation, BoundaryContext("recompile"),
+            reason="new boundary observed",
+        )
+        self.assertEqual(request.active, active)
 
 
     def test_commitment_record_requires_valid_origin_and_time(self):

@@ -70,6 +70,7 @@ from .promotion_types import PromotionDecision, PromotionDecisionStatus, evaluat
 from .activation_types import ActiveCompiledMB, activate_promoted_artifact
 from .deactivation_types import DeactivationRecord, DeactivationStatus, record_deactivation
 from .registry_types import CurrentFunctionState, RegistryStatus, project_current_function_state
+from .recompilation_types import RecompilationRequest, request_recompilation
 
 __all__ = [
     "AuthorityConstraint",
@@ -135,6 +136,8 @@ __all__ = [
     "CurrentFunctionState",
     "RegistryStatus",
     "project_current_function_state",
+    "RecompilationRequest",
+    "request_recompilation",
     "CompilationValidationStatus",
     "extract_structure_candidate",
     "compile_function_candidate",
