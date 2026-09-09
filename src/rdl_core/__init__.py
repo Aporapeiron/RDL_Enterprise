@@ -67,6 +67,7 @@ from .evolution_types import (
 )
 from .rupture_types import RuptureObservation, RuptureObservationStatus, record_rupture_observation
 from .promotion_types import PromotionDecision, PromotionDecisionStatus, evaluate_promotion
+from .activation_types import ActiveCompiledMB, activate_promoted_artifact
 
 __all__ = [
     "AuthorityConstraint",
@@ -124,6 +125,8 @@ __all__ = [
     "PromotionDecision",
     "PromotionDecisionStatus",
     "evaluate_promotion",
+    "ActiveCompiledMB",
+    "activate_promoted_artifact",
     "CompilationValidationStatus",
     "extract_structure_candidate",
     "compile_function_candidate",

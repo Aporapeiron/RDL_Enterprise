@@ -54,6 +54,8 @@ from rdl_core import (
     record_rupture_observation,
     PromotionDecisionStatus,
     evaluate_promotion,
+    ActiveCompiledMB,
+    activate_promoted_artifact,
 )
 
 
@@ -241,6 +243,10 @@ class TestCoreContracts(unittest.TestCase):
             approved, BoundaryContext("promotion"), ruptures=(rupture,)
         )
         self.assertEqual(unresolved_decision.status, PromotionDecisionStatus.UNRESOLVED)
+        active = activate_promoted_artifact(decision, BoundaryContext("activation"))
+        self.assertIsInstance(active, ActiveCompiledMB)
+        with self.assertRaises(ValueError):
+            activate_promoted_artifact(unresolved_decision, BoundaryContext("activation"))
 
 
     def test_commitment_record_requires_valid_origin_and_time(self):
