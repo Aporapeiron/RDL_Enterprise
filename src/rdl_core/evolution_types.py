@@ -16,6 +16,13 @@ class SimilarityMetric(str, Enum):
     PROVENANCE = "provenance"
 
 
+class CompilationValidationStatus(str, Enum):
+    PASSED = "passed"
+    FAILED = "failed"
+    UNRESOLVED = "unresolved"
+    NOT_EVALUATED = "not_evaluated"
+
+
 @dataclass(frozen=True)
 class SimilarityVector:
     """Metric-separated similarity values; dimensions are not implicitly aggregated."""
@@ -85,7 +92,27 @@ class CompilationRecord:
     validated: bool
     validation_context: BoundaryContext
     provenance: Optional[Provenance] = None
+    validation_status: Optional[CompilationValidationStatus] = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.validated, bool):
             raise TypeError("validatedはboolである必要があります")
+        status = self.validation_status
+        if status is None:
+            status = CompilationValidationStatus.PASSED if self.validated else CompilationValidationStatus.NOT_EVALUATED
+        if not isinstance(status, CompilationValidationStatus):
+            raise TypeError("validation_statusはCompilationValidationStatusである必要があります")
+        if status == CompilationValidationStatus.PASSED and not self.validated:
+            raise ValueError("PASSEDのCompilationRecordはvalidated=Trueである必要があります")
+        object.__setattr__(self, "validation_status", status)
+
+
+def extract_structure_candidate(
+    profile: AdaptiveMBProfile,
+    context: BoundaryContext,
+    *,
+    provenance: Optional[Provenance] = None,
+) -> StructureCandidate:
+    """Extract unique semantic relation keys without creating a Commitment."""
+    relations = tuple(dict.fromkeys(item.identity.semantic_key for item in profile.profiles))
+    return StructureCandidate(relations, context, provenance=provenance or profile.provenance)

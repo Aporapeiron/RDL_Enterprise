@@ -40,10 +40,12 @@ from rdl_core import (
     FunctionComposition,
     AdaptiveMBProfile,
     CompilationRecord,
+    CompilationValidationStatus,
     FunctionCandidate,
     SimilarityMetric,
     SimilarityVector,
     StructureCandidate,
+    extract_structure_candidate,
 )
 
 
@@ -187,6 +189,9 @@ class TestCoreContracts(unittest.TestCase):
         record = CompilationRecord(candidate, validated=False, validation_context=BoundaryContext("validation"))
         self.assertEqual(len(profile.profiles), 2)
         self.assertFalse(record.validated)
+        self.assertEqual(record.validation_status, CompilationValidationStatus.NOT_EVALUATED)
+        extracted = extract_structure_candidate(profile, BoundaryContext("structure"))
+        self.assertEqual(extracted.relations, (identity.semantic_key,))
 
 
     def test_commitment_record_requires_valid_origin_and_time(self):

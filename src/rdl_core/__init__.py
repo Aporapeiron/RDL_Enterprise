@@ -54,10 +54,12 @@ from .function_composition_types import FunctionComposition
 from .evolution_types import (
     AdaptiveMBProfile,
     CompilationRecord,
+    CompilationValidationStatus,
     FunctionCandidate,
     SimilarityMetric,
     SimilarityVector,
     StructureCandidate,
+    extract_structure_candidate,
 )
 
 __all__ = [
@@ -109,4 +111,6 @@ __all__ = [
     "StructureCandidate",
     "FunctionCandidate",
     "CompilationRecord",
+    "CompilationValidationStatus",
+    "extract_structure_candidate",
 ]
