@@ -38,6 +38,12 @@ from rdl_core import (
     compare_relation_constraint_provenance,
     FunctionComparison,
     FunctionComposition,
+    AdaptiveMBProfile,
+    CompilationRecord,
+    FunctionCandidate,
+    SimilarityMetric,
+    SimilarityVector,
+    StructureCandidate,
 )
 
 
@@ -170,6 +176,17 @@ class TestCoreContracts(unittest.TestCase):
         evaluation_comparison = FunctionEvaluationComparison(observation, polarity)
         self.assertTrue(evaluation_comparison.comparable)
         self.assertAlmostEqual(evaluation_comparison.delta(), -0.2)
+        vector = SimilarityVector(strength=0.8, polarity=1.0)
+        self.assertEqual(SimilarityMetric.STRENGTH.value, "strength")
+        self.assertIsNone(vector.provenance)
+        profile = AdaptiveMBProfile((left, right), BoundaryContext("adaptive"))
+        structure = StructureCandidate((identity.semantic_key,), BoundaryContext("adaptive"))
+        candidate_function = FunctionDescription("rdl_core.compiled_relation", "1")
+        candidate_invocation = FunctionInvocation(candidate_function, BoundaryContext("adaptive"))
+        candidate = FunctionCandidate(candidate_function, candidate_invocation, structure)
+        record = CompilationRecord(candidate, validated=False, validation_context=BoundaryContext("validation"))
+        self.assertEqual(len(profile.profiles), 2)
+        self.assertFalse(record.validated)
 
 
     def test_commitment_record_requires_valid_origin_and_time(self):

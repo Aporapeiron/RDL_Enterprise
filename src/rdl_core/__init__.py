@@ -51,6 +51,14 @@ from .similarity_types import (
 )
 from .function_comparison_types import FunctionComparison
 from .function_composition_types import FunctionComposition
+from .evolution_types import (
+    AdaptiveMBProfile,
+    CompilationRecord,
+    FunctionCandidate,
+    SimilarityMetric,
+    SimilarityVector,
+    StructureCandidate,
+)
 
 __all__ = [
     "AuthorityConstraint",
@@ -95,4 +103,10 @@ __all__ = [
     "compare_relation_constraint_provenance",
     "FunctionComparison",
     "FunctionComposition",
+    "SimilarityMetric",
+    "SimilarityVector",
+    "AdaptiveMBProfile",
+    "StructureCandidate",
+    "FunctionCandidate",
+    "CompilationRecord",
 ]
