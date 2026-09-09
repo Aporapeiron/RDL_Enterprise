@@ -26,6 +26,7 @@ from rdl_core import (
     MatchingObservationStatus,
     TriggerDescription,
     observe_exact_keys,
+    FunctionDescription,
 )
 
 
@@ -36,6 +37,15 @@ class TestCoreContracts(unittest.TestCase):
         self.assertEqual(BoundaryContext("b1").boundary_id, "b1")
         self.assertEqual(Provenance("fixture").source, "fixture")
         self.assertEqual(AuthorityConstraint("a1", "workflow", "ticket", "approve").scope, "workflow")
+
+    def test_function_description_is_bounded_evaluator_identity(self):
+        function = FunctionDescription("rdl_core.exact_keys", "0")
+        self.assertEqual(function.function_id, "rdl_core.exact_keys")
+        self.assertEqual(function.version, "0")
+        with self.assertRaises(TypeError):
+            FunctionDescription(123, "0")
+        with self.assertRaises(ValueError):
+            FunctionDescription("", "0")
 
     def test_commitment_record_requires_valid_origin_and_time(self):
         record = CommitmentRecord.from_dict_strict(

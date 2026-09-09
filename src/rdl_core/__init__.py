@@ -38,6 +38,7 @@ from .trigger_types import (
     normalize_exact_key_text,
     observe_exact_keys,
 )
+from .function_types import FunctionDescription
 
 __all__ = [
     "AuthorityConstraint",
@@ -70,4 +71,5 @@ __all__ = [
     "observe_exact_keys",
     "exact_key_matches",
     "normalize_exact_key_text",
+    "FunctionDescription",
 ]
