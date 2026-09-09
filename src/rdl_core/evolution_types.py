@@ -153,3 +153,22 @@ def compile_function_candidate(
         config=config or {}, provenance=provenance or structure.provenance,
     )
     return FunctionCandidate(function, invocation, structure, provenance=provenance or structure.provenance)
+
+
+def record_compilation_validation(
+    candidate: FunctionCandidate,
+    status: CompilationValidationStatus,
+    validation_context: BoundaryContext,
+    *,
+    provenance: Optional[Provenance] = None,
+) -> CompilationRecord:
+    """Record validation without promoting the candidate to an active Function."""
+    if not isinstance(status, CompilationValidationStatus):
+        raise TypeError("statusはCompilationValidationStatusである必要があります")
+    return CompilationRecord(
+        candidate=candidate,
+        validated=status == CompilationValidationStatus.PASSED,
+        validation_context=validation_context,
+        provenance=provenance or candidate.provenance,
+        validation_status=status,
+    )

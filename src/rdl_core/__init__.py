@@ -61,6 +61,7 @@ from .evolution_types import (
     StructureCandidate,
     extract_structure_candidate,
     compile_function_candidate,
+    record_compilation_validation,
 )
 
 __all__ = [
@@ -115,4 +116,5 @@ __all__ = [
     "CompilationValidationStatus",
     "extract_structure_candidate",
     "compile_function_candidate",
+    "record_compilation_validation",
 ]

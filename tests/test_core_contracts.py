@@ -47,6 +47,7 @@ from rdl_core import (
     StructureCandidate,
     extract_structure_candidate,
     compile_function_candidate,
+    record_compilation_validation,
 )
 
 
@@ -209,6 +210,11 @@ class TestCoreContracts(unittest.TestCase):
             purpose="structure compilation", config={"mode": "bounded"},
         )
         self.assertEqual(candidate.invocation.purpose, "structure compilation")
+        failed_record = record_compilation_validation(
+            candidate, CompilationValidationStatus.FAILED, BoundaryContext("validation"),
+        )
+        self.assertFalse(failed_record.validated)
+        self.assertEqual(failed_record.validation_status, CompilationValidationStatus.FAILED)
 
 
     def test_commitment_record_requires_valid_origin_and_time(self):
