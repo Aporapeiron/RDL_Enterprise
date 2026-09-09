@@ -63,6 +63,7 @@ from .evolution_types import (
     compile_function_candidate,
     record_compilation_validation,
 )
+from .rupture_types import RuptureObservation, RuptureObservationStatus, record_rupture_observation
 
 __all__ = [
     "AuthorityConstraint",
@@ -113,6 +114,9 @@ __all__ = [
     "StructureCandidate",
     "FunctionCandidate",
     "CompilationRecord",
+    "RuptureObservation",
+    "RuptureObservationStatus",
+    "record_rupture_observation",
     "CompilationValidationStatus",
     "extract_structure_candidate",
     "compile_function_candidate",

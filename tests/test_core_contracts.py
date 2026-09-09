@@ -48,6 +48,8 @@ from rdl_core import (
     extract_structure_candidate,
     compile_function_candidate,
     record_compilation_validation,
+    RuptureObservationStatus,
+    record_rupture_observation,
 )
 
 
@@ -215,6 +217,12 @@ class TestCoreContracts(unittest.TestCase):
         )
         self.assertFalse(failed_record.validated)
         self.assertEqual(failed_record.validation_status, CompilationValidationStatus.FAILED)
+        rupture = record_rupture_observation(
+            candidate, RuptureObservationStatus.UNRESOLVED,
+            BoundaryContext("rupture"), reason="missing counterfactual input",
+        )
+        self.assertEqual(rupture.status, RuptureObservationStatus.UNRESOLVED)
+        self.assertEqual(rupture.evaluator.function_id, "rdl_core.rupture_check")
 
 
     def test_commitment_record_requires_valid_origin_and_time(self):
