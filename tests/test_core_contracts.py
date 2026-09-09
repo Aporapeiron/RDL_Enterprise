@@ -45,12 +45,14 @@ from rdl_core import (
     SimilarityMetric,
     SimilarityVector,
     StructureCandidate,
+    StructureInductionResult,
     StructureDelta,
     RecompiledStructureCandidate,
     RelationConstraintDelta,
     ProfileCorrespondence,
     compare_structure_candidates,
     extract_structure_candidate,
+    induce_structure_candidate,
     extract_recompiled_structure_candidate,
     compile_function_candidate,
     record_compilation_validation,
@@ -174,6 +176,15 @@ class TestCoreContracts(unittest.TestCase):
         self.assertAlmostEqual(observation.score, 0.8)
         self.assertEqual(observation.invocation.context, observation.context)
         self.assertEqual(observation.invocation.function, observation.evaluator)
+        induction = induce_structure_candidate(
+            AdaptiveMBProfile((left, right), BoundaryContext("adaptive")),
+            BoundaryContext("induction"),
+            (observation,),
+        )
+        self.assertIsInstance(induction, StructureInductionResult)
+        self.assertEqual(induction.common_relations, (identity.semantic_key,))
+        self.assertEqual(induction.exception_relations, ())
+        self.assertEqual(induction.unresolved_observations, ())
         unresolved = compare_relation_constraint_profiles(
             left,
             RelationConstraintProfile(identity, ConstraintStrength(0.6)),

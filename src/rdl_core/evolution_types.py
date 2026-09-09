@@ -7,7 +7,11 @@ from typing import Optional, Tuple
 from .constraint_types import RelationSemanticKey
 from .contracts import BoundaryContext, EvidencePolarity, Provenance
 from .function_types import FunctionDescription, FunctionInvocation
-from .similarity_types import RelationConstraintProfile
+from .similarity_types import (
+    RelationConstraintProfile,
+    RelationSimilarityObservation,
+    SimilarityObservationStatus,
+)
 
 
 class SimilarityMetric(str, Enum):
@@ -83,6 +87,27 @@ class StructureCandidate:
         if not isinstance(self.unresolved_count, int) or self.unresolved_count < 0:
             raise ValueError("unresolved_countは0以上の整数である必要があります")
         object.__setattr__(self, "relations", relations)
+
+
+@dataclass(frozen=True)
+class StructureInductionResult:
+    """Similarity-guided structure evidence without automatic commitment."""
+
+    candidate: StructureCandidate
+    common_relations: Tuple[RelationSemanticKey, ...]
+    exception_relations: Tuple[RelationSemanticKey, ...]
+    unresolved_observations: Tuple[RelationSimilarityObservation, ...] = ()
+
+    def __post_init__(self) -> None:
+        for name in ("common_relations", "exception_relations"):
+            values = tuple(getattr(self, name))
+            if any(not isinstance(value, RelationSemanticKey) for value in values):
+                raise TypeError(f"{name}はRelationSemanticKeyの列である必要があります")
+            object.__setattr__(self, name, values)
+        observations = tuple(self.unresolved_observations)
+        if any(not isinstance(item, RelationSimilarityObservation) for item in observations):
+            raise TypeError("unresolved_observationsはRelationSimilarityObservationの列である必要があります")
+        object.__setattr__(self, "unresolved_observations", observations)
 
 
 @dataclass(frozen=True)
@@ -291,6 +316,56 @@ def extract_structure_candidate(
         relations, context, provenance=provenance or profile.provenance,
         supporting_profiles=supporting, conflicting_profiles=conflicting,
         unresolved_count=unresolved, similarity=similarity,
+    )
+
+
+def induce_structure_candidate(
+    profile: AdaptiveMBProfile,
+    context: BoundaryContext,
+    similarity_observations: Tuple[RelationSimilarityObservation, ...],
+    *,
+    min_score: float = 0.5,
+    provenance: Optional[Provenance] = None,
+) -> StructureInductionResult:
+    """Use explicit similarity observations to record common and exceptional relations."""
+    if not isinstance(min_score, (int, float)) or not 0.0 <= min_score <= 1.0:
+        raise ValueError("min_scoreは0以上1以下である必要があります")
+    observations = tuple(similarity_observations)
+    if any(not isinstance(item, RelationSimilarityObservation) for item in observations):
+        raise TypeError("similarity_observationsはRelationSimilarityObservationの列である必要があります")
+    common = []
+    exceptional = []
+    unresolved = []
+    profile_keys = {item.identity.semantic_key for item in profile.profiles}
+    for observation in observations:
+        left = observation.left.identity.semantic_key
+        right = observation.right.identity.semantic_key
+        if observation.status == SimilarityObservationStatus.UNRESOLVED:
+            unresolved.append(observation)
+        elif observation.status == SimilarityObservationStatus.SIMILAR and observation.score >= min_score:
+            for key in (left, right):
+                if key in profile_keys and key not in common:
+                    common.append(key)
+        else:
+            for key in (left, right):
+                if key in profile_keys and key not in exceptional:
+                    exceptional.append(key)
+    relations = tuple(dict.fromkeys(common + exceptional))
+    candidate = extract_structure_candidate(
+        profile, context, provenance=provenance, similarity=None,
+    )
+    return StructureInductionResult(
+        candidate=StructureCandidate(
+            relations=relations or candidate.relations,
+            context=candidate.context,
+            provenance=candidate.provenance,
+            supporting_profiles=candidate.supporting_profiles,
+            conflicting_profiles=candidate.conflicting_profiles,
+            unresolved_count=candidate.unresolved_count + len(unresolved),
+        ),
+        common_relations=tuple(common),
+        exception_relations=tuple(exceptional),
+        unresolved_observations=tuple(unresolved),
     )
 
 
