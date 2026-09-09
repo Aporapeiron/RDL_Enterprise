@@ -563,6 +563,7 @@ class ConditionalValidationRecord:
     context: BoundaryContext
     reason: str = ""
     provenance: Optional[Provenance] = None
+    condition_observations: Tuple[ConditionObservation, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.candidate, ConditionalRelationCandidate):
@@ -571,8 +572,21 @@ class ConditionalValidationRecord:
             raise TypeError("statusはConditionalValidationStatusである必要があります")
         if not isinstance(self.reason, str):
             raise TypeError("reasonは文字列である必要があります")
+        observations = tuple(self.condition_observations)
+        if any(not isinstance(item, ConditionObservation) for item in observations):
+            raise TypeError("condition_observationsはConditionObservationの列である必要があります")
+        object.__setattr__(self, "condition_observations", observations)
         if self.status == ConditionalValidationStatus.PASSED and not self.candidate.eligible_for_validation:
             raise ValueError("阻害要因のある候補をPASSEDにはできません")
+        if self.status == ConditionalValidationStatus.PASSED and self.candidate.structured_conditions:
+            expected = {item.condition_id for item in self.candidate.structured_conditions}
+            observed = {item.condition.condition_id: item for item in observations}
+            if len(observed) != len(observations) or set(observed) != expected:
+                raise ValueError("PASSEDには全structured conditionのObservationが必要です")
+            if any(item.status != ConditionObservationStatus.MATCH for item in observed.values()):
+                raise ValueError("PASSEDには全structured conditionのMATCHが必要です")
+            if any(item.context != self.context for item in observed.values()):
+                raise ValueError("Condition ObservationのBoundaryがValidationと一致していません")
 
 
 def record_conditional_validation(
@@ -582,9 +596,12 @@ def record_conditional_validation(
     *,
     reason: str = "",
     provenance: Optional[Provenance] = None,
+    condition_observations: Tuple[ConditionObservation, ...] = (),
 ) -> ConditionalValidationRecord:
     """Record validation without promoting the candidate to a Function or Commitment."""
-    return ConditionalValidationRecord(candidate, status, context, reason, provenance)
+    return ConditionalValidationRecord(
+        candidate, status, context, reason, provenance, condition_observations,
+    )
 
 
 def compile_conditional_function_candidate(

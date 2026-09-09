@@ -290,9 +290,22 @@ class TestCoreContracts(unittest.TestCase):
         )
         self.assertNotIn("missing_conditions", structured.validation_blockers)
         self.assertEqual(structured.structured_conditions, (condition,))
+        with self.assertRaises(ValueError):
+            record_conditional_validation(
+                structured, ConditionalValidationStatus.PASSED,
+                conditional.context,
+                condition_observations=(ConditionObservation(
+                    condition, ConditionObservationStatus.UNRESOLVED,
+                    conditional.context,
+                ),),
+            )
         structured_record = record_conditional_validation(
             structured, ConditionalValidationStatus.PASSED,
-            BoundaryContext("structured-condition-validation"),
+            conditional.context,
+            condition_observations=(ConditionObservation(
+                condition, ConditionObservationStatus.MATCH,
+                conditional.context,
+            ),),
         )
         structured_function = compile_conditional_function_candidate(
             structured_record, FunctionDescription("rdl_core.structured_condition", "1"),
