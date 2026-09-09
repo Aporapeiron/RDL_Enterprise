@@ -69,6 +69,8 @@ from rdl_core import (
     compile_replacement_candidate,
     ReplacementCandidate,
     record_replacement_candidate,
+    CompiledReplacement,
+    materialize_compiled_replacement,
 )
 
 
@@ -347,6 +349,14 @@ class TestCoreContracts(unittest.TestCase):
                 StructureCandidate((identity.semantic_key,), BoundaryContext("adaptive")),
                 FunctionDescription("rdl_core.compiled_relation", "1"),
             )
+        replacement_validation = record_compilation_validation(
+            replacement_lineage.candidate, CompilationValidationStatus.PASSED,
+            BoundaryContext("validation-v2"),
+        )
+        compiled_replacement = materialize_compiled_replacement(
+            replacement_lineage, replacement_validation,
+        )
+        self.assertIsInstance(compiled_replacement, CompiledReplacement)
 
 
     def test_commitment_record_requires_valid_origin_and_time(self):

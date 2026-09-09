@@ -80,6 +80,8 @@ from .recompilation_types import (
     compile_replacement_candidate,
     ReplacementCandidate,
     record_replacement_candidate,
+    CompiledReplacement,
+    materialize_compiled_replacement,
 )
 
 __all__ = [
@@ -156,6 +158,8 @@ __all__ = [
     "compile_replacement_candidate",
     "ReplacementCandidate",
     "record_replacement_candidate",
+    "CompiledReplacement",
+    "materialize_compiled_replacement",
     "CompilationValidationStatus",
     "extract_structure_candidate",
     "compile_function_candidate",

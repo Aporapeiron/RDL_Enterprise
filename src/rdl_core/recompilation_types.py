@@ -11,6 +11,8 @@ from .similarity_types import RelationConstraintProfile
 from .evolution_types import AdaptiveMBProfile
 from .evolution_types import (
     CompiledMB,
+    CompilationRecord,
+    CompilationValidationStatus,
     FunctionCandidate,
     StructureCandidate,
     StructureDelta,
@@ -51,6 +53,26 @@ class ReplacementCandidate:
             raise ValueError("ReplacementCandidateのRequestとpredecessorが一致していません")
         if self.candidate.function == self.predecessor.function:
             raise ValueError("ReplacementCandidateには新しいFunction identity/versionが必要です")
+
+
+@dataclass(frozen=True)
+class CompiledReplacement:
+    """A validated vNext Compiled M_B with explicit predecessor lineage."""
+
+    predecessor: CompiledMB
+    replacement: ReplacementCandidate
+    validation: CompilationRecord
+    compiled: CompiledMB
+
+    def __post_init__(self) -> None:
+        if self.replacement.predecessor != self.predecessor:
+            raise ValueError("CompiledReplacementのpredecessorが一致していません")
+        if self.validation.candidate != self.replacement.candidate:
+            raise ValueError("CompiledReplacementのValidation候補が一致していません")
+        if self.compiled.function != self.replacement.candidate.function:
+            raise ValueError("CompiledReplacementのFunctionが一致していません")
+        if self.validation.validation_status != CompilationValidationStatus.PASSED:
+            raise ValueError("CompiledReplacementにはPASSEDのValidationが必要です")
 
 
 def request_recompilation(
@@ -118,3 +140,16 @@ def record_replacement_candidate(
     )
     delta = compare_structure_candidates(request.active.artifact.structure, structure)
     return ReplacementCandidate(request.active.artifact, request, candidate, delta)
+
+
+def materialize_compiled_replacement(
+    replacement: ReplacementCandidate,
+    validation: CompilationRecord,
+) -> CompiledReplacement:
+    """Materialize a replacement only after validation success."""
+    compiled = CompiledMB(
+        replacement.candidate.function,
+        replacement.candidate.structure,
+        validation,
+    )
+    return CompiledReplacement(replacement.predecessor, replacement, validation, compiled)
