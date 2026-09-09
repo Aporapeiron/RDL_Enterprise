@@ -13,6 +13,7 @@ class SimilarityObservationStatus(str, Enum):
     SIMILAR = "similar"
     NOT_SIMILAR = "not_similar"
     UNRESOLVED = "unresolved"
+    NOT_COVERED = "not_covered"
 
 
 @dataclass(frozen=True)
@@ -109,6 +110,7 @@ def compare_relation_constraint_profiles(
     )
     status = (
         SimilarityObservationStatus.UNRESOLVED if unresolved
+        else SimilarityObservationStatus.NOT_COVERED if not same_relation
         else SimilarityObservationStatus.SIMILAR if score >= 0.5
         else SimilarityObservationStatus.NOT_SIMILAR
     )
@@ -138,6 +140,7 @@ def compare_relation_constraint_polarity(
     score = 1.0 if same_polarity and same_relation else 0.0
     status = (
         SimilarityObservationStatus.UNRESOLVED if unresolved
+        else SimilarityObservationStatus.NOT_COVERED if not same_relation
         else SimilarityObservationStatus.SIMILAR if score == 1.0
         else SimilarityObservationStatus.NOT_SIMILAR
     )
@@ -165,6 +168,7 @@ def compare_relation_constraint_provenance(
     score = 1.0 if not unresolved and same_relation and left_source == right_source else 0.0
     status = (
         SimilarityObservationStatus.UNRESOLVED if unresolved
+        else SimilarityObservationStatus.NOT_COVERED if not same_relation
         else SimilarityObservationStatus.SIMILAR if score == 1.0
         else SimilarityObservationStatus.NOT_SIMILAR
     )

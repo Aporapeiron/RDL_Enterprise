@@ -97,6 +97,7 @@ class StructureInductionResult:
     common_relations: Tuple[RelationSemanticKey, ...]
     exception_relations: Tuple[RelationSemanticKey, ...]
     unresolved_observations: Tuple[RelationSimilarityObservation, ...] = ()
+    unexamined_relations: Tuple[RelationSemanticKey, ...] = ()
 
     def __post_init__(self) -> None:
         for name in ("common_relations", "exception_relations"):
@@ -108,6 +109,10 @@ class StructureInductionResult:
         if any(not isinstance(item, RelationSimilarityObservation) for item in observations):
             raise TypeError("unresolved_observationsはRelationSimilarityObservationの列である必要があります")
         object.__setattr__(self, "unresolved_observations", observations)
+        unexamined = tuple(self.unexamined_relations)
+        if any(not isinstance(value, RelationSemanticKey) for value in unexamined):
+            raise TypeError("unexamined_relationsはRelationSemanticKeyの列である必要があります")
+        object.__setattr__(self, "unexamined_relations", unexamined)
 
 
 @dataclass(frozen=True)
@@ -196,6 +201,7 @@ def correspond_profiles(
         match_index = next(
             (index for index, item in enumerate(new)
              if index not in used
+             and source is not None
              and (item.identity.provenance.source if item.identity.provenance else None) == source),
             None,
         )
@@ -203,10 +209,6 @@ def correspond_profiles(
             used.add(match_index)
             pairs.append((old_item, new[match_index]))
     matched_old_indexes = {index for index, item in enumerate(old) if any(item is pair[0] for pair in pairs)}
-    remaining_old = [item for index, item in enumerate(old) if index not in matched_old_indexes]
-    remaining_new = [item for index, item in enumerate(new) if index not in used]
-    for old_item, new_item in zip(remaining_old, remaining_new):
-        pairs.append((old_item, new_item))
     matched_old_indexes = {index for index, item in enumerate(old) if any(item is pair[0] for pair in pairs)}
     matched_new_indexes = {index for index, item in enumerate(new) if any(item is pair[1] for pair in pairs)}
     return ProfileCorrespondence(
@@ -336,12 +338,16 @@ def induce_structure_candidate(
     common = []
     exceptional = []
     unresolved = []
+    examined = set()
     profile_keys = {item.identity.semantic_key for item in profile.profiles}
     for observation in observations:
         left = observation.left.identity.semantic_key
         right = observation.right.identity.semantic_key
+        examined.update((left, right))
         if observation.status == SimilarityObservationStatus.UNRESOLVED:
             unresolved.append(observation)
+        elif observation.status == SimilarityObservationStatus.NOT_COVERED:
+            continue
         elif observation.status == SimilarityObservationStatus.SIMILAR and observation.score >= min_score:
             for key in (left, right):
                 if key in profile_keys and key not in common:
@@ -350,7 +356,9 @@ def induce_structure_candidate(
             for key in (left, right):
                 if key in profile_keys and key not in exceptional:
                     exceptional.append(key)
-    relations = tuple(dict.fromkeys(common + exceptional))
+    all_relations = tuple(dict.fromkeys(item.identity.semantic_key for item in profile.profiles))
+    unexamined = tuple(item for item in all_relations if item not in examined)
+    relations = all_relations
     candidate = extract_structure_candidate(
         profile, context, provenance=provenance, similarity=None,
     )
@@ -366,6 +374,7 @@ def induce_structure_candidate(
         common_relations=tuple(common),
         exception_relations=tuple(exceptional),
         unresolved_observations=tuple(unresolved),
+        unexamined_relations=unexamined,
     )
 
 

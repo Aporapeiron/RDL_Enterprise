@@ -259,9 +259,10 @@ class TestCoreContracts(unittest.TestCase):
         )
         self.assertEqual(delta.added, ())
         self.assertEqual(delta.unchanged, (identity.semantic_key,))
-        self.assertEqual(len(delta.constraint_deltas), 2)
+        self.assertEqual(len(delta.constraint_deltas), 0)
         self.assertIsInstance(delta.profile_correspondences[0], ProfileCorrespondence)
-        self.assertFalse(delta.constraint_deltas[0].strength_changed)
+        self.assertEqual(len(delta.profile_correspondences[0].unmatched_previous), 2)
+        self.assertEqual(len(delta.profile_correspondences[0].unmatched_current), 2)
         failed_record = record_compilation_validation(
             candidate, CompilationValidationStatus.FAILED, BoundaryContext("validation"),
         )
