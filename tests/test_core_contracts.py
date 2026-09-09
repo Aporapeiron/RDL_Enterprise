@@ -46,9 +46,11 @@ from rdl_core import (
     SimilarityVector,
     StructureCandidate,
     StructureDelta,
+    RecompiledStructureCandidate,
     RelationConstraintDelta,
     compare_structure_candidates,
     extract_structure_candidate,
+    extract_recompiled_structure_candidate,
     compile_function_candidate,
     record_compilation_validation,
     CompiledMB,
@@ -333,6 +335,10 @@ class TestCoreContracts(unittest.TestCase):
         self.assertEqual(len(adaptive_next.profiles), 2)
         self.assertEqual(adaptive_next.prior_structure, active.artifact.structure)
         self.assertEqual(adaptive_next.recompilation_reason, "new boundary observed")
+        rebuilt = extract_recompiled_structure_candidate(
+            adaptive_next, BoundaryContext("structure"), similarity=SimilarityVector(strength=0.95),
+        )
+        self.assertIsInstance(rebuilt, RecompiledStructureCandidate)
         replacement_candidate = compile_replacement_candidate(
             request,
             StructureCandidate((identity.semantic_key,), BoundaryContext("recompile")),

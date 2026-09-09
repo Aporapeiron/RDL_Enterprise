@@ -146,6 +146,22 @@ class RelationConstraintDelta:
         return previous != current
 
 
+@dataclass(frozen=True)
+class RecompiledStructureCandidate:
+    previous: Optional[StructureCandidate]
+    current: StructureCandidate
+    delta: Optional[StructureDelta] = None
+
+    def __post_init__(self) -> None:
+        if self.previous is None and self.delta is not None:
+            raise ValueError("previousなしのRecompiledStructureCandidateにdeltaは指定できません")
+        if self.previous is not None:
+            if self.delta is None:
+                raise ValueError("previousありのRecompiledStructureCandidateにはdeltaが必要です")
+            if self.delta.previous != self.previous or self.delta.current != self.current:
+                raise ValueError("RecompiledStructureCandidateのdeltaが候補と一致していません")
+
+
 def compare_structure_candidates(
     previous: StructureCandidate,
     current: StructureCandidate,
@@ -231,6 +247,22 @@ def extract_structure_candidate(
         supporting_profiles=supporting, conflicting_profiles=conflicting,
         unresolved_count=unresolved, similarity=similarity,
     )
+
+
+def extract_recompiled_structure_candidate(
+    profile: AdaptiveMBProfile,
+    context: BoundaryContext,
+    *,
+    similarity: Optional[SimilarityVector] = None,
+    provenance: Optional[Provenance] = None,
+) -> RecompiledStructureCandidate:
+    """Build a vNext structure and compare it only within a shared Boundary."""
+    current = extract_structure_candidate(
+        profile, context, similarity=similarity, provenance=provenance,
+    )
+    previous = profile.prior_structure
+    delta = compare_structure_candidates(previous, current) if previous and previous.context == context else None
+    return RecompiledStructureCandidate(previous, current, delta)
 
 
 def compile_function_candidate(
