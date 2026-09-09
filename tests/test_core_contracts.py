@@ -502,3 +502,29 @@ class TestCoreContracts(unittest.TestCase):
         self.assertEqual(unresolved.status, MatchingObservationStatus.UNRESOLVED)
         with self.assertRaises(ValueError):
             TriggerDescription(exact_keys=("password", 123))
+
+    def test_mbnode_exact_key_trigger_projection_ignores_other_policies(self):
+        from rdl_enterprise.mb_graph import MBNode
+        from rdl_enterprise.trigger_adapter import matching_observation_from_mbnode
+
+        node = MBNode(
+            id="trigger-node", domain="it",
+            trigger_pattern={
+                "exact_keys": ["password", "reset"],
+                "rule_expr": "password.*reset",
+                "embedding": [0.1, 0.2],
+            },
+            action_template={"type": "direct_reply"},
+            source_id="trigger-policy",
+        )
+        observation = matching_observation_from_mbnode(
+            node, "password reset request", BoundaryContext("trigger-projection"),
+        )
+        self.assertEqual(observation.status, MatchingObservationStatus.MATCHED)
+        self.assertEqual(observation.matched_keys, ("password", "reset"))
+        self.assertEqual(observation.provenance.source, "trigger-policy")
+        node.trigger_pattern["exact_keys"] = "password"
+        with self.assertRaises(TypeError):
+            matching_observation_from_mbnode(
+                node, "password", BoundaryContext("trigger-projection-invalid")
+            )
