@@ -191,6 +191,21 @@ def record_constraint_evaluation(
 
 
 @dataclass(frozen=True)
+class RelationSemanticKey:
+    """Semantic relation key, excluding record identity and Provenance."""
+
+    subject: str
+    relation: str
+    object: str
+
+    def __post_init__(self) -> None:
+        for field_name in ("subject", "relation", "object"):
+            value = getattr(self, field_name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{field_name} は空にできません")
+
+
+@dataclass(frozen=True)
 class ConstraintIdentity:
     """A relation identity, independent of activation or Commitment."""
 
@@ -205,6 +220,10 @@ class ConstraintIdentity:
             value = getattr(self, field_name)
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"{field_name} は空にできません")
+
+    @property
+    def semantic_key(self) -> RelationSemanticKey:
+        return RelationSemanticKey(self.subject, self.relation, self.object)
 
 
 @dataclass(frozen=True)

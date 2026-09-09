@@ -64,10 +64,10 @@ def compare_relation_constraint_profiles(
     invocation: Optional[FunctionInvocation] = None,
 ) -> RelationSimilarityObservation:
     """Compare two finite relation profiles without inferring truth."""
-    same_identity = left.identity == right.identity
-    coverage = 1.0 if same_identity else 0.0
+    same_relation = left.identity.semantic_key == right.identity.semantic_key
+    coverage = 1.0 if same_relation else 0.0
     strength_distance = abs(left.strength.value - right.strength.value)
-    score = 1.0 - strength_distance if same_identity else 0.0
+    score = 1.0 - strength_distance if same_relation else 0.0
     conflict = 1.0 if {
         left.strength.support, right.strength.support
     } == {EvidencePolarity.SUPPORT, EvidencePolarity.OPPOSE} else 0.0
@@ -95,14 +95,14 @@ def compare_relation_constraint_polarity(
 ) -> RelationSimilarityObservation:
     """Compare polarity independently from numeric constraint strength."""
     evaluator = FunctionDescription("rdl_core.relation_polarity_similarity", "0")
-    same_identity = left.identity == right.identity
-    coverage = 1.0 if same_identity else 0.0
+    same_relation = left.identity.semantic_key == right.identity.semantic_key
+    coverage = 1.0 if same_relation else 0.0
     unresolved = (
         left.strength.support == EvidencePolarity.UNRESOLVED
         or right.strength.support == EvidencePolarity.UNRESOLVED
     )
     same_polarity = left.strength.support == right.strength.support
-    score = 1.0 if same_polarity and same_identity else 0.0
+    score = 1.0 if same_polarity and same_relation else 0.0
     status = (
         SimilarityObservationStatus.UNRESOLVED if unresolved
         else SimilarityObservationStatus.SIMILAR if score == 1.0
@@ -126,9 +126,9 @@ def compare_relation_constraint_provenance(
     left_source = left.identity.provenance.source if left.identity.provenance else None
     right_source = right.identity.provenance.source if right.identity.provenance else None
     unresolved = left_source is None or right_source is None
-    same_identity = left.identity == right.identity
-    coverage = 1.0 if same_identity else 0.0
-    score = 1.0 if not unresolved and left_source == right_source else 0.0
+    same_relation = left.identity.semantic_key == right.identity.semantic_key
+    coverage = 1.0 if same_relation else 0.0
+    score = 1.0 if not unresolved and same_relation and left_source == right_source else 0.0
     status = (
         SimilarityObservationStatus.UNRESOLVED if unresolved
         else SimilarityObservationStatus.SIMILAR if score == 1.0

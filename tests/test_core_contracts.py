@@ -14,6 +14,7 @@ from rdl_core import (
     ConstraintEvaluationComparison,
     ConstraintEvaluationDelta,
     ConstraintIdentity,
+    RelationSemanticKey,
     ConstraintStrength,
     evaluate_constraint_strength,
     record_constraint_evaluation,
@@ -126,6 +127,20 @@ class TestCoreContracts(unittest.TestCase):
             left, right, BoundaryContext("similarity"),
         )
         self.assertEqual(provenance.status, SimilarityObservationStatus.UNRESOLVED)
+        source_left = ConstraintIdentity(
+            "c-left", "a", "supports", "b", Provenance("source-a")
+        )
+        source_right = ConstraintIdentity(
+            "c-right", "a", "supports", "b", Provenance("source-b")
+        )
+        self.assertEqual(source_left.semantic_key, RelationSemanticKey("a", "supports", "b"))
+        provenance_comparison = compare_relation_constraint_provenance(
+            RelationConstraintProfile(source_left, left.strength),
+            RelationConstraintProfile(source_right, right.strength),
+            BoundaryContext("similarity"),
+        )
+        self.assertEqual(provenance_comparison.coverage, 1.0)
+        self.assertEqual(provenance_comparison.status, SimilarityObservationStatus.NOT_SIMILAR)
 
 
     def test_commitment_record_requires_valid_origin_and_time(self):
