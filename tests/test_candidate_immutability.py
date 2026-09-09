@@ -598,16 +598,16 @@ class TestCandidateImmutabilityAndBinding(unittest.TestCase):
         self.assertIn("F' 事後解釈", resolved_snap.f_prime.explanation)
 
     def test_frozen_context_identity_drift_detection(self):
-        """Identity Drift & Immutability 検知: 凍結コンテキスト自体の不変性とハッシュ変質を検知して遮断すること"""
+        """Identity Drift & Immutability 検知: 境界内凍結コンテキスト自体の不変性とハッシュ変質を検知して遮断すること"""
         runtime = EnterpriseRuntime(mb_graph=self.prod_graph, theta_0=2.0)
         efp = BusinessInput("T_DRIFT_01", "U1", "workflow", "稟議申請")
         runtime.dispatch_ticket(efp)
         snapshot = runtime.pending_snapshots["T_DRIFT_01"]
 
-        # 1. コンテキスト自体の属性直接改変が完全凍結により拒絶されること
+        # 1. コンテキスト自体の属性直接改変が境界内凍結により拒絶されること
         with self.assertRaises(RuntimeError) as imm_ctx:
             snapshot.frozen_context.mb_content_hash = "tampered_hash_12345"
-        self.assertIn("完全凍結", str(imm_ctx.exception))
+        self.assertIn("境界内凍結", str(imm_ctx.exception))
 
         # 2. 内部コンポーネント改変による暗号論的コンテキスト変質 (Context Drift) を検知して遮断すること
         # super().__setattr__ を用いて不正改変をシミュレート
