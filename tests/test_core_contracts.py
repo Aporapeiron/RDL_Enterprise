@@ -57,6 +57,7 @@ from rdl_core import (
     extract_structure_candidate,
     induce_structure_candidate,
     cluster_relation_keys,
+    induce_structure_candidate_with_clusters,
     extract_recompiled_structure_candidate,
     compile_function_candidate,
     record_compilation_validation,
@@ -196,6 +197,14 @@ class TestCoreContracts(unittest.TestCase):
         self.assertEqual(len(clusters), 1)
         self.assertIsInstance(clusters[0], RelationClusterCandidate)
         self.assertEqual(len(clusters[0].members), 2)
+        clustered = induce_structure_candidate_with_clusters(
+            AdaptiveMBProfile((left, right), BoundaryContext("adaptive")),
+            BoundaryContext("cluster"),
+            (observation,),
+            clusters,
+        )
+        self.assertEqual(len(clustered.cluster_candidates), 1)
+        self.assertAlmostEqual(clustered.cluster_candidates[0].cohesion, 2 / 3)
         induction = induce_structure_candidate(
             AdaptiveMBProfile((left, right), BoundaryContext("adaptive")),
             BoundaryContext("induction"),

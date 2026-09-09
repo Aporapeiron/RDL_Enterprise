@@ -99,6 +99,7 @@ class StructureInductionResult:
     exception_relations: Tuple[RelationSemanticKey, ...]
     unresolved_observations: Tuple[RelationSimilarityObservation, ...] = ()
     unexamined_relations: Tuple[RelationSemanticKey, ...] = ()
+    cluster_candidates: Tuple["RelationClusterCandidate", ...] = ()
 
     def __post_init__(self) -> None:
         for name in ("common_relations", "exception_relations"):
@@ -114,6 +115,10 @@ class StructureInductionResult:
         if any(not isinstance(value, RelationSemanticKey) for value in unexamined):
             raise TypeError("unexamined_relationsはRelationSemanticKeyの列である必要があります")
         object.__setattr__(self, "unexamined_relations", unexamined)
+        clusters = tuple(self.cluster_candidates)
+        if any(not isinstance(value, RelationClusterCandidate) for value in clusters):
+            raise TypeError("cluster_candidatesはRelationClusterCandidateの列である必要があります")
+        object.__setattr__(self, "cluster_candidates", clusters)
 
 
 @dataclass(frozen=True)
@@ -134,6 +139,13 @@ class RelationClusterCandidate:
             raise TypeError("observationsはRelationSemanticSimilarityObservationの列である必要があります")
         object.__setattr__(self, "members", members)
         object.__setattr__(self, "observations", observations)
+
+    @property
+    def cohesion(self) -> float:
+        """Mean observed similarity; connectedness is not mutual similarity."""
+        if not self.observations:
+            return 0.0
+        return sum(item.score for item in self.observations) / len(self.observations)
 
 
 @dataclass(frozen=True)
@@ -399,6 +411,31 @@ def induce_structure_candidate(
     )
 
 
+def induce_structure_candidate_with_clusters(
+    profile: AdaptiveMBProfile,
+    context: BoundaryContext,
+    similarity_observations: Tuple[RelationSimilarityObservation, ...],
+    relation_clusters: Tuple[RelationClusterCandidate, ...],
+    *,
+    min_score: float = 0.5,
+    provenance: Optional[Provenance] = None,
+) -> StructureInductionResult:
+    """Attach relation-position cluster evidence to a bounded structure result."""
+    base = induce_structure_candidate(
+        profile, context, similarity_observations,
+        min_score=min_score, provenance=provenance,
+    )
+    clusters = tuple(relation_clusters)
+    if any(cluster.context != context for cluster in clusters):
+        raise ValueError("Relation clusterのBoundaryがStructure誘導と一致していません")
+    return StructureInductionResult(
+        candidate=base.candidate,
+        common_relations=base.common_relations,
+        exception_relations=base.exception_relations,
+        unresolved_observations=base.unresolved_observations,
+        unexamined_relations=base.unexamined_relations,
+        cluster_candidates=clusters,
+    )
 def cluster_relation_keys(
     keys: Tuple[RelationSemanticKey, ...],
     observations: Tuple[RelationSemanticSimilarityObservation, ...],
