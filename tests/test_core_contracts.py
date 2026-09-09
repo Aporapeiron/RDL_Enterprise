@@ -48,6 +48,7 @@ from rdl_core import (
     SimilarityVector,
     StructureCandidate,
     StructureInductionResult,
+    RelationClusterCandidate,
     StructureDelta,
     RecompiledStructureCandidate,
     RelationConstraintDelta,
@@ -55,6 +56,7 @@ from rdl_core import (
     compare_structure_candidates,
     extract_structure_candidate,
     induce_structure_candidate,
+    cluster_relation_keys,
     extract_recompiled_structure_candidate,
     compile_function_candidate,
     record_compilation_validation,
@@ -186,6 +188,14 @@ class TestCoreContracts(unittest.TestCase):
         self.assertIsInstance(semantic_observation, RelationSemanticSimilarityObservation)
         self.assertAlmostEqual(semantic_observation.score, 2 / 3)
         self.assertEqual(semantic_observation.status, SimilarityObservationStatus.SIMILAR)
+        clusters = cluster_relation_keys(
+            (identity.semantic_key, RelationSemanticKey("x", "supports", "b")),
+            (semantic_observation,),
+            BoundaryContext("cluster"),
+        )
+        self.assertEqual(len(clusters), 1)
+        self.assertIsInstance(clusters[0], RelationClusterCandidate)
+        self.assertEqual(len(clusters[0].members), 2)
         induction = induce_structure_candidate(
             AdaptiveMBProfile((left, right), BoundaryContext("adaptive")),
             BoundaryContext("induction"),

@@ -11,6 +11,7 @@ from .similarity_types import (
     RelationConstraintProfile,
     RelationSimilarityObservation,
     SimilarityObservationStatus,
+    RelationSemanticSimilarityObservation,
 )
 
 
@@ -113,6 +114,26 @@ class StructureInductionResult:
         if any(not isinstance(value, RelationSemanticKey) for value in unexamined):
             raise TypeError("unexamined_relationsはRelationSemanticKeyの列である必要があります")
         object.__setattr__(self, "unexamined_relations", unexamined)
+
+
+@dataclass(frozen=True)
+class RelationClusterCandidate:
+    """A similarity-derived relation cluster candidate, not a semantic commitment."""
+
+    members: Tuple[RelationSemanticKey, ...]
+    observations: Tuple[RelationSemanticSimilarityObservation, ...]
+    context: BoundaryContext
+    provenance: Optional[Provenance] = None
+
+    def __post_init__(self) -> None:
+        members = tuple(dict.fromkeys(self.members))
+        if any(not isinstance(item, RelationSemanticKey) for item in members):
+            raise TypeError("membersはRelationSemanticKeyの列である必要があります")
+        observations = tuple(self.observations)
+        if any(not isinstance(item, RelationSemanticSimilarityObservation) for item in observations):
+            raise TypeError("observationsはRelationSemanticSimilarityObservationの列である必要があります")
+        object.__setattr__(self, "members", members)
+        object.__setattr__(self, "observations", observations)
 
 
 @dataclass(frozen=True)
@@ -375,6 +396,53 @@ def induce_structure_candidate(
         exception_relations=tuple(exceptional),
         unresolved_observations=tuple(unresolved),
         unexamined_relations=unexamined,
+    )
+
+
+def cluster_relation_keys(
+    keys: Tuple[RelationSemanticKey, ...],
+    observations: Tuple[RelationSemanticSimilarityObservation, ...],
+    context: BoundaryContext,
+    *,
+    min_score: float = 0.5,
+    provenance: Optional[Provenance] = None,
+) -> Tuple[RelationClusterCandidate, ...]:
+    """Build connected relation-cluster candidates from explicit position observations."""
+    if not isinstance(min_score, (int, float)) or not 0.0 <= min_score <= 1.0:
+        raise ValueError("min_scoreは0以上1以下である必要があります")
+    known = tuple(dict.fromkeys(keys))
+    if any(not isinstance(item, RelationSemanticKey) for item in known):
+        raise TypeError("keysはRelationSemanticKeyの列である必要があります")
+    valid = tuple(
+        item for item in observations
+        if isinstance(item, RelationSemanticSimilarityObservation)
+        and item.status == SimilarityObservationStatus.SIMILAR
+        and item.score >= min_score
+    )
+    groups = []
+    for observation in valid:
+        pair = {observation.left, observation.right}
+        if not pair.issubset(set(known)) or observation.left == observation.right:
+            continue
+        merged = [index for index, group in enumerate(groups) if pair.intersection(group[0])]
+        if not merged:
+            groups.append((set(pair), [observation]))
+            continue
+        first = merged[0]
+        groups[first][0].update(pair)
+        groups[first][1].append(observation)
+        for index in reversed(merged[1:]):
+            groups[first][0].update(groups[index][0])
+            groups[first][1].extend(groups[index][1])
+            groups.pop(index)
+    return tuple(
+        RelationClusterCandidate(
+            members=tuple(item for item in known if item in members),
+            observations=tuple(observations),
+            context=context,
+            provenance=provenance,
+        )
+        for members, observations in groups
     )
 
 
