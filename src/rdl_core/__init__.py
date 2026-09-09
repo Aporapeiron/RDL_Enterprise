@@ -66,6 +66,7 @@ from .evolution_types import (
     compile_validated_candidate,
 )
 from .rupture_types import RuptureObservation, RuptureObservationStatus, record_rupture_observation
+from .promotion_types import PromotionDecision, PromotionDecisionStatus, evaluate_promotion
 
 __all__ = [
     "AuthorityConstraint",
@@ -120,6 +121,9 @@ __all__ = [
     "RuptureObservation",
     "RuptureObservationStatus",
     "record_rupture_observation",
+    "PromotionDecision",
+    "PromotionDecisionStatus",
+    "evaluate_promotion",
     "CompilationValidationStatus",
     "extract_structure_candidate",
     "compile_function_candidate",

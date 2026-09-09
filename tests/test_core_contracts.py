@@ -52,6 +52,8 @@ from rdl_core import (
     compile_validated_candidate,
     RuptureObservationStatus,
     record_rupture_observation,
+    PromotionDecisionStatus,
+    evaluate_promotion,
 )
 
 
@@ -232,6 +234,13 @@ class TestCoreContracts(unittest.TestCase):
         self.assertIsInstance(compiled, CompiledMB)
         with self.assertRaises(ValueError):
             compile_validated_candidate(failed_record)
+        approved = compile_validated_candidate(passed_record)
+        decision = evaluate_promotion(approved, BoundaryContext("promotion"))
+        self.assertEqual(decision.status, PromotionDecisionStatus.APPROVED)
+        unresolved_decision = evaluate_promotion(
+            approved, BoundaryContext("promotion"), ruptures=(rupture,)
+        )
+        self.assertEqual(unresolved_decision.status, PromotionDecisionStatus.UNRESOLVED)
 
 
     def test_commitment_record_requires_valid_origin_and_time(self):
