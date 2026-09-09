@@ -208,6 +208,8 @@ class TestCoreContracts(unittest.TestCase):
         self.assertEqual(pattern.relation, "supports")
         self.assertEqual(pattern.object, "b")
         self.assertFalse(pattern.fully_specified)
+        self.assertEqual(pattern.varying_slots, ("subject",))
+        self.assertAlmostEqual(pattern.specificity, 2 / 3)
         clustered = induce_structure_candidate_with_clusters(
             AdaptiveMBProfile((left, right), BoundaryContext("adaptive")),
             BoundaryContext("cluster"),

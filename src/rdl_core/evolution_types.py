@@ -172,6 +172,20 @@ class RelationPatternCandidate:
     def fully_specified(self) -> bool:
         return self.subject is not None and self.relation is not None and self.object is not None
 
+    @property
+    def varying_slots(self) -> Tuple[str, ...]:
+        return tuple(
+            name for name, value in (
+                ("subject", self.subject),
+                ("relation", self.relation),
+                ("object", self.object),
+            ) if value is None
+        )
+
+    @property
+    def specificity(self) -> float:
+        return 1.0 - (len(self.varying_slots) / 3.0)
+
 
 def derive_relation_pattern(cluster: RelationClusterCandidate) -> RelationPatternCandidate:
     """Extract only slot values shared by every cluster member."""
