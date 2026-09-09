@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from types import MappingProxyType
-from typing import Any, Dict, Mapping, Optional, Union
+from typing import Any, Dict, FrozenSet, List, Mapping, Optional, Set, Tuple, Union
 
 
 class EvidencePolarity(str, Enum):
@@ -23,7 +23,22 @@ class CommitmentOrigin(str, Enum):
     TEST_FIXTURE = "test_fixture"
 
 
-BoundaryValue = Union[None, bool, int, float, str, tuple]
+BoundaryScalar = Union[None, bool, int, float, str]
+BoundaryInputValue = Union[
+    BoundaryScalar,
+    Mapping[str, "BoundaryInputValue"],
+    List["BoundaryInputValue"],
+    Tuple["BoundaryInputValue", ...],
+    Set["BoundaryInputValue"],
+]
+FrozenBoundaryValue = Union[
+    BoundaryScalar,
+    Mapping[str, "FrozenBoundaryValue"],
+    Tuple["FrozenBoundaryValue", ...],
+    FrozenSet["FrozenBoundaryValue"],
+]
+# Backward-compatible public name for callers that only need the input contract.
+BoundaryValue = BoundaryInputValue
 
 
 def _deep_freeze(value: Any) -> Any:

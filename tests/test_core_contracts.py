@@ -70,10 +70,9 @@ class TestCoreContracts(unittest.TestCase):
                     continue
                 self.assertTrue(forbidden.isdisjoint(imported), f"forbidden import in {path}: {imported & forbidden}")
 
-    def test_extraction_contract_equivalence_fixtures(self):
+    def test_legacy_contract_compatibility_fixtures(self):
         fixtures = [
             ({"origin": "authority", "committed_at": "2026-09-09T00:00:00+00:00", "actor": "a1"}, True),
-            ({"origin": "game:rumor", "committed_at": "2026-09-09T00:00:00+00:00", "actor": "npc-1"}, True),
             ({"origin": "truth", "committed_at": "2026-09-09T00:00:00+00:00", "actor": "a1"}, False),
             ({"origin": "authority", "committed_at": "bad", "actor": "a1"}, False),
             ({"origin": "authority", "committed_at": "2026-09-09T00:00:00+00:00", "actor": "a1", "evidence_at": 123}, False),
@@ -89,3 +88,9 @@ class TestCoreContracts(unittest.TestCase):
             self.assertEqual(observed, accepted, payload)
             if accepted:
                 self.assertEqual(serialized["origin"], payload["origin"])
+
+    def test_intentional_namespaced_origin_expansion(self):
+        record = CommitmentRecord.from_dict_strict(
+            {"origin": "game:rumor", "committed_at": "2026-09-09T00:00:00+00:00", "actor": "npc-1"}
+        )
+        self.assertEqual(record.origin, "game:rumor")

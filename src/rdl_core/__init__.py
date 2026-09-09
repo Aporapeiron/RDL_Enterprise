@@ -3,7 +3,9 @@
 from .contracts import (
     AuthorityConstraint,
     BoundaryContext,
+    BoundaryInputValue,
     BoundaryValue,
+    FrozenBoundaryValue,
     CommitmentOrigin,
     CommitmentRecord,
     EvidencePolarity,
@@ -13,7 +15,9 @@ from .contracts import (
 __all__ = [
     "AuthorityConstraint",
     "BoundaryContext",
+    "BoundaryInputValue",
     "BoundaryValue",
+    "FrozenBoundaryValue",
     "CommitmentOrigin",
     "CommitmentRecord",
     "EvidencePolarity",
