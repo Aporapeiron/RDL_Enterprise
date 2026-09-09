@@ -1,3 +1,4 @@
+import ast
 import unittest
 
 from rdl_core import (
@@ -47,10 +48,44 @@ class TestCoreContracts(unittest.TestCase):
         with self.assertRaises(TypeError):
             context.conditions["nested"]["mode"] = "mutated"
 
+        tuple_context = BoundaryContext("b2", conditions={"items": ({"seed": 1},)})
+        with self.assertRaises(TypeError):
+            tuple_context.conditions["items"][0]["seed"] = 2
+        with self.assertRaises(TypeError):
+            BoundaryContext("b3", conditions={"unsupported": object()})
+
     def test_core_source_has_no_runtime_package_imports(self):
         from pathlib import Path
 
         core_root = Path(__file__).parents[1] / "src" / "rdl_core"
-        source = "\n".join(path.read_text(encoding="utf-8") for path in core_root.glob("*.py"))
-        self.assertNotIn("rdl_enterprise", source)
-        self.assertNotIn("rdl_simulation", source)
+        forbidden = {"rdl_enterprise", "rdl_simulation"}
+        for path in core_root.rglob("*.py"):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    imported = {alias.name.split(".")[0] for alias in node.names}
+                elif isinstance(node, ast.ImportFrom):
+                    imported = {node.module.split(".")[0]} if node.module else set()
+                else:
+                    continue
+                self.assertTrue(forbidden.isdisjoint(imported), f"forbidden import in {path}: {imported & forbidden}")
+
+    def test_extraction_contract_equivalence_fixtures(self):
+        fixtures = [
+            ({"origin": "authority", "committed_at": "2026-09-09T00:00:00+00:00", "actor": "a1"}, True),
+            ({"origin": "game:rumor", "committed_at": "2026-09-09T00:00:00+00:00", "actor": "npc-1"}, True),
+            ({"origin": "truth", "committed_at": "2026-09-09T00:00:00+00:00", "actor": "a1"}, False),
+            ({"origin": "authority", "committed_at": "bad", "actor": "a1"}, False),
+            ({"origin": "authority", "committed_at": "2026-09-09T00:00:00+00:00", "actor": "a1", "evidence_at": 123}, False),
+        ]
+        for payload, accepted in fixtures:
+            try:
+                record = CommitmentRecord.from_dict_strict(payload)
+                observed = True
+                serialized = record.to_dict()
+            except ValueError:
+                observed = False
+                serialized = None
+            self.assertEqual(observed, accepted, payload)
+            if accepted:
+                self.assertEqual(serialized["origin"], payload["origin"])

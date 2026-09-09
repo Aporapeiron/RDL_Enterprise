@@ -3,6 +3,7 @@
 from .contracts import (
     AuthorityConstraint,
     BoundaryContext,
+    BoundaryValue,
     CommitmentOrigin,
     CommitmentRecord,
     EvidencePolarity,
@@ -12,6 +13,7 @@ from .contracts import (
 __all__ = [
     "AuthorityConstraint",
     "BoundaryContext",
+    "BoundaryValue",
     "CommitmentOrigin",
     "CommitmentRecord",
     "EvidencePolarity",

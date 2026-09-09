@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from types import MappingProxyType
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Dict, Mapping, Optional, Union
 
 
 class EvidencePolarity(str, Enum):
@@ -23,14 +23,19 @@ class CommitmentOrigin(str, Enum):
     TEST_FIXTURE = "test_fixture"
 
 
+BoundaryValue = Union[None, bool, int, float, str, tuple]
+
+
 def _deep_freeze(value: Any) -> Any:
-    if isinstance(value, dict):
+    if isinstance(value, Mapping):
         return MappingProxyType({key: _deep_freeze(item) for key, item in value.items()})
-    if isinstance(value, list):
+    if isinstance(value, (list, tuple)):
         return tuple(_deep_freeze(item) for item in value)
     if isinstance(value, set):
         return frozenset(_deep_freeze(item) for item in value)
-    return value
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    raise TypeError(f"BoundaryContext.conditions に対応しない値型です: {type(value).__name__}")
 
 
 def _valid_origin(origin: str) -> bool:
