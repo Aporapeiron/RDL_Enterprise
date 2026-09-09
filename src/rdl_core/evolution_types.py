@@ -28,6 +28,20 @@ class CompilationValidationStatus(str, Enum):
     NOT_EVALUATED = "not_evaluated"
 
 
+class ConditionalValidationStatus(str, Enum):
+    PASSED = "passed"
+    FAILED = "failed"
+    UNRESOLVED = "unresolved"
+    NOT_EVALUATED = "not_evaluated"
+
+
+class ConditionalRuptureStatus(str, Enum):
+    DETECTED = "detected"
+    NOT_DETECTED = "not_detected"
+    UNRESOLVED = "unresolved"
+    NOT_EVALUATED = "not_evaluated"
+
+
 class PatternSlotKind(str, Enum):
     FIXED = "fixed"
     VARIABLE = "variable"
@@ -45,13 +59,67 @@ class PatternEvidence:
     specificity: float
 
     def __post_init__(self) -> None:
-        if self.member_count < 1 or not isinstance(self.member_count, int):
+        if not isinstance(self.member_count, int) or self.member_count < 1:
             raise ValueError("member_countは1以上の整数である必要があります")
         for name, value in (("cohesion", self.cohesion), ("specificity", self.specificity)):
             if not isinstance(value, (int, float)) or not 0.0 <= value <= 1.0:
                 raise ValueError(f"{name}は0以上1以下である必要があります")
-        if self.conflicting_edge_count < 0 or self.unresolved_edge_count < 0:
+        if (not isinstance(self.conflicting_edge_count, int)
+                or not isinstance(self.unresolved_edge_count, int)
+                or self.conflicting_edge_count < 0
+                or self.unresolved_edge_count < 0):
             raise ValueError("edge countは0以上である必要があります")
+
+    @property
+    def edge_count(self) -> int:
+        return self.conflicting_edge_count + self.unresolved_edge_count
+
+    @property
+    def conflict_ratio(self) -> float:
+        return self.conflicting_edge_count / max(1, self.member_count)
+
+    @property
+    def unresolved_ratio(self) -> float:
+        return self.unresolved_edge_count / max(1, self.member_count)
+
+
+@dataclass(frozen=True)
+class PatternSlotEvidence:
+    """Evidence localized to one relation slot."""
+
+    slot: str
+    kind: PatternSlotKind
+    observed_values: Tuple[str, ...]
+    support_count: int = 0
+    conflict_count: int = 0
+    unresolved_count: int = 0
+
+    def __post_init__(self) -> None:
+        if self.slot not in ("subject", "relation", "object"):
+            raise ValueError("slotはsubject/relation/objectのいずれかである必要があります")
+        if not isinstance(self.kind, PatternSlotKind):
+            raise TypeError("kindはPatternSlotKindである必要があります")
+        object.__setattr__(self, "observed_values", tuple(dict.fromkeys(self.observed_values)))
+        for name in ("support_count", "conflict_count", "unresolved_count"):
+            value = getattr(self, name)
+            if not isinstance(value, int) or value < 0:
+                raise ValueError(f"{name}は0以上の整数である必要があります")
+
+
+@dataclass(frozen=True)
+class PatternVariableBinding:
+    """Observed finite values for one variable relation slot."""
+
+    slot: str
+    values: Tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if self.slot not in ("subject", "relation", "object"):
+            raise ValueError("slotはsubject/relation/objectのいずれかである必要があります")
+        values = tuple(dict.fromkeys(self.values))
+        if not values or any(not isinstance(value, str) or not value for value in values):
+            raise ValueError("valuesは空でない文字列の列である必要があります")
+        object.__setattr__(self, "values", values)
 
 
 @dataclass(frozen=True)
@@ -101,6 +169,8 @@ class StructureCandidate:
     conflicting_profiles: Tuple[RelationConstraintProfile, ...] = ()
     unresolved_count: int = 0
     similarity: Optional["SimilarityVector"] = None
+    conditions: Tuple[str, ...] = ()
+    exceptions: Tuple[RelationSemanticKey, ...] = ()
 
     def __post_init__(self) -> None:
         relations = tuple(self.relations)
@@ -114,6 +184,14 @@ class StructureCandidate:
         if not isinstance(self.unresolved_count, int) or self.unresolved_count < 0:
             raise ValueError("unresolved_countは0以上の整数である必要があります")
         object.__setattr__(self, "relations", relations)
+        conditions = tuple(self.conditions)
+        if any(not isinstance(item, str) or not item.strip() for item in conditions):
+            raise ValueError("conditionsは空でない文字列の列である必要があります")
+        exceptions = tuple(dict.fromkeys(self.exceptions))
+        if any(not isinstance(item, RelationSemanticKey) for item in exceptions):
+            raise TypeError("exceptionsはRelationSemanticKeyの列である必要があります")
+        object.__setattr__(self, "conditions", conditions)
+        object.__setattr__(self, "exceptions", exceptions)
 
 
 @dataclass(frozen=True)
@@ -181,6 +259,21 @@ class RelationClusterCandidate:
         return sum(item.score for item in self.observations) / len(self.observations)
 
     @property
+    def support_cohesion(self) -> float:
+        supported = tuple(
+            item for item in self.observations
+            if item.status == SimilarityObservationStatus.SIMILAR
+        )
+        if not supported:
+            return 0.0
+        return sum(item.score for item in supported) / len(supported)
+
+    @property
+    def coverage(self) -> float:
+        possible = len(self.members) * (len(self.members) - 1) / 2
+        return min(1.0, len(self.observations) / possible) if possible else 0.0
+
+    @property
     def connected(self) -> bool:
         return len(self.members) > 1
 
@@ -230,6 +323,392 @@ class RelationPatternCandidate:
             unresolved_edge_count=len(self.cluster.unresolved_edges),
             specificity=self.specificity,
         )
+
+    @property
+    def slot_evidence(self) -> Tuple[PatternSlotEvidence, ...]:
+        result = []
+        for slot in ("subject", "relation", "object"):
+            values = tuple(dict.fromkeys(getattr(member, slot) for member in self.cluster.members))
+            unresolved = sum(
+                getattr(edge.left, slot) != getattr(edge.right, slot)
+                for edge in self.cluster.unresolved_edges
+            )
+            conflict = sum(
+                getattr(edge.left, slot) != getattr(edge.right, slot)
+                for edge in self.cluster.conflicting_edges
+            )
+            if len(values) == 1:
+                kind = PatternSlotKind.FIXED
+            elif unresolved:
+                kind = PatternSlotKind.UNRESOLVED
+            else:
+                kind = PatternSlotKind.VARIABLE
+            result.append(PatternSlotEvidence(
+                slot=slot, kind=kind, observed_values=values,
+                support_count=max(0, len(self.cluster.observations) - conflict - unresolved),
+                conflict_count=conflict, unresolved_count=unresolved,
+            ))
+        return tuple(result)
+
+
+@dataclass(frozen=True)
+class ConditionalRelationCandidate:
+    """Finite conditional relation candidate; creation does not imply activation."""
+
+    pattern: RelationPatternCandidate
+    conditions: Tuple[str, ...] = ()
+    exceptions: Tuple[RelationSemanticKey, ...] = ()
+    unresolved_slots: Tuple[PatternSlotEvidence, ...] = ()
+    evidence: Optional[PatternEvidence] = None
+    context: Optional[BoundaryContext] = None
+    provenance: Optional[Provenance] = None
+    variable_bindings: Tuple[PatternVariableBinding, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.pattern, RelationPatternCandidate):
+            raise TypeError("patternはRelationPatternCandidateである必要があります")
+        conditions = tuple(self.conditions)
+        if any(not isinstance(item, str) or not item.strip() for item in conditions):
+            raise ValueError("conditionsは空でない文字列の列である必要があります")
+        exceptions = tuple(dict.fromkeys(self.exceptions))
+        if any(not isinstance(item, RelationSemanticKey) for item in exceptions):
+            raise TypeError("exceptionsはRelationSemanticKeyの列である必要があります")
+        unresolved = tuple(self.unresolved_slots) or tuple(
+            item for item in self.pattern.slot_evidence if item.kind == PatternSlotKind.UNRESOLVED
+        )
+        if any(not isinstance(item, PatternSlotEvidence) for item in unresolved):
+            raise TypeError("unresolved_slotsはPatternSlotEvidenceの列である必要があります")
+        if self.evidence is not None and not isinstance(self.evidence, PatternEvidence):
+            raise TypeError("evidenceはPatternEvidenceである必要があります")
+        bindings = tuple(self.variable_bindings)
+        if any(not isinstance(item, PatternVariableBinding) for item in bindings):
+            raise TypeError("variable_bindingsはPatternVariableBindingの列である必要があります")
+        object.__setattr__(self, "conditions", conditions)
+        object.__setattr__(self, "exceptions", exceptions)
+        object.__setattr__(self, "unresolved_slots", unresolved)
+        object.__setattr__(self, "variable_bindings", bindings)
+
+    @property
+    def variable_slots(self) -> Tuple[str, ...]:
+        return tuple(
+            item.slot for item in self.pattern.slot_evidence
+            if item.kind == PatternSlotKind.VARIABLE
+        )
+
+    @property
+    def validation_blockers(self) -> Tuple[str, ...]:
+        blockers = []
+        if self.context is None:
+            blockers.append("missing_context")
+        if self.unresolved_slots:
+            blockers.append("unresolved_slots")
+        if not self.conditions:
+            blockers.append("missing_conditions")
+        if self.evidence is None or self.evidence.member_count < 1:
+            blockers.append("missing_evidence")
+        return tuple(blockers)
+
+    @property
+    def eligible_for_validation(self) -> bool:
+        return not self.validation_blockers
+
+
+def build_conditional_relation_candidate(
+    pattern: RelationPatternCandidate,
+    *,
+    conditions: Tuple[str, ...] = (),
+    exceptions: Tuple[RelationSemanticKey, ...] = (),
+    context: Optional[BoundaryContext] = None,
+    provenance: Optional[Provenance] = None,
+) -> ConditionalRelationCandidate:
+    """Package an inspected pattern as a conditional candidate without promotion."""
+    inferred_exceptions = tuple(dict.fromkeys(
+        edge.left for edge in pattern.cluster.conflicting_edges
+    ))
+    return ConditionalRelationCandidate(
+        pattern=pattern,
+        conditions=conditions,
+        exceptions=exceptions or inferred_exceptions,
+        evidence=pattern.evidence,
+        context=context or pattern.cluster.context,
+        provenance=provenance or pattern.cluster.provenance,
+        variable_bindings=tuple(
+            PatternVariableBinding(item.slot, item.observed_values)
+            for item in pattern.slot_evidence
+            if item.kind == PatternSlotKind.VARIABLE and item.observed_values
+        ),
+    )
+
+
+@dataclass(frozen=True)
+class ConditionalValidationRecord:
+    """Finite validation observation for a conditional candidate."""
+
+    candidate: ConditionalRelationCandidate
+    status: ConditionalValidationStatus
+    context: BoundaryContext
+    reason: str = ""
+    provenance: Optional[Provenance] = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.candidate, ConditionalRelationCandidate):
+            raise TypeError("candidateはConditionalRelationCandidateである必要があります")
+        if not isinstance(self.status, ConditionalValidationStatus):
+            raise TypeError("statusはConditionalValidationStatusである必要があります")
+        if not isinstance(self.reason, str):
+            raise TypeError("reasonは文字列である必要があります")
+        if self.status == ConditionalValidationStatus.PASSED and not self.candidate.eligible_for_validation:
+            raise ValueError("阻害要因のある候補をPASSEDにはできません")
+
+
+def record_conditional_validation(
+    candidate: ConditionalRelationCandidate,
+    status: ConditionalValidationStatus,
+    context: BoundaryContext,
+    *,
+    reason: str = "",
+    provenance: Optional[Provenance] = None,
+) -> ConditionalValidationRecord:
+    """Record validation without promoting the candidate to a Function or Commitment."""
+    return ConditionalValidationRecord(candidate, status, context, reason, provenance)
+
+
+def compile_conditional_function_candidate(
+    validation: ConditionalValidationRecord,
+    function: FunctionDescription,
+    *,
+    purpose: str,
+    config: Optional[dict] = None,
+) -> "FunctionCandidate":
+    """Build a FunctionCandidate from passed conditional validation, without activation."""
+    if validation.status != ConditionalValidationStatus.PASSED:
+        raise ValueError("条件候補にはPASSEDのValidationRecordが必要です")
+    candidate = validation.candidate
+    structure = StructureCandidate(
+        relations=tuple(member for member in candidate.pattern.cluster.members),
+        context=candidate.context or validation.context,
+        provenance=candidate.provenance,
+        conditions=candidate.conditions,
+        exceptions=candidate.exceptions,
+    )
+    invocation = FunctionInvocation(
+        function, structure.context, purpose=purpose, config=config or {},
+        provenance=candidate.provenance,
+    )
+    return FunctionCandidate(function, invocation, structure)
+
+
+def compile_conditionally_verified_function_candidate(
+    validation: ConditionalValidationRecord,
+    ruptures: Tuple["ConditionalRuptureRecord", ...],
+    function: FunctionDescription,
+    *,
+    purpose: str,
+    config: Optional[dict] = None,
+    required_checks: Tuple[str, ...] = (),
+) -> "FunctionCandidate":
+    """Build a FunctionCandidate only after explicit candidate-matched rupture checks."""
+    if validation.status != ConditionalValidationStatus.PASSED:
+        raise ValueError("条件候補にはPASSEDのValidationRecordが必要です")
+    records = tuple(ruptures)
+    coverage = inspect_conditional_rupture_coverage(records, required_checks=required_checks)
+    if any(item.candidate != validation.candidate for item in records):
+        raise ValueError("RuptureRecordのCandidateがValidation対象と一致していません")
+    if not coverage.complete:
+        raise ValueError("条件候補のRuptureが未解決または検出済みです")
+    return compile_conditional_function_candidate(
+        validation, function, purpose=purpose, config=config,
+    )
+
+
+def record_conditional_compilation_validation(
+    validation: ConditionalValidationRecord,
+    ruptures: Tuple["ConditionalRuptureRecord", ...],
+    function: FunctionDescription,
+    *,
+    purpose: str,
+    validation_context: BoundaryContext,
+    config: Optional[dict] = None,
+    required_checks: Tuple[str, ...] = (),
+) -> "CompilationRecord":
+    """Record compilation validation for a conditionally verified candidate."""
+    candidate = compile_conditionally_verified_function_candidate(
+        validation, ruptures, function,
+        purpose=purpose, config=config, required_checks=required_checks,
+    )
+    return record_compilation_validation(
+        candidate, CompilationValidationStatus.PASSED, validation_context,
+        provenance=validation.provenance,
+    )
+
+
+def materialize_conditional_compiled_mb(
+    validation: "CompilationRecord",
+) -> "CompiledMB":
+    """Materialize a CompiledMB only from a passed conditional compilation record."""
+    if not isinstance(validation, CompilationRecord):
+        raise TypeError("validationはCompilationRecordである必要があります")
+    return compile_validated_candidate(validation)
+
+
+def translate_conditional_ruptures_to_function(
+    function_candidate: "FunctionCandidate",
+    conditional_candidate: ConditionalRelationCandidate,
+    records: Tuple["ConditionalRuptureRecord", ...],
+) -> Tuple[object, ...]:
+    """Translate explicit conditional rupture evidence for an existing FunctionCandidate."""
+    from .rupture_types import RuptureObservationStatus, record_rupture_observation
+
+    records = tuple(records)
+    if any(not isinstance(item, ConditionalRuptureRecord) for item in records):
+        raise TypeError("recordsはConditionalRuptureRecordの列である必要があります")
+    if any(item.candidate != conditional_candidate for item in records):
+        raise ValueError("Conditional RuptureのCandidateが指定対象と一致していません")
+    status_map = {
+        ConditionalRuptureStatus.DETECTED: RuptureObservationStatus.DETECTED,
+        ConditionalRuptureStatus.NOT_DETECTED: RuptureObservationStatus.NOT_DETECTED,
+        ConditionalRuptureStatus.UNRESOLVED: RuptureObservationStatus.UNRESOLVED,
+        ConditionalRuptureStatus.NOT_EVALUATED: RuptureObservationStatus.NOT_EVALUATED,
+    }
+    return tuple(
+        record_rupture_observation(
+            function_candidate,
+            status_map[item.status],
+            item.context,
+            evaluator=function_candidate.function,
+            check_id=item.check_id,
+            reason=item.reason,
+            provenance=item.provenance,
+        )
+        for item in records
+    )
+
+
+def evaluate_conditional_promotion(
+    artifact: "CompiledMB",
+    function_candidate: "FunctionCandidate",
+    conditional_candidate: ConditionalRelationCandidate,
+    ruptures: Tuple["ConditionalRuptureRecord", ...],
+    context: BoundaryContext,
+    *,
+    required_checks: Tuple[str, ...] = (),
+    policy_description: Optional[object] = None,
+    policy: Optional[FunctionDescription] = None,
+    provenance: Optional[Provenance] = None,
+) -> object:
+    """Evaluate conditional evidence through the existing Promotion Gate."""
+    from .promotion_types import evaluate_promotion
+
+    translated = translate_conditional_ruptures_to_function(
+        function_candidate, conditional_candidate, ruptures,
+    )
+    return evaluate_promotion(
+        artifact, context, ruptures=translated, required_checks=required_checks,
+        policy_description=policy_description,
+        policy=policy or FunctionDescription("rdl_core.promotion_policy", "0"),
+        provenance=provenance,
+    )
+
+
+def activate_conditional_promotion(
+    decision: object,
+    context: BoundaryContext,
+    *,
+    registry: Optional[FunctionDescription] = None,
+    provenance: Optional[Provenance] = None,
+) -> object:
+    """Activate an already approved conditional promotion decision explicitly."""
+    from .activation_types import activate_promoted_artifact
+    from .promotion_types import PromotionDecision, PromotionDecisionStatus
+
+    if not isinstance(decision, PromotionDecision):
+        raise TypeError("decisionはPromotionDecisionである必要があります")
+    if decision.status != PromotionDecisionStatus.APPROVED:
+        raise ValueError("条件付きActivationにはAPPROVEDのPromotionDecisionが必要です")
+    kwargs = {"provenance": provenance}
+    if registry is not None:
+        kwargs["registry"] = registry
+    return activate_promoted_artifact(decision, context, **kwargs)
+
+
+@dataclass(frozen=True)
+class ConditionalRuptureRecord:
+    """Finite rupture observation for a conditional candidate."""
+
+    candidate: ConditionalRelationCandidate
+    status: ConditionalRuptureStatus
+    context: BoundaryContext
+    check_id: str
+    reason: str = ""
+    provenance: Optional[Provenance] = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.candidate, ConditionalRelationCandidate):
+            raise TypeError("candidateはConditionalRelationCandidateである必要があります")
+        if not isinstance(self.status, ConditionalRuptureStatus):
+            raise TypeError("statusはConditionalRuptureStatusである必要があります")
+        if not isinstance(self.check_id, str) or not self.check_id.strip():
+            raise ValueError("check_idは空でない文字列である必要があります")
+        if not isinstance(self.reason, str):
+            raise TypeError("reasonは文字列である必要があります")
+
+
+@dataclass(frozen=True)
+class ConditionalRuptureCoverage:
+    records: Tuple[ConditionalRuptureRecord, ...]
+    required_checks: Tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        records = tuple(self.records)
+        if any(not isinstance(item, ConditionalRuptureRecord) for item in records):
+            raise TypeError("recordsはConditionalRuptureRecordの列である必要があります")
+        if len({item.check_id for item in records}) != len(records):
+            raise ValueError("RuptureRecordのcheck_idが重複しています")
+        required = tuple(dict.fromkeys(self.required_checks))
+        if any(not isinstance(item, str) or not item.strip() for item in required):
+            raise ValueError("required_checksは空でない文字列の列である必要があります")
+        object.__setattr__(self, "records", records)
+        object.__setattr__(self, "required_checks", required)
+
+    @property
+    def missing_checks(self) -> Tuple[str, ...]:
+        ids = {item.check_id for item in self.records}
+        return tuple(item for item in self.required_checks if item not in ids)
+
+    @property
+    def detected_checks(self) -> Tuple[str, ...]:
+        return tuple(item.check_id for item in self.records if item.status == ConditionalRuptureStatus.DETECTED)
+
+    @property
+    def unresolved_checks(self) -> Tuple[str, ...]:
+        return tuple(item.check_id for item in self.records if item.status in (
+            ConditionalRuptureStatus.UNRESOLVED, ConditionalRuptureStatus.NOT_EVALUATED,
+        ))
+
+    @property
+    def complete(self) -> bool:
+        return bool(self.records) and not self.missing_checks and not self.detected_checks and not self.unresolved_checks
+
+
+def inspect_conditional_rupture_coverage(
+    records: Tuple[ConditionalRuptureRecord, ...],
+    *,
+    required_checks: Tuple[str, ...] = (),
+) -> ConditionalRuptureCoverage:
+    return ConditionalRuptureCoverage(records, required_checks)
+
+
+def record_conditional_rupture(
+    candidate: ConditionalRelationCandidate,
+    status: ConditionalRuptureStatus,
+    context: BoundaryContext,
+    *,
+    check_id: str,
+    reason: str = "",
+    provenance: Optional[Provenance] = None,
+) -> ConditionalRuptureRecord:
+    """Record a candidate rupture without mutating or promoting the candidate."""
+    return ConditionalRuptureRecord(candidate, status, context, check_id, reason, provenance)
 
 
 def derive_relation_pattern(cluster: RelationClusterCandidate) -> RelationPatternCandidate:

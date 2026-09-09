@@ -52,6 +52,14 @@ from rdl_core import (
     RelationPatternCandidate,
     PatternSlotKind,
     PatternEvidence,
+    PatternSlotEvidence,
+    PatternVariableBinding,
+    ConditionalRelationCandidate,
+    ConditionalValidationStatus,
+    ConditionalValidationRecord,
+    ConditionalRuptureStatus,
+    ConditionalRuptureRecord,
+    ConditionalRuptureCoverage,
     StructureDelta,
     RecompiledStructureCandidate,
     RelationConstraintDelta,
@@ -61,6 +69,17 @@ from rdl_core import (
     induce_structure_candidate,
     cluster_relation_keys,
     derive_relation_pattern,
+    build_conditional_relation_candidate,
+    record_conditional_validation,
+    compile_conditional_function_candidate,
+    record_conditional_rupture,
+    inspect_conditional_rupture_coverage,
+    compile_conditionally_verified_function_candidate,
+    record_conditional_compilation_validation,
+    materialize_conditional_compiled_mb,
+    translate_conditional_ruptures_to_function,
+    evaluate_conditional_promotion,
+    activate_conditional_promotion,
     induce_structure_candidate_with_clusters,
     extract_recompiled_structure_candidate,
     compile_function_candidate,
@@ -204,6 +223,8 @@ class TestCoreContracts(unittest.TestCase):
         self.assertTrue(clusters[0].connected)
         self.assertEqual(clusters[0].conflicting_edges, ())
         self.assertEqual(clusters[0].unresolved_edges, ())
+        self.assertAlmostEqual(clusters[0].support_cohesion, 2 / 3)
+        self.assertEqual(clusters[0].coverage, 1.0)
         pattern = derive_relation_pattern(clusters[0])
         self.assertIsInstance(pattern, RelationPatternCandidate)
         self.assertIsNone(pattern.subject)
@@ -216,6 +237,91 @@ class TestCoreContracts(unittest.TestCase):
         self.assertIsInstance(pattern.evidence, PatternEvidence)
         self.assertEqual(pattern.evidence.member_count, 2)
         self.assertAlmostEqual(pattern.evidence.specificity, 2 / 3)
+        self.assertEqual(pattern.evidence.edge_count, 0)
+        self.assertEqual(pattern.evidence.conflict_ratio, 0.0)
+        self.assertEqual(pattern.evidence.unresolved_ratio, 0.0)
+        self.assertTrue(all(isinstance(item, PatternSlotEvidence) for item in pattern.slot_evidence))
+        self.assertEqual(pattern.slot_evidence[0].kind, PatternSlotKind.VARIABLE)
+        self.assertEqual(pattern.slot_evidence[1].kind, PatternSlotKind.FIXED)
+        conditional = build_conditional_relation_candidate(
+            pattern, conditions=("subject is observed",),
+            exceptions=(RelationSemanticKey("z", "supports", "b"),),
+        )
+        self.assertIsInstance(conditional, ConditionalRelationCandidate)
+        self.assertEqual(conditional.conditions, ("subject is observed",))
+        self.assertIsNotNone(conditional.evidence)
+        self.assertEqual(conditional.variable_slots, ("subject",))
+        self.assertEqual(conditional.variable_bindings[0].slot, "subject")
+        self.assertEqual(conditional.variable_bindings[0].values, ("a", "x"))
+        self.assertEqual(conditional.validation_blockers, ())
+        self.assertTrue(conditional.eligible_for_validation)
+        contextless = ConditionalRelationCandidate(
+            pattern=pattern, conditions=("subject is observed",), evidence=pattern.evidence,
+        )
+        self.assertIn("missing_context", contextless.validation_blockers)
+        self.assertFalse(contextless.eligible_for_validation)
+        conditional_record = record_conditional_validation(
+            conditional, ConditionalValidationStatus.PASSED, BoundaryContext("conditional-validation"),
+        )
+        self.assertIsInstance(conditional_record, ConditionalValidationRecord)
+        function_candidate = compile_conditional_function_candidate(
+            conditional_record,
+            FunctionDescription("rdl_core.conditional_relation", "1"),
+            purpose="conditional structure compilation",
+        )
+        self.assertEqual(function_candidate.invocation.purpose, "conditional structure compilation")
+        self.assertEqual(function_candidate.structure.conditions, ("subject is observed",))
+        self.assertEqual(function_candidate.structure.exceptions, (RelationSemanticKey("z", "supports", "b"),))
+        rupture_record = record_conditional_rupture(
+            conditional, ConditionalRuptureStatus.UNRESOLVED,
+            BoundaryContext("conditional-rupture"), check_id="counterexample-v0",
+        )
+        self.assertIsInstance(rupture_record, ConditionalRuptureRecord)
+        coverage = inspect_conditional_rupture_coverage(
+            (rupture_record,), required_checks=("counterexample-v0",)
+        )
+        self.assertIsInstance(coverage, ConditionalRuptureCoverage)
+        self.assertFalse(coverage.complete)
+        self.assertEqual(coverage.unresolved_checks, ("counterexample-v0",))
+        with self.assertRaises(ValueError):
+            inspect_conditional_rupture_coverage(
+                (rupture_record,), required_checks=("",)
+            )
+        verified_rupture = record_conditional_rupture(
+            conditional, ConditionalRuptureStatus.NOT_DETECTED,
+            BoundaryContext("conditional-rupture"), check_id="counterexample-v1",
+        )
+        verified_candidate = compile_conditionally_verified_function_candidate(
+            conditional_record, (verified_rupture,),
+            FunctionDescription("rdl_core.conditional_relation_verified", "1"),
+            purpose="verified conditional compilation",
+            required_checks=("counterexample-v1",),
+        )
+        self.assertEqual(verified_candidate.invocation.purpose, "verified conditional compilation")
+        compilation_record = record_conditional_compilation_validation(
+            conditional_record, (verified_rupture,),
+            FunctionDescription("rdl_core.conditional_relation_recorded", "1"),
+            purpose="record conditional compilation",
+            validation_context=BoundaryContext("conditional-compilation"),
+            required_checks=("counterexample-v1",),
+        )
+        self.assertEqual(compilation_record.validation_status, CompilationValidationStatus.PASSED)
+        conditional_compiled = materialize_conditional_compiled_mb(compilation_record)
+        self.assertEqual(conditional_compiled.function.function_id, "rdl_core.conditional_relation_recorded")
+        translated = translate_conditional_ruptures_to_function(
+            verified_candidate, conditional, (verified_rupture,)
+        )
+        self.assertEqual(len(translated), 1)
+        self.assertEqual(translated[0].check_id, "counterexample-v1")
+        promotion = evaluate_conditional_promotion(
+            conditional_compiled, compilation_record.candidate, conditional, (verified_rupture,),
+            BoundaryContext("conditional-promotion"), required_checks=("counterexample-v1",),
+        )
+        self.assertEqual(promotion.status, PromotionDecisionStatus.APPROVED)
+        active_conditional = activate_conditional_promotion(
+            promotion, BoundaryContext("conditional-activation"),
+        )
+        self.assertEqual(active_conditional.artifact, conditional_compiled)
         self.assertEqual(pattern.varying_slots, ("subject",))
         self.assertAlmostEqual(pattern.specificity, 2 / 3)
         clustered = induce_structure_candidate_with_clusters(
