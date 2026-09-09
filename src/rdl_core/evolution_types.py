@@ -106,12 +106,17 @@ class StructureDelta:
 
     @property
     def constraint_deltas(self) -> Tuple["RelationConstraintDelta", ...]:
-        previous = {item.identity.semantic_key: item for item in self.previous.supporting_profiles + self.previous.conflicting_profiles}
-        current = {item.identity.semantic_key: item for item in self.current.supporting_profiles + self.current.conflicting_profiles}
+        previous = {}
+        for item in self.previous.supporting_profiles + self.previous.conflicting_profiles:
+            previous.setdefault(item.identity.semantic_key, []).append(item)
+        current = {}
+        for item in self.current.supporting_profiles + self.current.conflicting_profiles:
+            current.setdefault(item.identity.semantic_key, []).append(item)
         deltas = []
         for key in self.unchanged:
-            if key in previous and key in current:
-                deltas.append(RelationConstraintDelta(previous[key], current[key]))
+            for old_profile in previous.get(key, ()):
+                for new_profile in current.get(key, ()):
+                    deltas.append(RelationConstraintDelta(old_profile, new_profile))
         return tuple(deltas)
 
 

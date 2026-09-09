@@ -72,6 +72,7 @@ from rdl_core import (
     CompiledReplacement,
     materialize_compiled_replacement,
     activate_compiled_replacement,
+    SupersessionRecord,
 )
 
 
@@ -242,7 +243,7 @@ class TestCoreContracts(unittest.TestCase):
         )
         self.assertEqual(delta.added, ())
         self.assertEqual(delta.unchanged, (identity.semantic_key,))
-        self.assertEqual(len(delta.constraint_deltas), 1)
+        self.assertEqual(len(delta.constraint_deltas), 4)
         self.assertFalse(delta.constraint_deltas[0].strength_changed)
         failed_record = record_compilation_validation(
             candidate, CompilationValidationStatus.FAILED, BoundaryContext("validation"),
@@ -370,6 +371,10 @@ class TestCoreContracts(unittest.TestCase):
             compiled_replacement, replacement_promotion, BoundaryContext("activation-v2"),
         )
         self.assertEqual(active_v2.artifact, compiled_replacement.compiled)
+        supersession = SupersessionRecord(
+            active, active_v2, compiled_replacement, BoundaryContext("supersession"),
+        )
+        self.assertEqual(supersession.predecessor, active)
 
 
     def test_commitment_record_requires_valid_origin_and_time(self):
