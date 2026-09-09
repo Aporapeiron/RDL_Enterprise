@@ -26,6 +26,7 @@ class PromotionDecision:
     policy: FunctionDescription
     context: BoundaryContext
     ruptures: Tuple[RuptureObservation, ...] = ()
+    required_checks: Tuple[str, ...] = ()
     provenance: Optional[Provenance] = None
 
     def __post_init__(self) -> None:
@@ -37,6 +38,10 @@ class PromotionDecision:
         if any(not isinstance(item, RuptureObservation) for item in ruptures):
             raise TypeError("rupturesはRuptureObservationの列である必要があります")
         object.__setattr__(self, "ruptures", ruptures)
+        required = tuple(self.required_checks)
+        if any(not isinstance(item, str) or not item.strip() for item in required):
+            raise ValueError("required_checksは非空文字列の列である必要があります")
+        object.__setattr__(self, "required_checks", required)
 
 
 def evaluate_promotion(
@@ -44,12 +49,18 @@ def evaluate_promotion(
     context: BoundaryContext,
     *,
     ruptures: Tuple[RuptureObservation, ...] = (),
+    required_checks: Tuple[str, ...] = (),
     policy: FunctionDescription = FunctionDescription("rdl_core.promotion_policy", "0"),
     provenance: Optional[Provenance] = None,
 ) -> PromotionDecision:
     """Evaluate a promotion gate without activating the Compiled M_B."""
     observations = tuple(ruptures)
-    if not observations:
+    candidate = artifact.validation.candidate
+    if any(item.candidate != candidate for item in observations):
+        raise ValueError("RuptureObservationがPromotion対象のFunctionCandidateと一致していません")
+    required = tuple(required_checks)
+    observed_checks = {item.check_id for item in observations}
+    if not observations or any(check not in observed_checks for check in required):
         status = PromotionDecisionStatus.NOT_EVALUATED
     elif any(item.status == RuptureObservationStatus.DETECTED for item in observations):
         status = PromotionDecisionStatus.REJECTED
@@ -58,4 +69,7 @@ def evaluate_promotion(
         status = PromotionDecisionStatus.UNRESOLVED
     else:
         status = PromotionDecisionStatus.APPROVED
-    return PromotionDecision(artifact, status, policy, context, observations, provenance=provenance)
+    return PromotionDecision(
+        artifact, status, policy, context, observations,
+        required_checks=required, provenance=provenance,
+    )

@@ -24,6 +24,7 @@ class RuptureObservation:
     status: RuptureObservationStatus
     context: BoundaryContext
     evaluator: FunctionDescription
+    check_id: str = "default"
     reason: str = ""
     provenance: Optional[Provenance] = None
 
@@ -34,6 +35,8 @@ class RuptureObservation:
             raise TypeError("evaluatorはFunctionDescriptionである必要があります")
         if not isinstance(self.reason, str):
             raise TypeError("reasonは文字列である必要があります")
+        if not isinstance(self.check_id, str) or not self.check_id.strip():
+            raise ValueError("check_idは空にできません")
 
 
 def record_rupture_observation(
@@ -43,9 +46,11 @@ def record_rupture_observation(
     *,
     reason: str = "",
     evaluator: FunctionDescription = FunctionDescription("rdl_core.rupture_check", "0"),
+    check_id: str = "default",
     provenance: Optional[Provenance] = None,
 ) -> RuptureObservation:
     """Record rupture inspection without changing candidate state."""
     return RuptureObservation(
-        candidate, status, context, evaluator, reason=reason, provenance=provenance,
+        candidate, status, context, evaluator, check_id=check_id,
+        reason=reason, provenance=provenance,
     )

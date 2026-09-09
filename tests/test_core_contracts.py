@@ -248,10 +248,23 @@ class TestCoreContracts(unittest.TestCase):
             approved, BoundaryContext("promotion"),
             ruptures=(record_rupture_observation(
                 candidate, RuptureObservationStatus.NOT_DETECTED,
-                BoundaryContext("rupture"),
+                BoundaryContext("rupture"), check_id="counterexample",
             ),),
+            required_checks=("counterexample",),
         )
         self.assertEqual(checked_decision.status, PromotionDecisionStatus.APPROVED)
+        with self.assertRaises(ValueError):
+            evaluate_promotion(
+                approved, BoundaryContext("promotion"),
+                ruptures=(record_rupture_observation(
+                    FunctionCandidate(
+                        FunctionDescription("rdl_core.other", "0"),
+                        FunctionInvocation(FunctionDescription("rdl_core.other", "0"), BoundaryContext("adaptive")),
+                        structure,
+                    ), RuptureObservationStatus.NOT_DETECTED,
+                    BoundaryContext("rupture"), check_id="counterexample",
+                ),),
+            )
         unresolved_decision = evaluate_promotion(
             approved, BoundaryContext("promotion"), ruptures=(rupture,)
         )
