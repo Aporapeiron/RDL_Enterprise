@@ -32,8 +32,10 @@ from rdl_core import (
     RelationConstraintProfile,
     FunctionEvaluationComparison,
     RelationSimilarityObservation,
+    RelationSemanticSimilarityObservation,
     SimilarityObservationStatus,
     compare_relation_constraint_profiles,
+    compare_relation_semantic_keys,
     compare_relation_constraint_polarity,
     compare_relation_constraint_provenance,
     FunctionComparison,
@@ -176,6 +178,14 @@ class TestCoreContracts(unittest.TestCase):
         self.assertAlmostEqual(observation.score, 0.8)
         self.assertEqual(observation.invocation.context, observation.context)
         self.assertEqual(observation.invocation.function, observation.evaluator)
+        semantic_observation = compare_relation_semantic_keys(
+            identity.semantic_key,
+            RelationSemanticKey("x", "supports", "b"),
+            BoundaryContext("semantic-similarity"),
+        )
+        self.assertIsInstance(semantic_observation, RelationSemanticSimilarityObservation)
+        self.assertAlmostEqual(semantic_observation.score, 2 / 3)
+        self.assertEqual(semantic_observation.status, SimilarityObservationStatus.SIMILAR)
         induction = induce_structure_candidate(
             AdaptiveMBProfile((left, right), BoundaryContext("adaptive")),
             BoundaryContext("induction"),

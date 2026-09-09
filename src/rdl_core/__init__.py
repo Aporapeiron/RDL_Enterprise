@@ -44,10 +44,12 @@ from .similarity_types import (
     RelationConstraintProfile,
     FunctionEvaluationComparison,
     RelationSimilarityObservation,
+    RelationSemanticSimilarityObservation,
     SimilarityObservationStatus,
     compare_relation_constraint_polarity,
     compare_relation_constraint_provenance,
     compare_relation_constraint_profiles,
+    compare_relation_semantic_keys,
 )
 from .function_comparison_types import FunctionComparison
 from .function_composition_types import FunctionComposition
@@ -130,8 +132,10 @@ __all__ = [
     "RelationConstraintProfile",
     "FunctionEvaluationComparison",
     "RelationSimilarityObservation",
+    "RelationSemanticSimilarityObservation",
     "SimilarityObservationStatus",
     "compare_relation_constraint_profiles",
+    "compare_relation_semantic_keys",
     "compare_relation_constraint_polarity",
     "compare_relation_constraint_provenance",
     "FunctionComparison",

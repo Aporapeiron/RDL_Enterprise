@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
 
-from .constraint_types import ConstraintIdentity, ConstraintStrength
+from .constraint_types import ConstraintIdentity, ConstraintStrength, RelationSemanticKey
 from .contracts import BoundaryContext, EvidencePolarity, Provenance
 from .function_types import FunctionDescription, FunctionInvocation
 
@@ -47,6 +47,36 @@ class RelationSimilarityObservation:
             raise TypeError("statusはSimilarityObservationStatusである必要があります")
         if not isinstance(self.evaluator, FunctionDescription):
             raise TypeError("evaluatorはFunctionDescriptionである必要があります")
+        invocation = self.invocation or FunctionInvocation(
+            self.evaluator, self.context, provenance=self.provenance
+        )
+        if invocation.function != self.evaluator or invocation.context != self.context:
+            raise ValueError("invocationのFunctionまたはBoundaryが観測記録と一致していません")
+        object.__setattr__(self, "invocation", invocation)
+
+
+@dataclass(frozen=True)
+class RelationSemanticSimilarityObservation:
+    """Position-wise relation similarity, separate from constraint strength."""
+
+    left: RelationSemanticKey
+    right: RelationSemanticKey
+    score: float
+    coverage: float
+    status: SimilarityObservationStatus
+    context: BoundaryContext
+    evaluator: FunctionDescription = FunctionDescription("rdl_core.relation_semantic_similarity", "0")
+    provenance: Optional[Provenance] = None
+    invocation: Optional[FunctionInvocation] = None
+
+    def __post_init__(self) -> None:
+        for name, value in (("score", self.score), ("coverage", self.coverage)):
+            if not isinstance(value, (int, float)) or not 0.0 <= value <= 1.0:
+                raise ValueError(f"{name}は0以上1以下である必要があります")
+        if not isinstance(self.left, RelationSemanticKey) or not isinstance(self.right, RelationSemanticKey):
+            raise TypeError("left/rightはRelationSemanticKeyである必要があります")
+        if not isinstance(self.status, SimilarityObservationStatus):
+            raise TypeError("statusはSimilarityObservationStatusである必要があります")
         invocation = self.invocation or FunctionInvocation(
             self.evaluator, self.context, provenance=self.provenance
         )
@@ -117,6 +147,28 @@ def compare_relation_constraint_profiles(
     return RelationSimilarityObservation(
         left, right, score, coverage, conflict, status, context,
         evaluator=evaluator, provenance=provenance, invocation=invocation,
+    )
+
+
+def compare_relation_semantic_keys(
+    left: RelationSemanticKey,
+    right: RelationSemanticKey,
+    context: BoundaryContext,
+    *,
+    provenance: Optional[Provenance] = None,
+    invocation: Optional[FunctionInvocation] = None,
+) -> RelationSemanticSimilarityObservation:
+    """Compare relation positions without inferring equivalent meaning or truth."""
+    components = (
+        left.subject == right.subject,
+        left.relation == right.relation,
+        left.object == right.object,
+    )
+    score = sum(components) / len(components)
+    status = SimilarityObservationStatus.SIMILAR if score >= 0.5 else SimilarityObservationStatus.NOT_SIMILAR
+    return RelationSemanticSimilarityObservation(
+        left, right, score, 1.0, status, context,
+        provenance=provenance, invocation=invocation,
     )
 
 
