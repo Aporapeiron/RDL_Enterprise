@@ -13,6 +13,58 @@ def _unit_interval(value: float, field_name: str) -> float:
 
 
 @dataclass(frozen=True)
+class ConstraintEvaluationWeights:
+    relevance: float = 0.35
+    freshness: float = 0.25
+    authority: float = 0.15
+    source: float = 0.15
+    convergence: float = 0.10
+
+    def __post_init__(self) -> None:
+        values = (self.relevance, self.freshness, self.authority, self.source, self.convergence)
+        if any(value < 0.0 for value in values):
+            raise ValueError("Constraint評価の重みは負にできません")
+        if sum(values) <= 0.0:
+            raise ValueError("Constraint評価の重み合計は正である必要があります")
+
+
+def evaluate_constraint_strength(
+    *,
+    relevance: float,
+    freshness: float,
+    authority: float,
+    source: float,
+    convergence: float,
+    support: EvidencePolarity = EvidencePolarity.UNRESOLVED,
+    weights: ConstraintEvaluationWeights = ConstraintEvaluationWeights(),
+) -> "ConstraintStrength":
+    """Evaluate bounded relation strength without promoting it to truth.
+
+    The calculation is a pure weighted observation. Polarity is carried
+    explicitly and is never inferred from the numeric result.
+    """
+    components = {
+        "relevance": _unit_interval(relevance, "relevance"),
+        "freshness": _unit_interval(freshness, "freshness"),
+        "authority": _unit_interval(authority, "authority"),
+        "source": _unit_interval(source, "source"),
+        "convergence": _unit_interval(convergence, "convergence"),
+    }
+    total_weight = sum((weights.relevance, weights.freshness, weights.authority, weights.source, weights.convergence))
+    value = sum(
+        getattr(weights, name) * component
+        for name, component in components.items()
+    ) / total_weight
+    return ConstraintStrength(
+        value=value,
+        support=support,
+        relevance=components["relevance"],
+        freshness=components["freshness"],
+        authority=components["authority"],
+    )
+
+
+@dataclass(frozen=True)
 class ConstraintIdentity:
     """A relation identity, independent of activation or Commitment."""
 

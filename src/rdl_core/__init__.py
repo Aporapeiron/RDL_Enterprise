@@ -11,7 +11,13 @@ from .contracts import (
     EvidencePolarity,
     Provenance,
 )
-from .constraint_types import ConstraintActivation, ConstraintIdentity, ConstraintStrength
+from .constraint_types import (
+    ConstraintActivation,
+    ConstraintEvaluationWeights,
+    ConstraintIdentity,
+    ConstraintStrength,
+    evaluate_constraint_strength,
+)
 
 __all__ = [
     "AuthorityConstraint",
@@ -24,6 +30,8 @@ __all__ = [
     "EvidencePolarity",
     "Provenance",
     "ConstraintActivation",
+    "ConstraintEvaluationWeights",
     "ConstraintIdentity",
     "ConstraintStrength",
+    "evaluate_constraint_strength",
 ]

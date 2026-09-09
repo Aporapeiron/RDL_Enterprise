@@ -9,8 +9,10 @@ from rdl_core import (
     EvidencePolarity,
     Provenance,
     ConstraintActivation,
+    ConstraintEvaluationWeights,
     ConstraintIdentity,
     ConstraintStrength,
+    evaluate_constraint_strength,
 )
 
 
@@ -113,6 +115,25 @@ class TestCoreContracts(unittest.TestCase):
             ConstraintStrength(value=0.5, support="truth")
         with self.assertRaises(ValueError):
             ConstraintIdentity("c2", 123, "relates", "object")
+
+    def test_constraint_strength_evaluation_is_bounded_and_polarity_explicit(self):
+        strength = evaluate_constraint_strength(
+            relevance=1.0,
+            freshness=0.5,
+            authority=0.0,
+            source=0.5,
+            convergence=1.0,
+            support=EvidencePolarity.OPPOSE,
+            weights=ConstraintEvaluationWeights(
+                relevance=1.0, freshness=1.0, authority=0.0, source=0.0, convergence=0.0
+            ),
+        )
+        self.assertEqual(strength.support, EvidencePolarity.OPPOSE)
+        self.assertEqual(strength.value, 0.75)
+        with self.assertRaises(ValueError):
+            evaluate_constraint_strength(
+                relevance=1.1, freshness=0.5, authority=0.5, source=0.5, convergence=0.5
+            )
 
     def test_enterprise_bundle_adapter_preserves_bounded_observation(self):
         from types import SimpleNamespace
