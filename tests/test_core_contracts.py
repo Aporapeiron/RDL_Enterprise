@@ -230,3 +230,25 @@ class TestCoreContracts(unittest.TestCase):
         )
         with self.assertRaises(ValueError):
             activation_from_bundle(explicit_unknown, identity, context)
+
+    def test_enterprise_bundle_can_be_re_evaluated_by_core_function(self):
+        from types import SimpleNamespace
+        from rdl_enterprise.constraint_adapter import evaluate_bundle_strength
+
+        bundle = SimpleNamespace(
+            constraint_score=0.99,  # legacy score is not trusted as Core input
+            relevance=1.0,
+            freshness=0.5,
+            authority_weight=0.0,
+            source_strength=0.5,
+            convergence=1.0,
+        )
+        strength = evaluate_bundle_strength(
+            bundle,
+            support=EvidencePolarity.OPPOSE,
+            weights=ConstraintEvaluationWeights(
+                relevance=1.0, freshness=1.0, authority=0.0, source=0.0, convergence=0.0
+            ),
+        )
+        self.assertEqual(strength.value, 0.75)
+        self.assertEqual(strength.support, EvidencePolarity.OPPOSE)

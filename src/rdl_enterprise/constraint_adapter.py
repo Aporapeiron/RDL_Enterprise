@@ -9,6 +9,8 @@ from rdl_core import (
     ConstraintIdentity,
     ConstraintStrength,
     EvidencePolarity,
+    ConstraintEvaluationWeights,
+    evaluate_constraint_strength,
 )
 
 
@@ -50,4 +52,27 @@ def activation_from_bundle(
         context=context,
         strength=strength,
         authority_constraint=authority_constraint,
+    )
+
+
+def evaluate_bundle_strength(
+    bundle: object,
+    *,
+    support: EvidencePolarity = EvidencePolarity.UNRESOLVED,
+    weights: Optional[ConstraintEvaluationWeights] = None,
+) -> ConstraintStrength:
+    """Re-evaluate bundle components with the Core pure function.
+
+    The Enterprise-produced ``constraint_score`` is intentionally not used as
+    an input. This makes drift between the legacy evaluator and the Core
+    evaluator observable instead of silently preserving it.
+    """
+    return evaluate_constraint_strength(
+        relevance=_required_score(bundle, "relevance"),
+        freshness=_required_score(bundle, "freshness"),
+        authority=_required_score(bundle, "authority_weight"),
+        source=_required_score(bundle, "source_strength"),
+        convergence=_required_score(bundle, "convergence"),
+        support=support,
+        weights=weights or ConstraintEvaluationWeights(),
     )
