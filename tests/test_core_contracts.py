@@ -357,3 +357,28 @@ class TestCoreContracts(unittest.TestCase):
         self.assertIsInstance(list_node.relations, tuple)
         with self.assertRaises(TypeError):
             BoundaryContext("boundary-4", conditions={"nested": {123: "invalid"}})
+
+    def test_mbnode_projection_preserves_selected_core_slice(self):
+        from rdl_enterprise.mb_graph import MBNode
+        from rdl_enterprise.mb_graph_adapter import (
+            node_description_from_mbnode,
+            relation_observation_from_mbnode,
+        )
+
+        relation = ConstraintIdentity("r-mb", "requester", "may_approve", "expense")
+        node = MBNode(
+            id="mb-1",
+            domain="finance",
+            trigger_pattern={"kind": "approval"},
+            action_template={"action": "approve"},
+        )
+        provenance = Provenance("enterprise:mb_graph", actor="adapter-test")
+        description = node_description_from_mbnode(node, (relation,), provenance=provenance)
+        observation = relation_observation_from_mbnode(
+            node, relation, BoundaryContext("mb-boundary", question="approval"),
+            RelationObservationStatus.OBSERVED, provenance=provenance,
+        )
+        self.assertEqual(description.node_id, "mb-1")
+        self.assertEqual(description.relations, (relation,))
+        self.assertEqual(observation.boundary.boundary_id, "mb-boundary")
+        self.assertIsNone(description.provenance.authority_ref)
