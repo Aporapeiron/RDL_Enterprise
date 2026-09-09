@@ -284,6 +284,11 @@ class TestCoreContracts(unittest.TestCase):
             project_current_function_state(active, deactivation=deactivation).status,
             RegistryStatus.INACTIVE,
         )
+        replacement = activate_promoted_artifact(checked_decision, BoundaryContext("activation-next"))
+        self.assertEqual(
+            project_current_function_state(active, replacement=replacement).status,
+            RegistryStatus.SUPERSEDED,
+        )
         request = request_recompilation(
             active, deactivation, BoundaryContext("recompile"),
             reason="new boundary observed",
