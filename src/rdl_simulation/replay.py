@@ -17,6 +17,11 @@ class TraceRecord:
     target_id: str
     payload: Dict[str, Any]
     result: Optional[Dict[str, Any]] = None
+    mb_hash_before: Optional[str] = None
+    mb_hash_after: Optional[str] = None
+    heat_before: Optional[float] = None
+    heat_after: Optional[float] = None
+    transition_type: Optional[str] = None
 
 
 class SimTraceLogger:
@@ -35,6 +40,11 @@ class SimTraceLogger:
         target_id: str,
         payload: Dict[str, Any],
         result: Optional[Dict[str, Any]] = None,
+        mb_hash_before: Optional[str] = None,
+        mb_hash_after: Optional[str] = None,
+        heat_before: Optional[float] = None,
+        heat_after: Optional[float] = None,
+        transition_type: Optional[str] = None,
     ) -> TraceRecord:
         rec = TraceRecord(
             tick=tick,
@@ -44,6 +54,11 @@ class SimTraceLogger:
             target_id=target_id,
             payload=payload,
             result=result,
+            mb_hash_before=mb_hash_before,
+            mb_hash_after=mb_hash_after,
+            heat_before=heat_before,
+            heat_after=heat_after,
+            transition_type=transition_type,
         )
         self.records.append(rec)
         return rec
@@ -88,4 +103,28 @@ class SimulationReplayer:
             if orig_p != rep_p:
                 return False, f"Record[{i}] Payload 不一致: orig={orig_p} vs rep={rep_p}"
 
+            # 力学状態遷移 (mb_hash / heat) の一致照合
+            if orig.mb_hash_after != rep.mb_hash_after:
+                return False, f"Record[{i}] mb_hash_after 不一致: orig={orig.mb_hash_after} vs rep={rep.mb_hash_after}"
+            if orig.heat_after is not None and rep.heat_after is not None:
+                if abs(orig.heat_after - rep.heat_after) > 1e-4:
+                    return False, f"Record[{i}] heat_after 不一致: orig={orig.heat_after} vs rep={rep.heat_after}"
+
         return True, None
+
+    @classmethod
+    def replay_from_context(
+        cls,
+        context: Any,
+        world_factory: Any,
+        scenario: Any,
+        days: int,
+    ) -> Tuple[bool, Any, Optional[str]]:
+        """
+        SimulationRunContext を外生条件として受け取り、
+        world_factory から独立した世界を再構築して完全に再演(Replay)する。
+        """
+        replayed_world = world_factory(seed=context.seed)
+        replayed_world.load_scenario(scenario)
+        replayed_world.run_days(days)
+        return True, replayed_world, None

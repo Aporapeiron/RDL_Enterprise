@@ -62,12 +62,46 @@ class SimulationWorld:
         if self.rdl_adapter and hasattr(self.rdl_adapter, "runtime"):
             initial_mb_hash = self.rdl_adapter.runtime.mb_graph.content_hash()
 
+        import hashlib
+        import json
+
+        # エージェント設定ハッシュ
+        agent_dicts = []
+        for aid in sorted(self.agents.keys()):
+            ag = self.agents[aid]
+            a_info = {"id": ag.agent_id, "role": ag.role}
+            if hasattr(ag, "persona"):
+                p = ag.persona
+                a_info["persona"] = {
+                    "name": p.name,
+                    "cohort": p.cohort,
+                    "expertise": p.expertise,
+                    "patience": p.patience,
+                    "ambiguity": p.ambiguity,
+                    "reliability": p.feedback_reliability,
+                }
+            agent_dicts.append(a_info)
+        agents_hash = hashlib.sha256(json.dumps(agent_dicts, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+
+        # アダプター設定ハッシュ
+        adapter_info = {}
+        if self.rdl_adapter:
+            adapter_info["type"] = self.rdl_adapter.__class__.__name__
+            if hasattr(self.rdl_adapter, "oracle_answers"):
+                adapter_info["oracle_answers"] = getattr(self.rdl_adapter, "oracle_answers", {})
+        adapter_hash = hashlib.sha256(json.dumps(adapter_info, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+
+        scenario_c_hash = scenario.content_hash() if hasattr(scenario, "content_hash") else "none"
+
         self.run_context = SimulationRunContext(
             seed=self.seed,
             clock_start_iso=self.clock.start_time.isoformat(),
             minutes_per_tick=self.clock.minutes_per_tick,
             scenario_name=scenario.name,
             scenario_version=getattr(scenario, "version", "v1.0"),
+            scenario_content_hash=scenario_c_hash,
+            agent_configs_hash=agents_hash,
+            adapter_config_hash=adapter_hash,
             initial_mb_hash=initial_mb_hash,
         )
 
@@ -133,7 +167,35 @@ class SimulationWorld:
 
     def _dispatch_event(self, ev: SimEvent) -> None:
         """イベント種別に応じたディスパッチ"""
-        # トレースログ記録
+        # ディスパッチ前の力学状態をキャプチャ
+        mb_hash_before = None
+        heat_before = None
+        if self.rdl_adapter and hasattr(self.rdl_adapter, "runtime"):
+            rt = self.rdl_adapter.runtime
+            mb_hash_before = rt.mb_graph.content_hash()
+            heat_before = rt.h_state.version_total_heat(getattr(rt.mb_graph, "version", "prod"))
+
+        # 1. カスタムハンドラがあれば優先
+        if ev.event_type in self._custom_event_handlers:
+            self._custom_event_handlers[ev.event_type](ev, self)
+        # 2. RDLランタイムアダプタへの転送
+        elif self.rdl_adapter and hasattr(self.rdl_adapter, "handle_event"):
+            self.rdl_adapter.handle_event(ev, self)
+
+        # ディスパッチ後の力学状態をキャプチャ
+        mb_hash_after = None
+        heat_after = None
+        transition_type = None
+        if self.rdl_adapter and hasattr(self.rdl_adapter, "runtime"):
+            rt = self.rdl_adapter.runtime
+            mb_hash_after = rt.mb_graph.content_hash()
+            heat_after = rt.h_state.version_total_heat(getattr(rt.mb_graph, "version", "prod"))
+            if mb_hash_before != mb_hash_after:
+                transition_type = "mb_update"
+            elif heat_after != heat_before:
+                transition_type = "heat_change"
+
+        # トレースログ記録（因果前後の完全記録）
         self.trace_logger.record(
             tick=ev.scheduled_tick,
             day=self.clock.current_day,
@@ -141,16 +203,12 @@ class SimulationWorld:
             source_id=ev.source_id,
             target_id=ev.target_id,
             payload=ev.payload,
+            mb_hash_before=mb_hash_before,
+            mb_hash_after=mb_hash_after,
+            heat_before=heat_before,
+            heat_after=heat_after,
+            transition_type=transition_type,
         )
-
-        # 1. カスタムハンドラがあれば優先
-        if ev.event_type in self._custom_event_handlers:
-            self._custom_event_handlers[ev.event_type](ev, self)
-            return
-
-        # 2. RDLランタイムアダプタへの転送
-        if self.rdl_adapter and hasattr(self.rdl_adapter, "handle_event"):
-            self.rdl_adapter.handle_event(ev, self)
 
     def run_days(self, days: int) -> None:
         """指定日数分シミュレーションを進める"""

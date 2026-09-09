@@ -332,6 +332,7 @@ class FeedbackResult:
     new_knowledge_provided: Optional[str] = None
     correction_content: Optional[str] = None    # 修正・是正内容（明示的対向命題）
     provenance: Optional[RelationProvenance] = None  # 後続関係の来歴・権限
+    observed_at: Optional[str] = None           # 外界観測・フィードバック時刻 (外生時間源)
 
     def __post_init__(self):
         # provenance 未指定時の安全なフォールバック (公理 B5: 権限の捏造禁止)
@@ -695,13 +696,17 @@ class CaseSnapshot:
     def observed_outcome(self, val: Optional[OutcomeObservation]):
         self.outcome_observation = val
 
-    def record_feedback(self, feedback: FeedbackResult) -> Tuple[float, float]:
+    def record_feedback(self, feedback: FeedbackResult, at: Optional[Any] = None) -> Tuple[float, float]:
         """
         後続結果 EFP' を受領し、更新前の同一 M_B 前提 (FrozenInterpretationContext) で真に再解釈して F' を導出。
         F と F' の差分 E = Δ(F, F') を確定する。
         """
         self.efp_prime = feedback
-        self.resolved_at = datetime.utcnow().isoformat()
+        obs_time = at or feedback.observed_at
+        if obs_time is not None:
+            self.resolved_at = obs_time.isoformat() if isinstance(obs_time, datetime) else str(obs_time)
+        else:
+            self.resolved_at = datetime.utcnow().isoformat()
 
         # 1. 外界帰結観測情報 (OutcomeObservation) の確定 (EFP'の反作用成分)
         if feedback.human_rejected:
@@ -723,6 +728,7 @@ class CaseSnapshot:
             human_rejected=feedback.human_rejected,
             feedback_comment=feedback.feedback_comment,
             actual_response_text=feedback.actual_response_text,
+            observed_at=self.resolved_at,
         )
 
         # 2. 更新前の同一構造・同一初期キャッシュ条件 C0 (frozen_context) による後続結果 EFP' の真の再解釈 (F')
@@ -818,21 +824,26 @@ class CaseSnapshot:
             e_prediction_delta=round(e_pred, 4), # 後方互換性
             e_input_delta=round(e_input, 4),      # 後方互換性
             explanation=explanation,
+            interpreted_at=self.resolved_at,
         )
 
         self.e_prediction = round(e_pred, 4)
         self.e_input = round(e_input, 4)
         return self.e_prediction, self.e_input
 
-    def mark_unknown(self) -> Tuple[float, float]:
+    def mark_unknown(self, at: Optional[Any] = None) -> Tuple[float, float]:
         """タイムアウト等の理由で結果が回収不能になった場合 (F' は UNKNOWN として解釈)"""
         self.status = CaseStatus.UNKNOWN
-        self.resolved_at = datetime.utcnow().isoformat()
+        if at is not None:
+            self.resolved_at = at.isoformat() if isinstance(at, datetime) else str(at)
+        else:
+            self.resolved_at = datetime.utcnow().isoformat()
         self.outcome_observation = OutcomeObservation(
             status=CaseStatus.UNKNOWN,
             outcome="unresolved",
             user_resolved=False,
             feedback_comment="タイムアウト",
+            observed_at=self.resolved_at,
         )
         e_pred = 0.2
         e_input = 0.1

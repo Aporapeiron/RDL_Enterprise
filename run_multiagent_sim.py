@@ -102,6 +102,7 @@ def build_world(scenario_name: str) -> SimulationWorld:
             user_id="user_shadow",
             category="account",
             query_text="パスワードリセットの方法を教えてください",
+            created_at=w.clock.iso_time,
         )
         rt.dispatch_ticket(efp_shadow)
         rt.resolve_ticket_feedback(
@@ -111,7 +112,9 @@ def build_world(scenario_name: str) -> SimulationWorld:
                 human_rejected=True,
                 feedback_comment="旧URLは使えません",
                 new_knowledge_provided="新SaaSポータル(https://saas-pwd.corp.com)より再設定してください。",
+                observed_at=w.clock.iso_time,
             ),
+            at=w.clock.iso_time,
         )
 
     world.register_event_handler("shadow_eval_ticket", handle_shadow_eval)
@@ -127,6 +130,7 @@ def build_world(scenario_name: str) -> SimulationWorld:
                 scope="all",
                 actor_type="human",
                 authenticated_by="idp_sso",
+                timestamp=w.clock.iso_time,
             )
             try:
                 success = rt.promote_candidate_mb(prop_id, authority=mgr_auth)

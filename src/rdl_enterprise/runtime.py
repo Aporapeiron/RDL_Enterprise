@@ -326,6 +326,7 @@ class EnterpriseRuntime:
         self,
         ticket_id: str,
         feedback: FeedbackResult,
+        at: Optional[Any] = None,
     ) -> TicketResolutionResult:
         """
         フェーズ2：後続結果 EFP' の回収と代謝反映
@@ -336,7 +337,7 @@ class EnterpriseRuntime:
             raise KeyError(f"Ticket ID '{ticket_id}' は保留中(PENDING)に存在しません。")
 
         snapshot = self.pending_snapshots.pop(ticket_id)
-        e_pred, e_input = snapshot.record_feedback(feedback)
+        e_pred, e_input = snapshot.record_feedback(feedback, at=at)
         self.resolved_snapshots.append(snapshot)
 
         # シャドウ三者比較の記録 (有効な場合)
@@ -442,6 +443,7 @@ class EnterpriseRuntime:
             feedback=feedback,
             opposing_strength=opposing_strength,
             is_timeout=False,
+            at=at or getattr(snapshot, "resolved_at", None),
         )
 
     def _finalize_case_metabolism(
@@ -453,6 +455,7 @@ class EnterpriseRuntime:
         feedback: Optional[FeedbackResult] = None,
         opposing_strength: float = 1.0,
         is_timeout: bool = False,
+        at: Optional[Any] = None,
     ) -> TicketResolutionResult:
         """
         全案件（通常フィードバック解決／タイムアウト）に共通する代謝終端処理 (BASE v2.0 代謝閉ループ)
@@ -500,6 +503,7 @@ class EnterpriseRuntime:
         # 学習ガバナンス：拘束検査および H 蓄積の完了後、成功確認案件のみ M_B へ昇格・沈澱
         # ※ Canary 期間中は候補 M_B' の Freeze 原則 (Identity Drift 防止) のため直接結晶化はスキップ
         promoted_to_mb = False
+        evidence_at = at or getattr(snapshot, "resolved_at", None)
         if not is_timeout and not snapshot.is_canary and status == CaseStatus.SUCCESS and feedback and feedback.user_resolved and not feedback.human_rejected:
             if snapshot.candidate_knowledge and not snapshot.is_authoritative:
                 target_cascade.crystallize_rule(
@@ -541,31 +545,28 @@ class EnterpriseRuntime:
                 if is_rb:
                     canary_rolled_back = True
                     canary_rollback_reason = rb_reason
-                    # 旧本番の復元とキャッシュクリア
                     last_dep = self.canary_manager.deployment_history[-1]
                     self.mb_graph = last_dep.prod_mb_backup
                     self.cascade.mb_graph = self.mb_graph
                     self.cascade.level0_cache.clear()
-                    # 該当プロポーザルを REGRESSED 状態へ
                     if last_dep.proposal_id in self.pending_reorganizations:
                         prop = self.pending_reorganizations.pop(last_dep.proposal_id)
                         prop.status = ProposalState.REGRESSED
                         prop.reasons.append(f"カナリア自動ロールバック: {rb_reason}")
                         self.reorganization_history.append(prop)
         else:
-            # 自然散逸 (本番グラフ)
-            inertias = {nid: n.inertia() for nid, n in self.mb_graph.nodes.items()}
-            self.h_state.dissipate(inertias)
+            # 本番案件：自然散逸および本番M_Δ起草判定
+            node_inertias = {nid: n.inertia() for nid, n in target_graph.nodes.items()}
+            self.h_state.dissipate(node_inertias)
 
-            # 閾値判定 (H_prod >= θ_eff)
-            should_leap, hot_node, current_h = self.h_state.should_leap(pred.matched_node_id)
-            current_theta = self.h_state.theta_eff()
+            current_prod_h = self.h_state.version_total_heat(mb_ver)
+            current_theta = self.h_state.theta_eff(mb_ver)
+            current_h = current_prod_h
 
-            if should_leap:
-                self.m_delta_count += 1
+            if current_prod_h >= current_theta:
                 transition_m_delta = True
-                # 再編相 M_Δ パイプライン発動！
-                proposal = self._trigger_m_delta_proposal(hot_node, snapshot.efp, feedback)
+                hot_id = self.h_state.hottest_node_for_version(mb_ver) or pred.matched_node_id or "__global__"
+                proposal = self._trigger_m_delta_proposal(hot_id, snapshot.efp, feedback)
                 proposal_id = proposal.proposal_id
 
                 # 自動昇格設定かつ委任権限が存在する場合（PromotionGate で検証）
@@ -583,13 +584,13 @@ class EnterpriseRuntime:
                 matched_node = target_graph.get(pred.matched_node_id) if pred.matched_node_id else None
                 if matched_node:
                     if not is_timeout and status == CaseStatus.SUCCESS and feedback and feedback.user_resolved and not feedback.human_rejected:
-                        matched_node.record_success(approved=feedback.human_approved)
+                        matched_node.record_success(approved=feedback.human_approved, at=evidence_at)
                     elif not is_timeout and status in (CaseStatus.FAILURE, CaseStatus.REJECTED):
-                        matched_node.record_failure(rejected=rejected)
+                        matched_node.record_failure(rejected=rejected, at=evidence_at)
                     elif is_timeout or status == CaseStatus.UNKNOWN:
                         # 観測不能・タイムアウト (UNKNOWN): 判断の誤りではないため failure_count / confidence は変更せず未解決として記録
                         if hasattr(matched_node, "record_unresolved"):
-                            matched_node.record_unresolved()
+                            matched_node.record_unresolved(at=evidence_at)
 
                 if status == CaseStatus.SUCCESS and (not feedback or not getattr(snapshot.efp_prime, "human_approved", False)):
                     self.auto_resolved_count += 1
@@ -855,7 +856,7 @@ class EnterpriseRuntime:
             return None
         return self.active_shadow_evaluator.generate_report()
 
-    def expire_pending_tickets(self, ticket_ids: Optional[List[str]] = None) -> List[TicketResolutionResult]:
+    def expire_pending_tickets(self, ticket_ids: Optional[List[str]] = None, at: Optional[Any] = None) -> List[TicketResolutionResult]:
         """
         PENDING 案件のタイムアウト処理 (共通代謝終端化: T0 BASE v2.0 §4.2)
         通常フィードバックと同様にバージョン境界・カナリア隔離を通し、
@@ -868,7 +869,7 @@ class EnterpriseRuntime:
             if tid not in self.pending_snapshots:
                 continue
             snapshot = self.pending_snapshots.pop(tid)
-            e_pred, e_input = snapshot.mark_unknown()
+            e_pred, e_input = snapshot.mark_unknown(at=at)
             self.resolved_snapshots.append(snapshot)
             self.timeout_count += 1
 
@@ -880,6 +881,7 @@ class EnterpriseRuntime:
                 feedback=None,
                 opposing_strength=1.0,
                 is_timeout=True,
+                at=at or getattr(snapshot, "resolved_at", None),
             )
             results.append(res)
 

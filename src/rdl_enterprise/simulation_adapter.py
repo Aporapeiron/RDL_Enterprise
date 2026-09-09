@@ -58,7 +58,7 @@ class EnterpriseSimAdapter:
                     except Exception:
                         pass
             if to_expire:
-                expired_results = self.runtime.expire_pending_tickets(to_expire)
+                expired_results = self.runtime.expire_pending_tickets(to_expire, at=world.clock.iso_time)
                 for res in expired_results:
                     cohort = self._ticket_cohort_map.get(res.ticket_id, "general")
                     world.metrics.record_feedback(
@@ -143,12 +143,14 @@ class EnterpriseSimAdapter:
             user_resolved=bool(user_resolved),
             human_rejected=bool(complaint),
             feedback_comment=feedback_text,
+            observed_at=world.clock.iso_time,
         )
 
         prev_proposals = len(self.runtime.pending_reorganizations)
         res = self.runtime.resolve_ticket_feedback(
             ticket_id=ticket_id,
             feedback=feedback,
+            at=world.clock.iso_time,
         )
 
         # メトリクス記録
@@ -210,7 +212,7 @@ class EnterpriseSimAdapter:
         target_ids = payload.get("ticket_ids")
         if target_ids is None:
             target_ids = list(self.runtime.pending_snapshots.keys())
-        timed_out = self.runtime.expire_pending_tickets(target_ids)
+        timed_out = self.runtime.expire_pending_tickets(target_ids, at=world.clock.iso_time)
         for res in timed_out:
             cohort = self._ticket_cohort_map.get(res.ticket_id, "general")
             world.metrics.record_feedback(

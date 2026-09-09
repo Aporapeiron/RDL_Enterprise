@@ -487,25 +487,31 @@ class MBNode:
         """
         return math.exp(-self.inertia() / m0)
 
-    def record_success(self, approved: bool = False):
+    def record_success(self, approved: bool = False, at: Optional[Any] = None):
         if self.is_frozen:
             raise RuntimeError(f"MBNode(id={self.id}) は凍結(frozen)されています。学習・統計更新は禁止されています。")
         self.success_count += 1
         if approved:
             self.approval_count += 1
         self.confidence = min(1.0, self.confidence + 0.05)
-        self.last_support_at = datetime.utcnow().isoformat()
+        if at is not None:
+            self.last_support_at = at.isoformat() if isinstance(at, datetime) else str(at)
+        else:
+            self.last_support_at = datetime.utcnow().isoformat()
 
-    def record_failure(self, rejected: bool = False):
+    def record_failure(self, rejected: bool = False, at: Optional[Any] = None):
         if self.is_frozen:
             raise RuntimeError(f"MBNode(id={self.id}) は凍結(frozen)されています。学習・統計更新は禁止されています。")
         self.failure_count += 1
         if rejected:
             self.rejection_count += 1
         self.confidence = max(0.1, self.confidence - 0.1)
-        self.last_opposing_at = datetime.utcnow().isoformat()
+        if at is not None:
+            self.last_opposing_at = at.isoformat() if isinstance(at, datetime) else str(at)
+        else:
+            self.last_opposing_at = datetime.utcnow().isoformat()
 
-    def record_unresolved(self):
+    def record_unresolved(self, at: Optional[Any] = None):
         """
         観測不能・タイムアウト（UNKNOWN）の記録。
         判断が誤っていたわけではないため、failure_count や confidence は減衰させず、
@@ -515,7 +521,10 @@ class MBNode:
         if self.is_frozen:
             raise RuntimeError(f"MBNode(id={self.id}) は凍結(frozen)されています。学習・統計更新は禁止されています。")
         self.unresolved_count += 1
-        self.last_observed_at = datetime.utcnow().isoformat()
+        if at is not None:
+            self.last_observed_at = at.isoformat() if isinstance(at, datetime) else str(at)
+        else:
+            self.last_observed_at = datetime.utcnow().isoformat()
 
 
 class MBGraph:

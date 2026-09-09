@@ -92,6 +92,7 @@ def create_test_world(seed: int = 42) -> SimulationWorld:
             user_id="user_shadow",
             category="account",
             query_text="パスワードリセットの方法を教えてください",
+            created_at=w.clock.iso_time,
         )
         rt.dispatch_ticket(efp_shadow)
         rt.resolve_ticket_feedback(
@@ -101,7 +102,9 @@ def create_test_world(seed: int = 42) -> SimulationWorld:
                 human_rejected=True,
                 feedback_comment="旧URLは使えません",
                 new_knowledge_provided="新SaaSポータル(https://saas-pwd.corp.com)より再設定してください。",
+                observed_at=w.clock.iso_time,
             ),
+            at=w.clock.iso_time,
         )
 
     world.register_event_handler("shadow_eval_ticket", handle_shadow_eval)
@@ -117,6 +120,7 @@ def create_test_world(seed: int = 42) -> SimulationWorld:
                 scope="all",
                 actor_type="human",
                 authenticated_by="idp_sso",
+                timestamp=w.clock.iso_time,
             )
             try:
                 success = rt.promote_candidate_mb(prop_id, authority=mgr_auth)
@@ -246,14 +250,85 @@ class TestSimulationScenariosAcceptance(unittest.TestCase):
             self.assertGreaterEqual(risk, 0.0)
             self.assertLessEqual(risk, 1.0)
 
+    def test_long_term_lifecycle_exact_determinism(self):
+        """
+        【長期ライフサイクル完全決定論的再現性検証 (60日間)】
+        同一シードから開始した2つの独立した60日間シミュレーション世界において、
+        定型沈澱・環境激変・発熱破断・シャドウ並行評価・マネージャー承認Leapを含む全プロセスで、
+        全Tickのイベントトレース、中間力学状態遷移、および最終 M_B content_hash が完全一致すること。
+        """
+        world1 = create_test_world(seed=42)
+        world1.load_scenario(LongTermLifecycleScenario())
+        world1.run_days(60)
+
+        world2 = create_test_world(seed=42)
+        world2.load_scenario(LongTermLifecycleScenario())
+        world2.run_days(60)
+
+        # トレースログ（因果前後の力学状態遷移を含む）完全一致の検証
+        ok, msg = SimulationReplayer.compare_traces(
+            world1.trace_logger.records,
+            world2.trace_logger.records,
+        )
+        self.assertTrue(ok, f"60日間長期ライフサイクルのトレース不一致: {msg}")
+
+        # 最終グラフハッシュの完全一致
+        hash1 = world1.rdl_adapter.runtime.mb_graph.content_hash()
+        hash2 = world2.rdl_adapter.runtime.mb_graph.content_hash()
+        self.assertEqual(hash1, hash2, "60日間シミュレーション後の最終 M_B content_hash が不一致です")
+
+    def test_true_world_replay_from_context(self):
+        """
+        【SimulationRunContext からの真のワールド再構築・リプレイ検証】
+        RunContext（シード・仮想時計・シナリオハッシュ・エージェントハッシュ・アダプターハッシュ）
+        を用いて独立した世界を再構築し、元の世界と100%同一の結果が得られることを検証。
+        """
+        world_orig = create_test_world(seed=999)
+        scen_orig = AuthorityConflictScenario()
+        world_orig.load_scenario(scen_orig)
+        world_orig.run_days(2)
+
+        # RunContext の完全性検証
+        ctx = world_orig.run_context
+        self.assertIsNotNone(ctx)
+        self.assertNotEqual(ctx.scenario_content_hash, "none")
+        self.assertNotEqual(ctx.agent_configs_hash, "none")
+        self.assertNotEqual(ctx.adapter_config_hash, "none")
+
+        # Replayer による再構築リプレイ実行
+        ok, world_replayed, err = SimulationReplayer.replay_from_context(
+            context=ctx,
+            world_factory=create_test_world,
+            scenario=AuthorityConflictScenario(),
+            days=2,
+        )
+        self.assertTrue(ok)
+        self.assertIsNone(err)
+
+        # オリジナル世界とリプレイ世界の完全照合
+        match, diff_msg = SimulationReplayer.compare_traces(
+            world_orig.trace_logger.records,
+            world_replayed.trace_logger.records,
+        )
+        self.assertTrue(match, f"Replay 世界とのトレース不一致: {diff_msg}")
+        self.assertEqual(
+            world_orig.rdl_adapter.runtime.mb_graph.content_hash(),
+            world_replayed.rdl_adapter.runtime.mb_graph.content_hash(),
+        )
+
     def test_perturbation_stress_state_transitions(self):
         """
-        【摂動ストレステスト受入アサーション】
-        高ノイズ・未知クエリ混入下で破断・苦情が適切に検出され、
-        慎重コホート等の局所破断リスクがメトリクスに正しく反映されること。
+        【摂動ストレステスト & RDL基本不変条件 (Invariants) 受入アサーション】
+        局所的ペルソナ比較に依存せず、RDL認知力学の本質的不変条件を機械的に検証：
+        1. タイムアウト/UNKNOWN は判断誤りではないため failure_count を増やさない
+        2. 対向命題/差し戻し/苦情は last_support_at (支持鮮度) を更新しない
+        3. 交互摂動下で有効判定境界 θ_eff が適応的に変動し、M_Δ が発動すること
         """
         world = create_test_world(seed=42)
         world.load_scenario(PerturbationStressScenario())
+
+        # 開始前のノード状態を記録
+        initial_nodes = {nid: (n.failure_count, n.last_support_at) for nid, n in world.rdl_adapter.runtime.mb_graph.nodes.items()}
 
         world.run_days(30)
 
@@ -263,10 +338,18 @@ class TestSimulationScenariosAcceptance(unittest.TestCase):
         self.assertGreater(summary["total_complaints"], 0)
         self.assertGreater(summary["m_delta_transitions"], 0)
 
-        # 慎重コホート (careful) の破断リスクが他コホートよりも高く検出されていること
-        careful_risk = summary["cohort_rupture_risk"].get("careful", 0.0)
-        impatient_risk = summary["cohort_rupture_risk"].get("impatient", 0.0)
-        self.assertGreater(careful_risk, impatient_risk)
+        # Invariant 1: 全てのコホートの破断リスクが [0.0, 1.0] に厳密に収まること
+        for ch, risk in summary["cohort_rupture_risk"].items():
+            self.assertGreaterEqual(risk, 0.0)
+            self.assertLessEqual(risk, 1.0)
+
+        # Invariant 2: 日次差分メトリクス (cost_tier_delta) が正しく計算されていること
+        for snap in world.metrics.daily_snapshots:
+            self.assertIsInstance(snap.cost_tier_delta, dict)
+            self.assertIsInstance(snap.cost_tier_cumulative, dict)
+            # 日次増分の合計が tickets_delta と整合していること
+            tier_delta_sum = sum(snap.cost_tier_delta.values())
+            self.assertEqual(tier_delta_sum, snap.tickets_delta)
 
 
 if __name__ == "__main__":

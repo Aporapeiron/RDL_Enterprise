@@ -277,4 +277,30 @@ class HState:
                 total += h.total(self.w_pred, self.w_input)
         return total
 
+    def hottest_node_for_version(self, mb_version: str) -> Optional[str]:
+        """
+        指定バージョンの中で最も熱の蓄積が大きいノードIDを返す
+        """
+        max_nid = None
+        max_h = 0.0
+        for (ver, nid), h in self.versioned_heats.items():
+            if ver == mb_version and nid and not nid.startswith("__"):
+                h_val = h.total(self.w_pred, self.w_input)
+                if h_val > max_h:
+                    max_h = h_val
+                    max_nid = nid
+
+        if max_nid:
+            return max_nid
+
+        # 本番フォールバック: node_heats から探す
+        for nid, h in self.node_heats.items():
+            if nid and not nid.startswith("__"):
+                h_val = h.total(self.w_pred, self.w_input)
+                if h_val > max_h:
+                    max_h = h_val
+                    max_nid = nid
+
+        return max_nid
+
 

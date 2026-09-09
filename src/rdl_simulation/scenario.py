@@ -23,6 +23,9 @@ class SimulationRunContext:
     minutes_per_tick: int
     scenario_name: str
     scenario_version: str = "v1.0"
+    scenario_content_hash: str = "none"
+    agent_configs_hash: str = "none"
+    adapter_config_hash: str = "none"
     initial_mb_hash: Optional[str] = None
     created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
 
@@ -82,3 +85,28 @@ class ScenarioPack(ABC):
     def on_tick(self, world: "SimulationWorld", current_tick: int, current_day: int) -> None:
         """毎Tickの動的フック (必要に応じてオーバーライド)"""
         pass
+
+    def content_hash(self) -> str:
+        """シナリオの構成およびイベント群の決定論的ハッシュ"""
+        import hashlib
+        import json
+        ev_dicts = [
+            {
+                "day": ev.day,
+                "hour": ev.hour,
+                "minute": ev.minute,
+                "event_type": ev.event_type,
+                "source_id": ev.source_id,
+                "target_id": ev.target_id,
+                "payload": ev.payload,
+                "priority": ev.priority,
+            }
+            for ev in self.scheduled_events
+        ]
+        data = {
+            "name": self.name,
+            "version": self.version,
+            "events": ev_dicts,
+        }
+        serialized = json.dumps(data, sort_keys=True, ensure_ascii=False)
+        return hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:16]

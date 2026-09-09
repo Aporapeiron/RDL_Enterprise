@@ -20,7 +20,9 @@ class DailySnapshot:
     cumulative_resolved: int = 0   # 累計解決数
     cumulative_failed: int = 0     # 累計失敗数
     cumulative_unknown: int = 0    # 累計タイムアウト数
-    cost_tier_today: Dict[int, int] = field(default_factory=lambda: defaultdict(int))
+    cost_tier_delta: Dict[int, int] = field(default_factory=dict)       # その日のTier別件数（日次差分）
+    cost_tier_cumulative: Dict[int, int] = field(default_factory=dict)  # 累計のTier別件数
+    cost_tier_today: Dict[int, int] = field(default_factory=dict)       # 後方互換性エイリアス (cost_tier_deltaと同一)
     heat_level: float = 0.0
     theta_eff: float = 0.0
     average_kappa: float = 0.0
@@ -56,6 +58,7 @@ class SimMetricsCollector:
         self._last_snap_resolved = 0
         self._last_snap_failed = 0
         self._last_snap_unknown = 0
+        self._last_snap_cost_tiers: Dict[int, int] = defaultdict(int)
 
         # 日次推移
         self.daily_snapshots: List[DailySnapshot] = []
@@ -124,6 +127,13 @@ class SimMetricsCollector:
         self._last_snap_failed = self.total_failed
         self._last_snap_unknown = self.total_unknown
 
+        cost_tier_delta: Dict[int, int] = {}
+        for tier, count in self.cost_tier_counts.items():
+            delta = count - self._last_snap_cost_tiers[tier]
+            if delta > 0:
+                cost_tier_delta[tier] = delta
+        self._last_snap_cost_tiers = defaultdict(int, dict(self.cost_tier_counts))
+
         snap = DailySnapshot(
             day=day,
             tick=tick,
@@ -135,7 +145,9 @@ class SimMetricsCollector:
             cumulative_resolved=self.total_resolved,
             cumulative_failed=self.total_failed,
             cumulative_unknown=self.total_unknown,
-            cost_tier_today=dict(self.cost_tier_counts),
+            cost_tier_delta=cost_tier_delta,
+            cost_tier_cumulative=dict(self.cost_tier_counts),
+            cost_tier_today=cost_tier_delta,
             heat_level=heat_level,
             theta_eff=theta_eff,
             average_kappa=average_kappa,
