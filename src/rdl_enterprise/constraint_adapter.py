@@ -89,6 +89,8 @@ def record_bundle_evaluation(
     provenance=None,
 ) -> ConstraintEvaluation:
     """Retain Bundle components and evaluation weights as a recoverable record."""
+    if provenance is None:
+        raise ValueError("Enterprise bundle evaluationにはProvenanceが必要です")
     return record_constraint_evaluation(
         context=context,
         relevance=_required_score(bundle, "relevance"),
@@ -98,5 +100,7 @@ def record_bundle_evaluation(
         convergence=_required_score(bundle, "convergence"),
         support=support,
         weights=weights or ConstraintEvaluationWeights(),
+        evaluator_id="rdl_enterprise.bundle_constraint",
+        evaluator_version="1",
         provenance=provenance,
     )

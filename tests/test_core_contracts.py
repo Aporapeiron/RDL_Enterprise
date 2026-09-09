@@ -148,8 +148,14 @@ class TestCoreContracts(unittest.TestCase):
         self.assertEqual(evaluation.source, 0.5)
         self.assertEqual(evaluation.convergence, 1.0)
         self.assertEqual(evaluation.context.boundary_id, "eval-1")
-        delta = ConstraintEvaluationDelta(0.99, evaluation.strength.value, context)
-        self.assertAlmostEqual(delta.value, 0.99 - evaluation.strength.value)
+        self.assertEqual(evaluation.evaluator_id, "rdl_core.constraint_strength")
+        left = record_constraint_evaluation(
+            context=context, relevance=1.0, freshness=0.5, authority=0.0,
+            source=0.5, convergence=1.0, evaluator_id="legacy.enterprise", evaluator_version="1",
+        )
+        delta = ConstraintEvaluationDelta(left, evaluation)
+        self.assertAlmostEqual(delta.value, left.strength.value - evaluation.strength.value)
+        self.assertTrue(delta.same_boundary)
 
     def test_enterprise_bundle_adapter_preserves_bounded_observation(self):
         from types import SimpleNamespace
@@ -286,3 +292,7 @@ class TestCoreContracts(unittest.TestCase):
         self.assertIsInstance(evaluation, ConstraintEvaluation)
         self.assertEqual(evaluation.source, 0.5)
         self.assertEqual(evaluation.provenance.source, "bundle-observation")
+        self.assertEqual(evaluation.evaluator_id, "rdl_enterprise.bundle_constraint")
+
+        with self.assertRaises(ValueError):
+            record_bundle_evaluation(bundle, BoundaryContext("record-2"))

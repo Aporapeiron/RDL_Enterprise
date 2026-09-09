@@ -40,21 +40,30 @@ class ConstraintEvaluation:
     convergence: float
     weights: ConstraintEvaluationWeights
     context: BoundaryContext
+    evaluator_id: str = "rdl_core.constraint_strength"
+    evaluator_version: str = "0"
     provenance: Optional[Provenance] = None
+
+    def __post_init__(self) -> None:
+        if not self.evaluator_id.strip() or not self.evaluator_version.strip():
+            raise ValueError("evaluator identity/version は空にできません")
 
 
 @dataclass(frozen=True)
 class ConstraintEvaluationDelta:
     """Difference between two finite evaluators, not error against reality."""
 
-    legacy_score: float
-    core_score: float
-    context: BoundaryContext
+    left_evaluation: ConstraintEvaluation
+    right_evaluation: ConstraintEvaluation
     provenance: Optional[Provenance] = None
 
     @property
     def value(self) -> float:
-        return self.legacy_score - self.core_score
+        return self.left_evaluation.strength.value - self.right_evaluation.strength.value
+
+    @property
+    def same_boundary(self) -> bool:
+        return self.left_evaluation.context == self.right_evaluation.context
 
 
 def evaluate_constraint_strength(
@@ -103,6 +112,8 @@ def record_constraint_evaluation(
     convergence: float,
     support: EvidencePolarity = EvidencePolarity.UNRESOLVED,
     weights: ConstraintEvaluationWeights = ConstraintEvaluationWeights(),
+    evaluator_id: str = "rdl_core.constraint_strength",
+    evaluator_version: str = "0",
     provenance: Optional[Provenance] = None,
 ) -> ConstraintEvaluation:
     strength = evaluate_constraint_strength(
@@ -118,6 +129,8 @@ def record_constraint_evaluation(
         convergence=_unit_interval(convergence, "convergence"),
         weights=weights,
         context=context,
+        evaluator_id=evaluator_id,
+        evaluator_version=evaluator_version,
         provenance=provenance,
     )
 
