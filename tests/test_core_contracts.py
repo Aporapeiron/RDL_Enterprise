@@ -461,6 +461,13 @@ class TestCoreContracts(unittest.TestCase):
         self.assertEqual(len(projection.observations), 1)
         self.assertEqual(projection.observations[0].status, RelationObservationStatus.OBSERVED)
         self.assertEqual(projection.observations[0].boundary.purpose, "projection")
+        self.assertEqual(
+            projection.selected_slice(),
+            (
+                (("graph-a", "finance"), ("graph-b", "finance")),
+                (("graph-a", "support", "graph-b", "observed", "graph-boundary"),),
+            ),
+        )
 
         node_a.source_id = "  "
         node_a.source_lineage = None

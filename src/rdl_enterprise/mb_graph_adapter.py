@@ -27,6 +27,21 @@ class MBGraphProjection:
     graph: NodeDescriptionGraph
     observations: Tuple[RelationObservation, ...]
 
+    def selected_slice(self) -> Tuple[tuple, tuple]:
+        """Return only the stable identity/edge fields selected by the adapter."""
+        nodes = tuple((node.node_id, node.domain) for node in self.graph.nodes)
+        edges = tuple(
+            (
+                observation.relation.subject,
+                observation.relation.relation,
+                observation.relation.object,
+                observation.status.value,
+                observation.boundary.boundary_id,
+            )
+            for observation in self.observations
+        )
+        return nodes, edges
+
 
 def provenance_from_mbnode(node: object) -> Optional[Provenance]:
     """Recover MBNode source fields without inventing a missing source."""
