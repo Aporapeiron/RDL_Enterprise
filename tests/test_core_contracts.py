@@ -416,3 +416,24 @@ class TestCoreContracts(unittest.TestCase):
         node.node_relations["bad"] = "truth"
         with self.assertRaises(ValueError):
             relation_observations_from_mbnode(node, BoundaryContext("edge-b"))
+
+    def test_mbgraph_projection_returns_core_graph_and_observation_slice(self):
+        from types import SimpleNamespace
+        from rdl_enterprise.mb_graph import MBNode
+        from rdl_enterprise.mb_graph_adapter import project_mbgraph
+
+        node_a = MBNode(
+            id="graph-a", domain="finance", trigger_pattern={}, action_template={},
+            node_relations={"graph-b": "support"}, source_id="graph-source",
+        )
+        node_b = MBNode(
+            id="graph-b", domain="finance", trigger_pattern={}, action_template={},
+        )
+        projection = project_mbgraph(
+            SimpleNamespace(nodes={"graph-a": node_a, "graph-b": node_b}),
+            BoundaryContext("graph-boundary", purpose="projection"),
+        )
+        self.assertEqual([node.node_id for node in projection.graph.nodes], ["graph-a", "graph-b"])
+        self.assertEqual(len(projection.observations), 1)
+        self.assertEqual(projection.observations[0].status, RelationObservationStatus.OBSERVED)
+        self.assertEqual(projection.observations[0].boundary.purpose, "projection")

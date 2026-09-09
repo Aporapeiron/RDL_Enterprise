@@ -1,11 +1,13 @@
 """Projection from Enterprise MBNode objects to RDL Core relation types."""
 
+from dataclasses import dataclass
 from typing import Iterable, Optional, Tuple
 
 from rdl_core import (
     BoundaryContext,
     ConstraintIdentity,
     NodeDescription,
+    NodeDescriptionGraph,
     Provenance,
     RelationObservation,
     RelationObservationStatus,
@@ -18,6 +20,12 @@ _RELATION_STATUS = {
     "independent": RelationObservationStatus.NOT_OBSERVED,
     "unknown": RelationObservationStatus.UNRESOLVED,
 }
+
+
+@dataclass(frozen=True)
+class MBGraphProjection:
+    graph: NodeDescriptionGraph
+    observations: Tuple[RelationObservation, ...]
 
 
 def provenance_from_mbnode(node: object) -> Optional[Provenance]:
@@ -70,6 +78,28 @@ def relation_observations_from_mbnode(
         )
         for relation in relations
     )
+
+
+def project_mbgraph(
+    mb_graph: object,
+    boundary: BoundaryContext,
+    *,
+    provenance: Optional[Provenance] = None,
+) -> MBGraphProjection:
+    """Project the selected semantic slice of an Enterprise MBGraph."""
+    nodes = getattr(mb_graph, "nodes", None)
+    if not isinstance(nodes, dict):
+        raise TypeError("MBGraph.nodes はmappingである必要があります")
+    descriptions = []
+    observations = []
+    for node in nodes.values():
+        node_provenance = provenance if provenance is not None else provenance_from_mbnode(node)
+        relations = relations_from_mbnode(node)
+        descriptions.append(node_description_from_mbnode(node, relations, provenance=node_provenance))
+        observations.extend(
+            relation_observations_from_mbnode(node, boundary, provenance=node_provenance)
+        )
+    return MBGraphProjection(NodeDescriptionGraph(tuple(descriptions)), tuple(observations))
 
 
 def node_description_from_mbnode(
