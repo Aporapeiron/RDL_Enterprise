@@ -160,6 +160,35 @@ class RelationClusterCandidate:
 
 
 @dataclass(frozen=True)
+class RelationPatternCandidate:
+    """Common relation-position pattern derived from a cluster, not a rule."""
+
+    cluster: RelationClusterCandidate
+    subject: Optional[str]
+    relation: Optional[str]
+    object: Optional[str]
+
+    @property
+    def fully_specified(self) -> bool:
+        return self.subject is not None and self.relation is not None and self.object is not None
+
+
+def derive_relation_pattern(cluster: RelationClusterCandidate) -> RelationPatternCandidate:
+    """Extract only slot values shared by every cluster member."""
+    if not isinstance(cluster, RelationClusterCandidate):
+        raise TypeError("clusterはRelationClusterCandidateである必要があります")
+    if not cluster.members:
+        raise ValueError("空のRelation clusterからPatternを生成できません")
+    first = cluster.members[0]
+    return RelationPatternCandidate(
+        cluster=cluster,
+        subject=first.subject if all(item.subject == first.subject for item in cluster.members) else None,
+        relation=first.relation if all(item.relation == first.relation for item in cluster.members) else None,
+        object=first.object if all(item.object == first.object for item in cluster.members) else None,
+    )
+
+
+@dataclass(frozen=True)
 class StructureDelta:
     """Finite relation-structure difference between two candidates."""
 

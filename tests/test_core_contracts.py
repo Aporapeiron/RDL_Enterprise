@@ -49,6 +49,7 @@ from rdl_core import (
     StructureCandidate,
     StructureInductionResult,
     RelationClusterCandidate,
+    RelationPatternCandidate,
     StructureDelta,
     RecompiledStructureCandidate,
     RelationConstraintDelta,
@@ -57,6 +58,7 @@ from rdl_core import (
     extract_structure_candidate,
     induce_structure_candidate,
     cluster_relation_keys,
+    derive_relation_pattern,
     induce_structure_candidate_with_clusters,
     extract_recompiled_structure_candidate,
     compile_function_candidate,
@@ -200,6 +202,12 @@ class TestCoreContracts(unittest.TestCase):
         self.assertTrue(clusters[0].connected)
         self.assertEqual(clusters[0].conflicting_edges, ())
         self.assertEqual(clusters[0].unresolved_edges, ())
+        pattern = derive_relation_pattern(clusters[0])
+        self.assertIsInstance(pattern, RelationPatternCandidate)
+        self.assertIsNone(pattern.subject)
+        self.assertEqual(pattern.relation, "supports")
+        self.assertEqual(pattern.object, "b")
+        self.assertFalse(pattern.fully_specified)
         clustered = induce_structure_candidate_with_clusters(
             AdaptiveMBProfile((left, right), BoundaryContext("adaptive")),
             BoundaryContext("cluster"),
