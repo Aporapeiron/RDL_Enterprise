@@ -132,3 +132,56 @@ class TestCoreContracts(unittest.TestCase):
         )
         self.assertEqual(activation.strength.value, 0.7)
         self.assertEqual(activation.strength.support, EvidencePolarity.UNRESOLVED)
+
+    def test_enterprise_core_bounded_equivalence_selected_observation(self):
+        from rdl_enterprise.constraint import ConstraintBundle
+        from rdl_enterprise.constraint_adapter import activation_from_bundle
+
+        bundle = ConstraintBundle(
+            node_ids=["n-primary", "n-support"],
+            constraint_score=0.72,
+            relevance=0.81,
+            freshness=0.63,
+            authority_weight=0.41,
+        )
+        identity = ConstraintIdentity(
+            "bundle:c1", "requester", "may_approve", "expense"
+        )
+        context = BoundaryContext(
+            "run:bounded-1",
+            question="approval",
+            purpose="bounded-equivalence",
+            conditions={"mb_version": "prod", "observation": "selected"},
+        )
+        activation = activation_from_bundle(
+            bundle,
+            identity,
+            context,
+            support=EvidencePolarity.SUPPORT,
+        )
+
+        selected_observation = {
+            "constraint_id": activation.identity.constraint_id,
+            "strength": activation.strength.value,
+            "relevance": activation.strength.relevance,
+            "freshness": activation.strength.freshness,
+            "authority": activation.strength.authority,
+            "support": activation.strength.support.value,
+            "boundary_id": activation.context.boundary_id,
+            "question": activation.context.question,
+            "purpose": activation.context.purpose,
+        }
+        self.assertEqual(
+            selected_observation,
+            {
+                "constraint_id": "bundle:c1",
+                "strength": 0.72,
+                "relevance": 0.81,
+                "freshness": 0.63,
+                "authority": 0.41,
+                "support": "support",
+                "boundary_id": "run:bounded-1",
+                "question": "approval",
+                "purpose": "bounded-equivalence",
+            },
+        )
