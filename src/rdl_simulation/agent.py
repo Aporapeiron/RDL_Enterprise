@@ -41,7 +41,7 @@ class Persona:
         主観的有限観測 (FeedbackResult) を生成する。
         """
         # 1. 回答内容の基本的合致判定
-        # oracle_truth（現行世界の正解キーワード等）が指定されている場合は照合
+        # oracle_truth（現行世界で支持された解釈キーワード等）が指定されている場合は照合
         is_actually_correct = True
         if oracle_truth:
             is_actually_correct = (oracle_truth.lower() in response_text.lower())

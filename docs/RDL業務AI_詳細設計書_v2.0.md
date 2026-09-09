@@ -8,6 +8,17 @@
 
 本仕様における「一致」「再現」「十分性」「閉包」「検証成立」は、明示または暗黙に設定された有限境界 $B$、問い $Q$、時点 $t$、観測断面 $O$、および運用目的 $P$ に対する性質であり、終端的完全性・世界そのものの決定論性・絶対的真理性を意味しない。いかなる運用閉包においても $\xi$ は残存する。
 
+強い述語 $P$ を用いる場合は、その成立域となる有限関係条件を回収可能にする。
+
+```text
+P
+↓
+P(B, Q, t, O, Purpose)
+
+P(B, ...)
+does not eliminate ξ(B)
+```
+
 | 従来語 | 本仕様での意味語 | 運用上の読み |
 |---|---|---|
 | 完全 | 運用閉包 / 境界内閉包 | 現在の $B/Q/t/O/P$ で作用継続に必要な関係が一旦閉じている |
@@ -19,13 +30,20 @@
 | 最終状態 | 観測終了時状態 | 指定した観測区間の終了時点における遷移関連状態 |
 | 証明 | 境界内検証成立 | $B$ 内で要求した検査が成立した |
 | 成功 | 局所安定 / 運用成立 | 現在の有限観測で期待した応答関係が成立した |
+| 必要 | 境界内必要性 | 現在の $B/Q/t/Purpose$ で操作成立に必要と扱う |
+| 十分 | 運用十分性 | 現在の $B/Q/t/Purpose$ で追加探索なしに作用可能と扱う |
+| 安全 | 現在検査境界での許容リスク内 | 指定検査・観測断面で破断条件を超えていない |
+| 保証 | 契約上の遮断 / 境界内検証成立 | 指定された実装契約・検査境界で逸脱経路を遮断する |
+| 実証 | 有限条件下検証 / 運用観測 | 指定条件のシナリオまたは運用観測で成立を確認した |
+| 正解 | 現在 $B$ で支持された解釈 | 世界そのものの正解ではなく、現在境界内で支持される $F$ |
+| 真実 | 強く支持された関係拘束 | 強拘束は絶対真理を意味せず、$\xi$ は残存する |
 
 実装識別子としての `exact`、`content_hash`、`deterministic_replay`、`SUCCESS` などは、ビット列・データ構造・API状態ラベルとして保持する。ただし、それらの結果をRDL意味層で読む際は、常に上記の有限化された意味へ写像する。
 
 ## 1. システム概要と基本思想
 
 ### 1.1 背景と設計目標
-本システム（`RDL_Enterprise`）は、既存の大規模言語モデル（LLM）や検索基盤を「AIの本体」として特権化せず、高負荷時や未知探索時に起動される「外部推論器・未回収関係（$\xi$）展開器」と位置づける。
+本システム（`RDL_Enterprise`）は、既存の大規模言語モデル（LLM）や検索基盤を「AIの本体」として特権化せず、高負荷時や未知探索時に起動される「外部推論器・未回収関係（$\xi$）に対する探索候補生成器」と位置づける。LLM出力は $\xi$ の解消そのものではなく、検査・選別・コミットメントを待つ候補関係材料として扱う。
 業務経験を通じて、その組織固有の有限関係拘束構造 **$M_B$（自己側の有限整合構造）** を形成・適応させ、**「仕事に慣れるほど計算量・コストが逓減する（逆スケーリング）」** 閉じた代謝ループを実現する自律型業務AIランタイムである。
 
 ```text
@@ -49,7 +67,7 @@
 
 ## 2. 全体アーキテクチャ
 
-システムは、代謝骨格を司る **RDL Runtime Core**、階層型推論を行う **InterpCascade（推論関数スロット）**、動的制約を解決する **ConstraintEngine**、再編時の安全性を保証する **DurabilityHarness ＆ PromotionGate** から構成される。
+システムは、代謝骨格を司る **RDL Runtime Core**、階層型推論を行う **InterpCascade（推論関数スロット）**、動的制約を解決する **ConstraintEngine**、再編時に現在の検査境界で昇格条件を満たすかを検証する **DurabilityHarness ＆ PromotionGate** から構成される。
 
 ```mermaid
 graph TD
@@ -156,7 +174,7 @@ graph TD
 * **オブジェクト生成と支持証拠の厳格分離（BASE v2.0 §4.2: Description ≠ Commitment）**:
   * 単なる Python クラス `MBNode(...)` のインスタンス化（関係の記述・仮説定義）をもって、正の支持証拠 `last_support_at` や `freshness` を自己生成・捏造することを禁止。
   * **Constructor Forgery の境界内排除 (新P0)**: 公開コンストラクタ引数 `commitment_origin`, `committed_at`, `commitment_record` は安全のため無視・無効化され、バイパス引数（`_internal_commitment`）も API から撤去する。公開コンストラクタはいかなる引数を用いても未コミットノードしか生成できない。
-  * **属性イミュータビリティ (P0-P1)**: コミットメント関連プロパティ（`commitment_origin`, `committed_at`, `commitment_record`）および内部保持フィールド `_commitment_record` への直接代入は `AttributeError` で拒絶される（不変性の保証）。
+  * **属性イミュータビリティ (P0-P1)**: コミットメント関連プロパティ（`commitment_origin`, `committed_at`, `commitment_record`）および内部保持フィールド `_commitment_record` への直接代入は `AttributeError` で拒絶される（契約上の遮断）。
 * **正規コミットメントゲートウェイ（`MBGraph.commit_node()`）**:
   * 記述を $M_B$ の正統な構成要素として昇格・定着させる唯一の手段として `commit_node(node, origin, actor, authority_context, commit_time, evidence_time)` を規定。
   * コミットメントのバインドは、ゲートウェイ内部でのみ `object.__setattr__(node, "_commitment_record", rec)` を介して実行される。
@@ -174,7 +192,7 @@ graph TD
 * **直列化データの自己申告偽造排除とロード時完全性照合 (P0-P1)**:
   * **`CommitmentRecord.from_dict_strict()`**: `from_dict()` におけるデフォルト値補完を全廃。直列化データ内の `origin`（既知Enum値検証）、`committed_at` / `evidence_at`（ISO-8601 時刻妥当性）、`actor`（必須）の厳格検証を行い、外側フィールドとの不一致や欠損は `ValueError` で拒絶。
   * **ロード時 `content_hash` 検証 (`IntegrityError`)**: `from_dict(verify_hash=True)` は、保存された `content_hash` と復元後グラフの実効 `content_hash()` を照合し、不一致時は `IntegrityError` を送出して改ざんデータを即座に遮断。
-  * ※ `content_hash` はデータの「完全性・改ざん検出（Integrity/Checksum）」を保証するものであり、署名・認可による「真正性（Authenticity）」とは区別して運用される。
+  * ※ `content_hash` はデータの「完全性・改ざん検出（Integrity/Checksum）」を境界内で検証するものであり、署名・認可による「真正性（Authenticity）」とは区別して運用される。
 * **実データ検証を伴う真正な移行ゲートウェイ (`migrate_legacy_nodes()`) (P0-P2)**:
   * **互換ショートカットの全廃**: `snapshot: LegacySnapshot`, `context: MigrationContext` の型指定を厳格義務付け。文字列引数による暗黙呼び出しは `TypeError` で即時拒絶し、`admin` ロールへの自動昇格バックドアを根絶。
   * **スナップショット ↔ 対象ノードの同一性・内容完全束縛**:
@@ -235,13 +253,13 @@ $H_{total} \ge \theta_{eff}$ に達した瞬間、巡航相（Cruise）から再
 | **Test 11** | キャッシュ移行の起源明示 | 旧形式キャッシュのインポート時に `source_mb_version` の明示を義務付け、現行バージョンへの不当な自己昇格が防止されること。 |
 | **Test 12** | 意味的鮮度と残差の分離 | タイムアウト案件（UNKNOWN）において、ノードの `last_evidence_at` および `content_hash` が保存され、不当な鮮度リフレッシュが発生しないこと。 |
 | **Test 13** | 証拠極性分離と反証シグナル | 失敗・差し戻し発生時に `last_opposing_at` が更新され、`last_support_at` は保存されて支持鮮度の上昇が防止されること。支持鮮度は `last_support_at` のみから算出され対向のみノードで 0.0 となること、レガシーセッターへの代入が `AttributeError` となること、実績ゼロのレガシーノードで極性捏造を行わないこと、歴史的反証シグナルが破断検査に反映され $C'$ と分離されること。 |
-| **Test 14** | 認知的ライフサイクル分離 | 純粋な `MBNode(...)` 記述生成では支持証拠を持たず、コンストラクタでのコミットメント自己捏造（Constructor Forgery / `_internal_commitment` バイパス）が遮断されること。コミットメント属性および `_commitment_record` の直接代入が `AttributeError` で拒絶されること。正規ゲートウェイ `commit_node()` を通過して初めて正統な出所・支持証拠打刻・不変 `CommitmentRecord` が付与され、再コミット試行が `ValueError` で遮断されること（単一コミットメントモデル）。`CommitmentRecord.from_dict_strict` による直列化データ自己申告偽造の排除、ロード時 `content_hash` 不一致時の `IntegrityError` 遮断、および `LegacySnapshot` + `MigrationContext` による互換ショートカット全廃（文字列引数 `TypeError`）・対象ノード境界内束縛（すり替え・内容不一致 `IntegrityError`）を伴う実検証移行が保証されること。 |
+| **Test 14** | 認知的ライフサイクル分離 | 純粋な `MBNode(...)` 記述生成では支持証拠を持たず、コンストラクタでのコミットメント自己捏造（Constructor Forgery / `_internal_commitment` バイパス）が遮断されること。コミットメント属性および `_commitment_record` の直接代入が `AttributeError` で拒絶されること。正規ゲートウェイ `commit_node()` を通過して初めて正統な出所・支持証拠打刻・不変 `CommitmentRecord` が付与され、再コミット試行が `ValueError` で遮断されること（単一コミットメントモデル）。`CommitmentRecord.from_dict_strict` による直列化データ自己申告偽造の排除、ロード時 `content_hash` 不一致時の `IntegrityError` 遮断、および `LegacySnapshot` + `MigrationContext` による互換ショートカット全廃（文字列引数 `TypeError`）・対象ノード境界内束縛（すり替え・内容不一致 `IntegrityError`）を伴う実検証移行が境界内で成立すること。 |
 
 ---
 
 ## 6. 結論と次期フェーズ展望
 
 本文書で定義された `RDL_Enterprise v2.0` は、現時点の有限実装境界において、T0/BASE の主要契約（有限境界 $B$、未回収関係 $\xi$ の残存、代謝閉ループ、自己例外化禁止）を実装・検証した。
-経験の蓄積に伴う計算コスト逓減（逆スケーリング）はシミュレーション上で実証され、Canary 熱隔離、権威方針分離、および観測保留（UNKNOWN ≠ FAILURE）規律によってエンタープライズ実証に耐えうる検証基盤を確立した。
+経験の蓄積に伴う計算コスト逓減（逆スケーリング）はシミュレーション上の有限条件下で検証され、Canary 熱隔離、権威方針分離、および観測保留（UNKNOWN ≠ FAILURE）規律によってエンタープライズ運用観測に進むための検証基盤を確立した。
 
 次期フェーズ（Phase B）では、実業務データ連携、非同期分散キュー統合、およびマルチエージェント間の境界調停へと展開を進める。

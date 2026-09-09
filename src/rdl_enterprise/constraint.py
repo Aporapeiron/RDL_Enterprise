@@ -52,8 +52,8 @@ class ConstraintConfig:
 
     # 生存判定 (Survive) のための摂動・実績閾値
     # (B4/B5: 検査していない・実績が希薄なものは survive と呼ばず unresolved とする)
-    min_survive_approvals: int = 3       # 最低限必要な承認実績数
-    min_survive_relevance: float = 0.4   # 最低限必要な適合度
+    min_survive_approvals: int = 3       # 境界内必要性として要求する承認実績数
+    min_survive_relevance: float = 0.4   # 境界内必要性として要求する適合度
 
     # Cascade への confidence boost 上限（cascade.py が参照）
     constraint_boost_cap: float = 0.15
@@ -325,8 +325,8 @@ def _check_node_relation(node: object, candidate: object) -> str:
 
 def _is_deterministic_replay_capable(bridge: Optional[object]) -> bool:
     """
-    LLM推論器が「同一推論作用の再生（deterministic replay）」を契約として保証できるかを検証。
-    BASE v2.0: 「同じモデル名」ではなく「同じ推論作用」を保証する問題。
+    LLM推論器が「同一推論作用の条件拘束再演（context-bound replay）」を契約として満たせるかを検証。
+    BASE v2.0: 「同じモデル名」ではなく「同じ推論作用」を境界内で再演できるかの問題。
     単なる seed + temperature=0 のみでは外部provider揺らぎを排除できないため不可。
     明示的な can_replay() 契約、deterministic_replay、または固定 response snapshot hash を要求。
     """
@@ -1235,7 +1235,7 @@ class RuptureProbe:
         # 「この束を切断したとき、現在の解釈可能域がどう変わるか」
         # F_base = interp(M_B, EFP, C0) vs F_cut = interp(M_B \ bundle, EFP, C0)
         # 【最優先: 独立した2つの Cascade インスタンスを生成し、同一 C0 から独立推論】
-        # F_base 形成によるキャッシュ更新 (C0 -> C1) が F_cut に一切伝播しないことを保証
+        # F_base 形成によるキャッシュ更新 (C0 -> C1) が F_cut に伝播しないよう契約上遮断
         rupture_effect: Optional[float] = None
         f_base = None
         f_without = None

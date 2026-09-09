@@ -10,7 +10,7 @@ from .constraint import (
 
 @dataclass
 class CascadeConfig:
-    """推論カスケードの設定（同一解釈条件の保証）"""
+    """推論カスケードの設定（同一解釈条件の境界内維持）"""
     level2_threshold: float = 0.35
     cost_tier0_confidence_boost: float = 0.1
     llm_default_confidence: float = 0.5
@@ -692,4 +692,3 @@ class InterpCascade:
         # 権限者による即時方針策定を Level 0 キャッシュへ登録
         self.sediment_level0(category, efp.query_text, new_id)
         return new_node
-

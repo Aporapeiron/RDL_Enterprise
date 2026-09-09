@@ -1,6 +1,6 @@
 """
 RDL Enterprise - Long Term Lifecycle Scenario (60 Days)
-長期時間軸における自律代謝循環の実証シナリオ:
+長期時間軸における自律代謝循環の有限条件下検証シナリオ:
 Day 1-15: 定型業務の反復とコスト沈澱 (Tier 0化・κ->0)
 Day 16-30: 安定運用 (低コスト即答)
 Day 31: 制度変更・ツール強制移行 (旧回答の無効化)
@@ -50,7 +50,7 @@ class LongTermLifecycleScenario(ScenarioPack):
         env = EnvironmentAgent("env_world")
         world.register_agent(env)
 
-        # 初期世界の正解 (Oracle): 旧社内ポータルURL
+        # 初期世界で支持された解釈 (Oracle): 旧社内ポータルURL
         if world.rdl_adapter and hasattr(world.rdl_adapter, "oracle_answers"):
             world.rdl_adapter.oracle_answers["workflow"] = "旧申請ポータル"
             world.rdl_adapter.oracle_answers["account"] = "sso.corp.internal"

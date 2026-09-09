@@ -37,7 +37,7 @@ class IntegrityError(Exception):
 class CommitmentRecord:
     """
     不変コミットメント証跡レコード (BASE v2.0 §4.2: 不変性・改ざん防止)
-    ノードがいつ、誰によって、どのような出所・系譜で M_B にコミットされたかを完全記録。
+    ノードがいつ、誰によって、どのような出所・系譜で M_B にコミットされたかを境界内証跡として記録。
     """
     origin: str
     committed_at: str
@@ -468,7 +468,7 @@ class MBNode:
 
         使用箇所:
           - h_state.dissipate(): H の散逸率（I が高いほど冷えにくい）
-          - content_hash(): 力学状態のハッシュ化（慣性を含む同一性保証）
+          - content_hash(): 力学状態のハッシュ化（慣性を含む境界内同値性の検証）
 
         I(M_B) = max(0, confidence * (1 + 0.3*success + 0.5*approval - 0.5*failure - 0.8*rejection))
         """
@@ -564,7 +564,7 @@ class MBGraph:
                     del self._key_index[nk]
 
     def freeze(self):
-        """候補グラフおよび所属全ノードを完全固定（Deep Freeze: Canary中のIdentity Drift防止）"""
+        """候補グラフおよび所属全ノードを境界内固定（Deep Freeze: Canary中のIdentity Drift防止）"""
         self.is_frozen = True
         for node in self.nodes.values():
             node.freeze()
@@ -770,7 +770,7 @@ class MBGraph:
           1. 共有トリガーキー数（降順）
           2. 承認数 approval_count（降順）
           3. confidence（降順）
-          4. ノード ID（昇順: タイブレークにより完全な決定性を保証）
+          4. ノード ID（昇順: タイブレークにより条件固定順序を維持）
         """
         candidate_ids = set()
         my_keys = set(k.strip().lower() for k in node.trigger_pattern.get("exact_keys", []))
@@ -904,8 +904,8 @@ class MBGraph:
 
         - 厳格な型安全検査: LegacySnapshot および MigrationContext 以外の引数は TypeError で拒絶 (互換ラッパー全廃)。
         - 権威検証: context.role が admin, manager, migration_officer であること、capability == 'legacy_migration' であること。
-        - 完全性照合: snapshot.compute_hash() と snapshot.expected_source_hash の完全一致。
-        - 対象バインディング: スナップショット対象ノード集合とグラフ未コミットノード集合の完全一致、およびノード定義（domain, trigger_pattern, action_template）の一致を検証。
+        - 完全性照合: snapshot.compute_hash() と snapshot.expected_source_hash の境界内同値。
+        - 対象バインディング: スナップショット対象ノード集合とグラフ未コミットノード集合の境界内同値、およびノード定義（domain, trigger_pattern, action_template）の一致を検証。
         """
         if self.is_frozen:
             raise RuntimeError(f"MBGraph (version={self.version}) は凍結(frozen)されています。移行は禁止されています。")
@@ -947,7 +947,7 @@ class MBGraph:
                 f"スナップショット対象={sorted(target_ids)} vs グラフ未コミット={sorted(graph_uncommitted_ids)}"
             )
 
-        # 各ノードの内容（ドメイン・トリガー・アクション）の完全一致検証
+        # 各ノードの内容（ドメイン・トリガー・アクション）の境界内同値検証
         for nid in target_ids:
             node = self.nodes[nid]
             snap_payload = snapshot.get_node_payload(nid)

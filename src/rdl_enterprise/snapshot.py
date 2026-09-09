@@ -194,7 +194,7 @@ class BridgeExecutionTrace:
 @dataclass(frozen=True)
 class InterpretationTrace:
     r"""
-    推論作用の完全監査証跡 (BASE v2.0 §4.2)
+    推論作用の境界内監査証跡 (BASE v2.0 §4.2)
     事前に固定した全解釈条件 (FrozenInterpretationContext.context_hash) と、
     外生固定条件集合 K (conditions_hash)、および知識境界ビュー (view_hash) と責任拘束位置を束ねる。
     """
@@ -204,7 +204,7 @@ class InterpretationTrace:
     mb_view_hash: str = ""
     selected_locus_hash: str = ""
     applied_locus_hash: str = ""
-    context_scope: str = "frozen"               # "frozen" (完全同一性保証) | "unfrozen"
+    context_scope: str = "frozen"               # "frozen" (境界内同値性の維持) | "unfrozen"
     timestamp: str = field(default_factory=lambda: datetime.utcnow().isoformat())
     provider_request_id: Optional[str] = None
     provider_response_id: Optional[str] = None
@@ -360,7 +360,7 @@ import json
 
 @dataclass
 class LLMBridgeIdentity:
-    """推論器 (LLM Bridge) の同一性監査用アイデンティティ (T0 SPEC 4: 同一解釈条件保証)"""
+    """推論器 (LLM Bridge) の同一性監査用アイデンティティ (T0 SPEC 4: 同一解釈条件の境界内維持)"""
     model_name: str = "mock-llm"
     temperature: float = 0.0
     system_prompt_version: str = "v1"
@@ -427,9 +427,9 @@ class LLMBridgeIdentity:
 class FrozenInterpretationContext:
     """
     更新前の同一 M_B および推論環境（キャッシュ・設定・モデルIdentity・関係拘束条件）の
-    完全凍結スナップショット (T0 SPEC 4, 6.1 / BASE v2.0 §4.2)
+    境界内凍結スナップショット (T0 SPEC 4, 6.1 / BASE v2.0 §4.2)
 
-    F (事前予測) と F' (事後解釈) を厳密に同一の初期前提・同一の解釈条件のもとで独立形成するための暗号論的保証構造。
+    F (事前予測) と F' (事後解釈) を同一の初期前提・同一の解釈条件のもとで独立形成するための境界内検証構造。
 
     【BASE v2.0 整合】関係拘束強度は「時点」によって変わる。
     したがって、F と F' を同一の「関係拘束評価時刻」のもとで解釈するため、
@@ -443,9 +443,9 @@ class FrozenInterpretationContext:
     initial_level0_cache: Dict[Tuple, str] = field(default_factory=dict)
     cascade_config: Optional[Any] = None                  # CascadeConfig
     llm_identity: Optional[LLMBridgeIdentity] = None
-    # 関係拘束評価設定（凍結：F と F' の constraint_score が同一条件で算出されることを保証）
+    # 関係拘束評価設定（凍結：F と F' の constraint_score が同一条件で算出されるよう境界を固定）
     constraint_config: Optional[Any] = None               # ConstraintConfig
-    # 関係拘束評価時刻（凍結：freshness 等の時刻断面が F と F' で同一になることを保証）
+    # 関係拘束評価時刻（凍結：freshness 等の時刻断面が F と F' で同一になるよう境界を固定）
     constraint_evaluation_time: Optional[Any] = None      # datetime
     actual_replay_token: Optional[ReplayToken] = None     # F を実際に形成した外生固定条件 K_actual
     context_hash: str = ""
@@ -470,12 +470,12 @@ class FrozenInterpretationContext:
 
     def __setattr__(self, name: str, value: Any):
         if getattr(self, "is_frozen", False):
-            raise RuntimeError(f"FrozenInterpretationContext は完全凍結(frozen)されています。属性 '{name}' の変更は禁止されています。")
+            raise RuntimeError(f"FrozenInterpretationContext は境界内凍結(frozen)されています。属性 '{name}' の変更は禁止されています。")
         super().__setattr__(name, value)
 
     def compute_context_hash(self) -> str:
         """
-        コンテキスト全体の構成要素から完全な暗号論的ハッシュを生成。
+        コンテキスト全体の構成要素から境界内検証用の暗号論的ハッシュを生成。
         M_B / キャッシュ / CascadeConfig / LLM / ドメイン に加え、
         ConstraintConfig と constraint_evaluation_time も包含する。
         (BASE v2.0 §4.2: 関係拘束強度は時点によって変化するため、評価時刻も同一性の要件)
@@ -511,7 +511,7 @@ class FrozenInterpretationContext:
         F および F' が互いの計算によるキャッシュ変化に干渉されないよう、
         初期キャッシュスナップショット C0 から独立した InterpCascade インスタンスを生成。
         constraint_config と constraint_evaluation_time も伝播させ、
-        F と F' が同一の「関係拘束評価条件」のもとで解釈されることを保証する。
+        F と F' が同一の「関係拘束評価条件」のもとで解釈されるよう境界を固定する。
         (T0 SPEC: F = interpret(EFP, C0, constraint_condition),
                   F' = interpret(EFP', C0, constraint_condition))
         """
@@ -524,7 +524,7 @@ class FrozenInterpretationContext:
             initial_cache=dict(self.initial_level0_cache),  # 常に初期 C0 のコピーを渡す
             constraint_config=copy.deepcopy(self.constraint_config) if self.constraint_config is not None else None,
             constraint_evaluation_time=self.constraint_evaluation_time,  # 凍結評価時刻を伝播
-            interpretation_context_hash=self.context_hash,  # 完全凍結コンテキストハッシュを伝播
+            interpretation_context_hash=self.context_hash,  # 境界内凍結コンテキストハッシュを伝播
         )
 
     def get_or_create_cascade(self) -> Any:

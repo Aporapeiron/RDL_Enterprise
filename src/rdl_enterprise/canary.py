@@ -243,7 +243,7 @@ class CanaryDeployment:
     theta_canary: float = 1.5                   # カナリア許容発熱閾値
     max_allowed_failures: int = 1               # 許容失敗・差し戻し件数
     candidate_version: str = "unknown"          # 候補バージョン
-    candidate_content_hash: str = "unknown"     # 候補の決定論的コンテンツハッシュ
+    candidate_content_hash: str = "unknown"     # 候補の条件固定コンテンツハッシュ
     canary_cases_count: int = 0                 # カナリア処理総数
     canary_success_count: int = 0               # カナリア成功数
     canary_failure_count: int = 0               # カナリア失敗数
@@ -309,7 +309,7 @@ class CanaryManager:
         チケットがカナリア対象か判定:
         1. カナリア展開中であること
         2. チケットのドメインが対象ドメイン (または 'all') に合致すること
-        3. 決定論的ハッシュによる traffic_ratio 判定
+        3. 条件固定ハッシュによる traffic_ratio 判定
         """
         if not self.active_deployment or self.active_deployment.status != CanaryStatus.ACTIVE:
             return False
@@ -324,7 +324,7 @@ class CanaryManager:
         if dep.traffic_ratio <= 0.0:
             return False
 
-        # チケットIDを用いた決定論的ハッシュ [0.0, 1.0)
+        # チケットIDを用いた条件固定ハッシュ [0.0, 1.0)
         h = int(hashlib.md5(efp.ticket_id.encode("utf-8")).hexdigest()[:8], 16)
         normalized_ratio = (h % 10000) / 10000.0
         return normalized_ratio < dep.traffic_ratio
@@ -421,7 +421,7 @@ class CanaryManager:
         """
         全面展開完了: カナリア新 M_B' を本番として確定。
         ポリシー未指定時でもデフォルトの CanaryCompletionPolicy を強制適用し、
-        さらに検査時の candidate_content_hash との完全一致を検証する (公理B5)。
+        さらに検査時の candidate_content_hash との境界内同値を検証する (公理B5)。
         """
         if not self.active_deployment or self.active_deployment.status != CanaryStatus.ACTIVE:
             return None
@@ -650,4 +650,3 @@ class SlackCompensationClient(BaseCompensationClient):
                 }
 
         return webhook_client.send_revert(action_record)
-
