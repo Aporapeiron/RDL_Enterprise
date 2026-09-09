@@ -18,6 +18,18 @@ class PromotionDecisionStatus(str, Enum):
 
 
 @dataclass(frozen=True)
+class PromotionPolicyDescription:
+    function: FunctionDescription
+    required_checks: Tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        checks = tuple(self.required_checks)
+        if any(not isinstance(item, str) or not item.strip() for item in checks):
+            raise ValueError("required_checksは非空文字列の列である必要があります")
+        object.__setattr__(self, "required_checks", checks)
+
+
+@dataclass(frozen=True)
 class PromotionDecision:
     """Decision record; approval does not mutate or activate the artifact."""
 
@@ -27,6 +39,7 @@ class PromotionDecision:
     context: BoundaryContext
     ruptures: Tuple[RuptureObservation, ...] = ()
     required_checks: Tuple[str, ...] = ()
+    policy_description: Optional[PromotionPolicyDescription] = None
     provenance: Optional[Provenance] = None
 
     def __post_init__(self) -> None:
@@ -42,6 +55,9 @@ class PromotionDecision:
         if any(not isinstance(item, str) or not item.strip() for item in required):
             raise ValueError("required_checksは非空文字列の列である必要があります")
         object.__setattr__(self, "required_checks", required)
+        if self.policy_description is not None:
+            if self.policy != self.policy_description.function or required != self.policy_description.required_checks:
+                raise ValueError("policyとpolicy_descriptionが一致していません")
 
 
 def evaluate_promotion(
@@ -50,10 +66,17 @@ def evaluate_promotion(
     *,
     ruptures: Tuple[RuptureObservation, ...] = (),
     required_checks: Tuple[str, ...] = (),
+    policy_description: Optional[PromotionPolicyDescription] = None,
     policy: FunctionDescription = FunctionDescription("rdl_core.promotion_policy", "0"),
     provenance: Optional[Provenance] = None,
 ) -> PromotionDecision:
     """Evaluate a promotion gate without activating the Compiled M_B."""
+    if policy_description is not None:
+        if policy != policy_description.function:
+            raise ValueError("policyとpolicy_descriptionが一致していません")
+        if required_checks and tuple(required_checks) != policy_description.required_checks:
+            raise ValueError("required_checksとPromotionPolicyDescriptionが一致していません")
+        required_checks = policy_description.required_checks
     observations = tuple(ruptures)
     candidate = artifact.validation.candidate
     if any(item.candidate != candidate for item in observations):
@@ -71,5 +94,6 @@ def evaluate_promotion(
         status = PromotionDecisionStatus.APPROVED
     return PromotionDecision(
         artifact, status, policy, context, observations,
-        required_checks=required, provenance=provenance,
+        required_checks=required, policy_description=policy_description,
+        provenance=provenance,
     )

@@ -32,6 +32,8 @@ def project_current_function_state(
     """Project current status without deleting activation/deactivation history."""
     if replacement is not None and replacement == active:
         raise ValueError("replacementは元のActive artifactと異なる必要があります")
+    if replacement is not None and replacement.artifact == active.artifact:
+        raise ValueError("SUPERSEDEDには異なるCompiledMB artifactが必要です")
     if replacement is not None:
         return CurrentFunctionState(active, RegistryStatus.SUPERSEDED, deactivation, replacement)
     if deactivation is None:

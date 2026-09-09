@@ -53,6 +53,7 @@ from rdl_core import (
     RuptureObservationStatus,
     record_rupture_observation,
     PromotionDecisionStatus,
+    PromotionPolicyDescription,
     evaluate_promotion,
     ActiveCompiledMB,
     activate_promoted_artifact,
@@ -254,6 +255,20 @@ class TestCoreContracts(unittest.TestCase):
             required_checks=("counterexample",),
         )
         self.assertEqual(checked_decision.status, PromotionDecisionStatus.APPROVED)
+        policy_description = PromotionPolicyDescription(
+            FunctionDescription("rdl_core.promotion_policy", "1"),
+            required_checks=("counterexample",),
+        )
+        policy_checked = evaluate_promotion(
+            approved, BoundaryContext("promotion"),
+            policy=policy_description.function,
+            policy_description=policy_description,
+            ruptures=(record_rupture_observation(
+                candidate, RuptureObservationStatus.NOT_DETECTED,
+                BoundaryContext("rupture"), check_id="counterexample",
+            ),),
+        )
+        self.assertEqual(policy_checked.status, PromotionDecisionStatus.APPROVED)
         with self.assertRaises(ValueError):
             evaluate_promotion(
                 approved, BoundaryContext("promotion"),
@@ -285,10 +300,8 @@ class TestCoreContracts(unittest.TestCase):
             RegistryStatus.INACTIVE,
         )
         replacement = activate_promoted_artifact(checked_decision, BoundaryContext("activation-next"))
-        self.assertEqual(
-            project_current_function_state(active, replacement=replacement).status,
-            RegistryStatus.SUPERSEDED,
-        )
+        with self.assertRaises(ValueError):
+            project_current_function_state(active, replacement=replacement)
         request = request_recompilation(
             active, deactivation, BoundaryContext("recompile"),
             reason="new boundary observed",

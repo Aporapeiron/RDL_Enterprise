@@ -66,7 +66,7 @@ from .evolution_types import (
     compile_validated_candidate,
 )
 from .rupture_types import RuptureObservation, RuptureObservationStatus, record_rupture_observation
-from .promotion_types import PromotionDecision, PromotionDecisionStatus, evaluate_promotion
+from .promotion_types import PromotionDecision, PromotionDecisionStatus, PromotionPolicyDescription, evaluate_promotion
 from .activation_types import ActiveCompiledMB, activate_promoted_artifact
 from .deactivation_types import DeactivationRecord, DeactivationStatus, record_deactivation
 from .registry_types import CurrentFunctionState, RegistryStatus, project_current_function_state
@@ -127,6 +127,7 @@ __all__ = [
     "record_rupture_observation",
     "PromotionDecision",
     "PromotionDecisionStatus",
+    "PromotionPolicyDescription",
     "evaluate_promotion",
     "ActiveCompiledMB",
     "activate_promoted_artifact",
