@@ -197,6 +197,9 @@ class TestCoreContracts(unittest.TestCase):
         self.assertEqual(len(clusters), 1)
         self.assertIsInstance(clusters[0], RelationClusterCandidate)
         self.assertEqual(len(clusters[0].members), 2)
+        self.assertTrue(clusters[0].connected)
+        self.assertEqual(clusters[0].conflicting_edges, ())
+        self.assertEqual(clusters[0].unresolved_edges, ())
         clustered = induce_structure_candidate_with_clusters(
             AdaptiveMBProfile((left, right), BoundaryContext("adaptive")),
             BoundaryContext("cluster"),

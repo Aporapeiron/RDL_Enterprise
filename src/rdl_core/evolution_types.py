@@ -129,6 +129,8 @@ class RelationClusterCandidate:
     observations: Tuple[RelationSemanticSimilarityObservation, ...]
     context: BoundaryContext
     provenance: Optional[Provenance] = None
+    conflicting_edges: Tuple[RelationSemanticSimilarityObservation, ...] = ()
+    unresolved_edges: Tuple[RelationSemanticSimilarityObservation, ...] = ()
 
     def __post_init__(self) -> None:
         members = tuple(dict.fromkeys(self.members))
@@ -139,6 +141,11 @@ class RelationClusterCandidate:
             raise TypeError("observationsはRelationSemanticSimilarityObservationの列である必要があります")
         object.__setattr__(self, "members", members)
         object.__setattr__(self, "observations", observations)
+        for name in ("conflicting_edges", "unresolved_edges"):
+            edges = tuple(getattr(self, name))
+            if any(not isinstance(item, RelationSemanticSimilarityObservation) for item in edges):
+                raise TypeError(f"{name}はRelationSemanticSimilarityObservationの列である必要があります")
+            object.__setattr__(self, name, edges)
 
     @property
     def cohesion(self) -> float:
@@ -146,6 +153,10 @@ class RelationClusterCandidate:
         if not self.observations:
             return 0.0
         return sum(item.score for item in self.observations) / len(self.observations)
+
+    @property
+    def connected(self) -> bool:
+        return len(self.members) > 1
 
 
 @dataclass(frozen=True)
@@ -472,15 +483,26 @@ def cluster_relation_keys(
             groups[first][0].update(groups[index][0])
             groups[first][1].extend(groups[index][1])
             groups.pop(index)
-    return tuple(
-        RelationClusterCandidate(
-            members=tuple(item for item in known if item in members),
-            observations=tuple(observations),
+    results = []
+    for members, supporting in groups:
+        member_tuple = tuple(item for item in known if item in members)
+        incident = tuple(
+            item for item in observations
+            if item.left in members and item.right in members and item.left != item.right
+        )
+        results.append(RelationClusterCandidate(
+            members=member_tuple,
+            observations=incident,
             context=context,
             provenance=provenance,
-        )
-        for members, observations in groups
-    )
+            conflicting_edges=tuple(
+                item for item in incident if item.status == SimilarityObservationStatus.NOT_SIMILAR
+            ),
+            unresolved_edges=tuple(
+                item for item in incident if item.status == SimilarityObservationStatus.UNRESOLVED
+            ),
+        ))
+    return tuple(results)
 
 
 def extract_recompiled_structure_candidate(
