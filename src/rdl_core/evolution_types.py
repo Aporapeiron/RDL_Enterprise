@@ -5,7 +5,7 @@ from enum import Enum
 from typing import Optional, Tuple
 
 from .constraint_types import RelationSemanticKey
-from .contracts import BoundaryContext, Provenance
+from .contracts import BoundaryContext, EvidencePolarity, Provenance
 from .function_types import FunctionDescription, FunctionInvocation
 from .similarity_types import RelationConstraintProfile
 
@@ -60,11 +60,21 @@ class StructureCandidate:
     relations: Tuple[RelationSemanticKey, ...]
     context: BoundaryContext
     provenance: Optional[Provenance] = None
+    supporting_profiles: Tuple[RelationConstraintProfile, ...] = ()
+    conflicting_profiles: Tuple[RelationConstraintProfile, ...] = ()
+    unresolved_count: int = 0
 
     def __post_init__(self) -> None:
         relations = tuple(self.relations)
         if any(not isinstance(relation, RelationSemanticKey) for relation in relations):
             raise TypeError("relationsはRelationSemanticKeyの列である必要があります")
+        for name in ("supporting_profiles", "conflicting_profiles"):
+            profiles = tuple(getattr(self, name))
+            if any(not isinstance(profile, RelationConstraintProfile) for profile in profiles):
+                raise TypeError(f"{name}はRelationConstraintProfileの列である必要があります")
+            object.__setattr__(self, name, profiles)
+        if not isinstance(self.unresolved_count, int) or self.unresolved_count < 0:
+            raise ValueError("unresolved_countは0以上の整数である必要があります")
         object.__setattr__(self, "relations", relations)
 
 
@@ -115,4 +125,27 @@ def extract_structure_candidate(
 ) -> StructureCandidate:
     """Extract unique semantic relation keys without creating a Commitment."""
     relations = tuple(dict.fromkeys(item.identity.semantic_key for item in profile.profiles))
-    return StructureCandidate(relations, context, provenance=provenance or profile.provenance)
+    supporting = tuple(item for item in profile.profiles if item.strength.support == EvidencePolarity.SUPPORT)
+    conflicting = tuple(item for item in profile.profiles if item.strength.support == EvidencePolarity.OPPOSE)
+    unresolved = sum(item.strength.support == EvidencePolarity.UNRESOLVED for item in profile.profiles)
+    return StructureCandidate(
+        relations, context, provenance=provenance or profile.provenance,
+        supporting_profiles=supporting, conflicting_profiles=conflicting,
+        unresolved_count=unresolved,
+    )
+
+
+def compile_function_candidate(
+    structure: StructureCandidate,
+    function: FunctionDescription,
+    *,
+    purpose: str = "",
+    config: Optional[dict] = None,
+    provenance: Optional[Provenance] = None,
+) -> FunctionCandidate:
+    """Create a pending Function candidate; this does not validate or promote it."""
+    invocation = FunctionInvocation(
+        function, structure.context, purpose=purpose,
+        config=config or {}, provenance=provenance or structure.provenance,
+    )
+    return FunctionCandidate(function, invocation, structure, provenance=provenance or structure.provenance)

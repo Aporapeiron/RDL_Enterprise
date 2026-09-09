@@ -60,6 +60,7 @@ from .evolution_types import (
     SimilarityVector,
     StructureCandidate,
     extract_structure_candidate,
+    compile_function_candidate,
 )
 
 __all__ = [
@@ -113,4 +114,5 @@ __all__ = [
     "CompilationRecord",
     "CompilationValidationStatus",
     "extract_structure_candidate",
+    "compile_function_candidate",
 ]

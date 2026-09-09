@@ -46,6 +46,7 @@ from rdl_core import (
     SimilarityVector,
     StructureCandidate,
     extract_structure_candidate,
+    compile_function_candidate,
 )
 
 
@@ -192,6 +193,12 @@ class TestCoreContracts(unittest.TestCase):
         self.assertEqual(record.validation_status, CompilationValidationStatus.NOT_EVALUATED)
         extracted = extract_structure_candidate(profile, BoundaryContext("structure"))
         self.assertEqual(extracted.relations, (identity.semantic_key,))
+        self.assertEqual(len(extracted.supporting_profiles), 2)
+        candidate = compile_function_candidate(
+            extracted, FunctionDescription("rdl_core.compiled_relation", "1"),
+            purpose="structure compilation", config={"mode": "bounded"},
+        )
+        self.assertEqual(candidate.invocation.purpose, "structure compilation")
 
 
     def test_commitment_record_requires_valid_origin_and_time(self):
