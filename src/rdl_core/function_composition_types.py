@@ -32,9 +32,21 @@ class FunctionComposition:
         return self.left_output == self.right_input
 
     @property
-    def provenance_continuous(self) -> bool:
+    def provenance_present(self) -> bool:
         return self.left.provenance is not None and self.right.provenance is not None
 
     @property
+    def provenance_compatible(self) -> bool:
+        return (
+            self.provenance_present
+            and self.left.provenance.source == self.right.provenance.source
+        )
+
+    @property
+    def provenance_continuous(self) -> bool:
+        """Backward-compatible alias for compatible lineage."""
+        return self.provenance_compatible
+
+    @property
     def composable(self) -> bool:
-        return self.same_boundary and self.semantic_types_compatible and self.provenance_continuous
+        return self.same_boundary and self.semantic_types_compatible and self.provenance_compatible

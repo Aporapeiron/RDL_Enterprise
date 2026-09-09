@@ -106,12 +106,14 @@ class TestCoreContracts(unittest.TestCase):
             FunctionInvocation(
                 FunctionDescription("rdl_core.next", "0"),
                 invocation.context,
-                provenance=Provenance("next-function"),
+                provenance=Provenance("test-function"),
             ),
             left_output="relation_profile",
             right_input="relation_profile",
         )
         self.assertTrue(composition.composable)
+        self.assertTrue(composition.provenance_present)
+        self.assertTrue(composition.provenance_compatible)
         self.assertFalse(FunctionComposition(
             invocation,
             composition.right,
