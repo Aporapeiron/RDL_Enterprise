@@ -12,6 +12,8 @@ Enterprise `MBNode` のfield分類とCore投影範囲は、[MBNode Field Project
 
 `trigger_pattern` の意味分類とCore昇格条件は、[RDL Trigger Semantics](docs/RDL_Trigger_Semantics.md) に定義します。
 
+FunctionとCompiled M_Bの関係、および再コンパイル境界は、[RDL Compiled M_B](docs/RDL_Compiled_MB.md) に定義します。
+
 本リポジトリにおける「一致」「再現」「十分性」「閉包」は、明示または暗黙に設定された有限境界 $B$、問い $Q$、時点 $t$、観測断面 $O$、運用目的 $P$ に対する性質です。終端的完全性・世界そのものの決定論性・絶対的真理性・絶対的安全性を意味せず、いかなる運用閉包においても $\xi$ は残存します。RDL内部では、真理・現実そのもの・絶対的正解を直接認証せず、支持・対向・権威・来歴・拘束強度・運用採用として有限記述します。
 
 ---
