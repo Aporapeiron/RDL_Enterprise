@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 import re
 from typing import Optional, List, Dict, Any, Tuple
+from rdl_core import normalize_exact_key_text
 from .mb_graph import MBGraph, MBNode, CommitmentOrigin
 from .snapshot import BusinessInput, InterpretationPrediction
 from .authority import AuthorityContext
@@ -83,7 +84,7 @@ class InterpCascade:
             self.level0_cache[(source_mb_version, dom, norm_q)] = node_id
 
     def _normalize(self, text: str) -> str:
-        return re.sub(r"\s+", "", text.lower())
+        return normalize_exact_key_text(text)
 
     def _constraint_boost(self, node: MBNode, efp: BusinessInput) -> float:
         """
