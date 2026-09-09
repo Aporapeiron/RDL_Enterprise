@@ -22,6 +22,8 @@ class TraceRecord:
     heat_before: Optional[float] = None
     heat_after: Optional[float] = None
     transition_type: Optional[str] = None
+    state_digest_before: Optional[str] = None
+    state_digest_after: Optional[str] = None
 
 
 class SimTraceLogger:
@@ -45,6 +47,8 @@ class SimTraceLogger:
         heat_before: Optional[float] = None,
         heat_after: Optional[float] = None,
         transition_type: Optional[str] = None,
+        state_digest_before: Optional[str] = None,
+        state_digest_after: Optional[str] = None,
     ) -> TraceRecord:
         rec = TraceRecord(
             tick=tick,
@@ -59,6 +63,8 @@ class SimTraceLogger:
             heat_before=heat_before,
             heat_after=heat_after,
             transition_type=transition_type,
+            state_digest_before=state_digest_before,
+            state_digest_after=state_digest_after,
         )
         self.records.append(rec)
         return rec
@@ -148,6 +154,13 @@ class SimulationReplayer:
             if orig.transition_type != rep.transition_type:
                 return False, f"Record[{i}] transition_type 不一致: orig={orig.transition_type} vs rep={rep.transition_type}"
 
+            # 完全状態ダイジェストの照合
+            if exact:
+                if orig.state_digest_before != rep.state_digest_before:
+                    return False, f"Record[{i}] state_digest_before 不一致: orig={orig.state_digest_before} vs rep={rep.state_digest_before}"
+                if orig.state_digest_after != rep.state_digest_after:
+                    return False, f"Record[{i}] state_digest_after 不一致: orig={orig.state_digest_after} vs rep={rep.state_digest_after}"
+
         return True, None
 
     @classmethod
@@ -158,7 +171,8 @@ class SimulationReplayer:
         scenario: Any,
         days: int,
         raise_on_mismatch: bool = True,
-    ) -> Tuple[bool, Any, Optional[str]]:
+        original_trace: Optional[List[TraceRecord]] = None,
+    ) -> "ReplayResult":
         """
         SimulationRunContext を外生条件として受け取り、
         world_factory から独立した世界を再構築して完全に再演(Replay)する。
@@ -166,6 +180,9 @@ class SimulationReplayer:
         世界構築直後に、コンテキストの全ハッシュ（時計、シナリオ、エージェント、アダプター、
         ワールド設定、ランタイム設定、初期 M_B）を再構築世界と照合し、1点でも不一致があれば
         ReplayContextMismatchError を送出（または即時拒絶）して実行前に遮断する。
+        【Self-Verifying ReplayResult】:
+        original_trace が渡された場合、実行後に再演トレースと自動照合し、
+        完全一致 (trace_exact_match) および最初の乖離 (first_divergence) を自己診断して返却。
         """
         # 1. 独立した世界インスタンスを生成
         replayed_world = world_factory(seed=context.seed)
@@ -177,7 +194,15 @@ class SimulationReplayer:
             err = "再構築世界に SimulationRunContext が生成されていません"
             if raise_on_mismatch:
                 raise ReplayContextMismatchError(err)
-            return False, None, err
+            return ReplayResult(
+                context_verified=False,
+                execution_completed=False,
+                trace_exact_match=False,
+                final_state_match=False,
+                first_divergence={"error": err},
+                world=None,
+                error_message=err,
+            )
 
         mismatches = []
         if rep_ctx.seed != context.seed:
@@ -207,8 +232,87 @@ class SimulationReplayer:
             err_msg = "ReplayContextMismatch: " + " | ".join(mismatches)
             if raise_on_mismatch:
                 raise ReplayContextMismatchError(err_msg)
-            return False, None, err_msg
+            return ReplayResult(
+                context_verified=False,
+                execution_completed=False,
+                trace_exact_match=False,
+                final_state_match=False,
+                first_divergence={"mismatches": mismatches},
+                world=None,
+                error_message=err_msg,
+            )
 
         # 3. 検証合格後に再演を実行
         replayed_world.run_days(days)
-        return True, replayed_world, None
+
+        # 4. 元トレースが与えられている場合の自動検証
+        trace_exact_match = True
+        first_div = None
+        if original_trace is not None:
+            rep_trace = replayed_world.trace_logger.records
+            is_match, diff_msg = cls.compare_traces(original_trace, rep_trace, exact=True)
+            trace_exact_match = is_match
+            if not is_match:
+                # 最初の乖離箇所の特定
+                first_div = {"diff_message": diff_msg}
+                for i in range(min(len(original_trace), len(rep_trace))):
+                    o_rec = original_trace[i]
+                    r_rec = rep_trace[i]
+                    sub_match, sub_diff = cls.compare_traces([o_rec], [r_rec], exact=True)
+                    if not sub_match:
+                        first_div = {
+                            "index": i,
+                            "tick": o_rec.tick,
+                            "day": o_rec.day,
+                            "event_type": o_rec.event_type,
+                            "diff": sub_diff,
+                            "original_state_digest": o_rec.state_digest_after,
+                            "replayed_state_digest": r_rec.state_digest_after,
+                        }
+                        break
+                if len(original_trace) != len(rep_trace) and "index" not in first_div:
+                    first_div = {
+                        "length_mismatch": f"original={len(original_trace)} vs replayed={len(rep_trace)}"
+                    }
+
+        # 5. 最終状態ダイジェストの完全一致検証
+        final_state_match = True
+        if original_trace and len(original_trace) > 0 and len(replayed_world.trace_logger.records) > 0:
+            last_orig = original_trace[-1]
+            last_rep = replayed_world.trace_logger.records[-1]
+            if last_orig.state_digest_after and last_rep.state_digest_after:
+                final_state_match = (last_orig.state_digest_after == last_rep.state_digest_after)
+
+        return ReplayResult(
+            context_verified=True,
+            execution_completed=True,
+            trace_exact_match=trace_exact_match,
+            final_state_match=final_state_match,
+            first_divergence=first_div,
+            world=replayed_world,
+            error_message=None,
+        )
+
+
+@dataclass
+class ReplayResult:
+    """
+    再演(Replay)の実行結果と自律検証サマリー。
+    タプル互換性 (ok, world, err) をサポート。
+    """
+    context_verified: bool
+    execution_completed: bool
+    trace_exact_match: bool
+    final_state_match: bool
+    first_divergence: Optional[Dict[str, Any]] = None
+    world: Optional[Any] = None
+    error_message: Optional[str] = None
+
+    @property
+    def success(self) -> bool:
+        """外生条件が検証され、実行が完了し、トレースが完全一致した場合に True"""
+        return self.context_verified and self.execution_completed and self.trace_exact_match
+
+    def __iter__(self):
+        """後方互換性タプルアンパック: (success, world, error_message)"""
+        return iter((self.success, self.world, self.error_message))

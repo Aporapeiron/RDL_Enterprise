@@ -960,3 +960,137 @@ class EnterpriseRuntime:
             "average_kappa": self.mb_graph.average_kappa(),
             "total_inertia": self.mb_graph.total_inertia(),
         }
+
+    def compute_state_digest(self) -> "RuntimeStateDigest":
+        """
+        AIコアの完全状態ダイジェスト (T0 BASE v2.0 整合)
+        M_B 単体だけでなく、保持熱、キャッシュ、保留中案件、起草中プロポーザル、
+        シャドウ評価、カナリア展開、外界作用台帳まで含む全状態の暗号論的要約。
+        """
+        import hashlib
+        import json
+
+        # 1. M_B グラフハッシュ
+        mb_hash = self.mb_graph.content_hash() if hasattr(self.mb_graph, "content_hash") else "none"
+
+        # 2. HState ハッシュ (全バージョン別熱量、グローバル熱、観測統計)
+        v_heats = {}
+        for (ver, nid), hv in sorted(self.h_state.versioned_heats.items()):
+            v_heats[f"{ver}:{nid}"] = round(hv.total(self.h_state.w_pred, self.h_state.w_input), 4)
+        h_payload = {
+            "versioned_heats": v_heats,
+            "global_heat": round(self.h_state.global_heat.total(self.h_state.w_pred, self.h_state.w_input), 4),
+            "unclassified": self.h_state.unclassified_count,
+            "missing_info": self.h_state.missing_info_count,
+            "unknown_input": self.h_state.unknown_input_count,
+            "rejections": self.h_state.rejection_events_count,
+        }
+        h_state_hash = hashlib.sha256(json.dumps(h_payload, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+
+        # 3. Level 0 キャッシュハッシュ
+        cache_items = sorted([f"{':'.join(str(x) for x in k)}->{v}" for k, v in self.cascade.level0_cache.items()])
+        cache_hash = hashlib.sha256(json.dumps(cache_items).encode("utf-8")).hexdigest()[:16]
+
+        # 4. 保留中スナップショットハッシュ (pending_snapshots)
+        pending_list = []
+        for tid in sorted(self.pending_snapshots.keys()):
+            snap = self.pending_snapshots[tid]
+            pending_list.append({
+                "ticket_id": tid,
+                "status": snap.status.value,
+                "domain": snap.efp.category or "",
+                "created_at": snap.efp.created_at,
+            })
+        pending_cases_hash = hashlib.sha256(json.dumps(pending_list, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+
+        # 5. 再編相プロポーザルハッシュ (pending_reorganizations)
+        m_delta_list = []
+        for pid in sorted(self.pending_reorganizations.keys()):
+            prop = self.pending_reorganizations[pid]
+            m_delta_list.append({
+                "proposal_id": prop.proposal_id,
+                "hot_node_id": prop.hot_node_id,
+                "status": prop.status.value,
+                "candidate_hash": prop.candidate_mb.content_hash() if hasattr(prop.candidate_mb, "content_hash") else "",
+            })
+        m_delta_hash = hashlib.sha256(json.dumps(m_delta_list, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+
+        # 6. シャドウ評価器ハッシュ
+        shadow_info = {"active": False}
+        if self.active_shadow_evaluator:
+            shadow_info = {
+                "active": True,
+                "proposal_id": self.active_shadow_evaluator.proposal_id,
+                "pending_pairs_count": len(self.active_shadow_evaluator.pending_pairs),
+                "resolved_triplets_count": len(self.active_shadow_evaluator.resolved_triplets),
+            }
+        shadow_hash = hashlib.sha256(json.dumps(shadow_info, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+
+        # 7. カナリア展開ハッシュ
+        canary_info = {"active": False}
+        if self.canary_manager.active_deployment:
+            ad = self.canary_manager.active_deployment
+            canary_info = {
+                "active": True,
+                "deployment_id": ad.deployment_id,
+                "proposal_id": ad.proposal_id,
+                "status": ad.status.value,
+                "traffic_ratio": ad.traffic_ratio,
+                "cases_count": ad.canary_cases_count,
+                "failure_count": ad.canary_failure_count,
+            }
+        canary_hash = hashlib.sha256(json.dumps(canary_info, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+
+        # 8. 外界作用台帳ハッシュ (action_ledger)
+        ledger_records = []
+        for rec in self.canary_manager.action_ledger.records:
+            ledger_records.append({
+                "action_id": rec.action_id,
+                "ticket_id": rec.ticket_id,
+                "status": rec.status,
+                "capability": rec.capability.value,
+            })
+        action_ledger_hash = hashlib.sha256(json.dumps(ledger_records, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+
+        # 総合要約ハッシュ
+        full_payload = {
+            "mb_hash": mb_hash,
+            "h_state_hash": h_state_hash,
+            "cache_hash": cache_hash,
+            "pending_cases_hash": pending_cases_hash,
+            "m_delta_hash": m_delta_hash,
+            "shadow_hash": shadow_hash,
+            "canary_hash": canary_hash,
+            "action_ledger_hash": action_ledger_hash,
+        }
+        digest_hash = hashlib.sha256(json.dumps(full_payload, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+
+        return RuntimeStateDigest(
+            digest_hash=digest_hash,
+            mb_hash=mb_hash,
+            h_state_hash=h_state_hash,
+            cache_hash=cache_hash,
+            pending_cases_hash=pending_cases_hash,
+            m_delta_hash=m_delta_hash,
+            shadow_hash=shadow_hash,
+            canary_hash=canary_hash,
+            action_ledger_hash=action_ledger_hash,
+        )
+
+
+@dataclass(frozen=True)
+class RuntimeStateDigest:
+    """
+    RDL AI コアの完全状態ダイジェスト (T0 BASE v2.0 §4.2 整合)
+    認知・代謝・学習・保留・再編・試験の全サブシステム状態の決定論的要約。
+    """
+    digest_hash: str
+    mb_hash: str
+    h_state_hash: str
+    cache_hash: str
+    pending_cases_hash: str
+    m_delta_hash: str
+    shadow_hash: str
+    canary_hash: str
+    action_ledger_hash: str
+

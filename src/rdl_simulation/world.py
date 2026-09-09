@@ -200,13 +200,17 @@ class SimulationWorld:
 
     def _dispatch_event(self, ev: SimEvent) -> None:
         """イベント種別に応じたディスパッチ"""
-        # ディスパッチ前の力学状態をキャプチャ
+        # ディスパッチ前の力学状態およびAIコア完全状態ダイジェストをキャプチャ
         mb_hash_before = None
         heat_before = None
-        if self.rdl_adapter and hasattr(self.rdl_adapter, "runtime"):
-            rt = self.rdl_adapter.runtime
-            mb_hash_before = rt.mb_graph.content_hash()
-            heat_before = rt.h_state.version_total_heat(getattr(rt.mb_graph, "version", "prod"))
+        state_digest_before = None
+        if self.rdl_adapter:
+            if hasattr(self.rdl_adapter, "runtime"):
+                rt = self.rdl_adapter.runtime
+                mb_hash_before = rt.mb_graph.content_hash()
+                heat_before = rt.h_state.version_total_heat(getattr(rt.mb_graph, "version", "prod"))
+            if hasattr(self.rdl_adapter, "get_state_digest"):
+                state_digest_before = self.rdl_adapter.get_state_digest()
 
         # 1. カスタムハンドラがあれば優先
         if ev.event_type in self._custom_event_handlers:
@@ -215,18 +219,22 @@ class SimulationWorld:
         elif self.rdl_adapter and hasattr(self.rdl_adapter, "handle_event"):
             self.rdl_adapter.handle_event(ev, self)
 
-        # ディスパッチ後の力学状態をキャプチャ
+        # ディスパッチ後の力学状態およびAIコア完全状態ダイジェストをキャプチャ
         mb_hash_after = None
         heat_after = None
         transition_type = None
-        if self.rdl_adapter and hasattr(self.rdl_adapter, "runtime"):
-            rt = self.rdl_adapter.runtime
-            mb_hash_after = rt.mb_graph.content_hash()
-            heat_after = rt.h_state.version_total_heat(getattr(rt.mb_graph, "version", "prod"))
-            if mb_hash_before != mb_hash_after:
-                transition_type = "mb_update"
-            elif heat_after != heat_before:
-                transition_type = "heat_change"
+        state_digest_after = None
+        if self.rdl_adapter:
+            if hasattr(self.rdl_adapter, "runtime"):
+                rt = self.rdl_adapter.runtime
+                mb_hash_after = rt.mb_graph.content_hash()
+                heat_after = rt.h_state.version_total_heat(getattr(rt.mb_graph, "version", "prod"))
+                if mb_hash_before != mb_hash_after:
+                    transition_type = "mb_update"
+                elif heat_after != heat_before:
+                    transition_type = "heat_change"
+            if hasattr(self.rdl_adapter, "get_state_digest"):
+                state_digest_after = self.rdl_adapter.get_state_digest()
 
         # トレースログ記録（因果前後の完全記録）
         self.trace_logger.record(
@@ -241,6 +249,8 @@ class SimulationWorld:
             heat_before=heat_before,
             heat_after=heat_after,
             transition_type=transition_type,
+            state_digest_before=state_digest_before,
+            state_digest_after=state_digest_after,
         )
 
     def run_days(self, days: int) -> None:

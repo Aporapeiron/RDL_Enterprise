@@ -131,4 +131,4 @@ py -m pytest -o pythonpath=src
 py -m unittest discover tests
 ```
 
-全 **163件** の単体・結合・受入・プロパティベース不変条件テスト（時間注入・完全決定論Replay・60日ライフサイクル検証・Fail-Closed Replay検証を含む）が高速（約3.3秒）にパスします。
+全 **164件** の単体・結合・受入・ジェネレーティブ不変条件テスト（時間注入・完全決定論Replay・60日ライフサイクル検証・Fail-Closed Replay検証・AIコア完全状態ダイジェスト照合を含む）が高速（約5.6秒）にパスします。

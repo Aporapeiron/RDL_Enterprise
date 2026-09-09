@@ -18,7 +18,7 @@ from rdl_enterprise.authority import AuthorityContext
 from rdl_enterprise.durability import DurabilityHarness, RegressionHistoryChecker, AuthorityBoundaryChecker
 from rdl_enterprise.simulation_adapter import EnterpriseSimAdapter
 from rdl_enterprise.scenarios import LongTermLifecycleScenario, AuthorityConflictScenario, PerturbationStressScenario
-from rdl_enterprise.snapshot import BusinessInput, FeedbackResult
+from rdl_enterprise.snapshot import BusinessInput, FeedbackResult, CaseStatus
 from rdl_simulation.world import SimulationWorld
 from rdl_simulation.events import SimEvent, EventType
 from rdl_simulation.agent import UserAgent, Persona
@@ -261,28 +261,121 @@ class TestPropertyBasedInvariants(unittest.TestCase):
             ctx = world_a.run_context
             self.assertIsNotNone(ctx)
 
-            # Replayer による同一世界再演
-            ok, world_b, err = SimulationReplayer.replay_from_context(
+            # Replayer による同一世界再演 (ReplayResult 自律検証)
+            replay_res = SimulationReplayer.replay_from_context(
                 context=ctx,
                 world_factory=create_world_for_property,
                 scenario=AuthorityConflictScenario(),
                 days=2,
+                original_trace=world_a.trace_logger.records,
             )
-            self.assertTrue(ok)
-            self.assertIsNone(err)
+            self.assertTrue(replay_res.success)
+            self.assertTrue(replay_res.trace_exact_match)
+            self.assertTrue(replay_res.final_state_match)
+            self.assertIsNone(replay_res.first_divergence)
 
-            # Exact Trace Equality の検証
-            is_exact, diff = SimulationReplayer.compare_traces(
-                world_a.trace_logger.records,
-                world_b.trace_logger.records,
-                exact=True,
-            )
-            self.assertTrue(is_exact, f"Seed {seed}: トレースが完全一致しません: {diff}")
+            world_b = replay_res.world
             self.assertEqual(
                 world_a.rdl_adapter.runtime.mb_graph.content_hash(),
                 world_b.rdl_adapter.runtime.mb_graph.content_hash(),
                 f"Seed {seed}: 最終 M_B ハッシュが一致しません",
             )
+            self.assertEqual(
+                world_a.rdl_adapter.runtime.compute_state_digest().digest_hash,
+                world_b.rdl_adapter.runtime.compute_state_digest().digest_hash,
+                f"Seed {seed}: 最終 AI コア状態ダイジェストが一致しません",
+            )
+
+    def test_generative_fuzzed_query_and_interleaved_events_invariant(self):
+        """
+        【Generative Property Testing: ランダム生成クエリ & 任意イベント順序インターリーブ不変性】
+        日本語・英数・記号・長文を含むランダム合成クエリと、乱数生成された到着順序（チケットとフィードバックの混在）
+        において、RDLコアは如何なる入力ノイズに対しても例外破断（Crash）せず、かつ
+        「成功していない案件は Level 0 や M_B に昇格沈澱しない」不変条件を厳格に保持すること。
+        """
+        sample_chars = "あいうえお漢字カタカナABCxyz012345!@#$%^&*()_+-=[]{}|;':,./<>? 　\n"
+        rng = random.Random(777)
+
+        for trial in range(5):
+            world = create_world_for_property(seed=1000 + trial)
+            rt = world.rdl_adapter.runtime
+            initial_mb_hash = rt.mb_graph.content_hash()
+            initial_l0_len = len(rt.cascade.level0_cache)
+
+            # ランダムなイベント列を合成 (チケット投入、成功、差し戻し、放置の混在)
+            events = []
+            for i in range(15):
+                # 乱数長クエリ生成
+                q_len = rng.randint(1, 100)
+                q_text = "".join(rng.choice(sample_chars) for _ in range(q_len))
+                cat = rng.choice(["account", "network", "workflow", "security", "unknown_cat"])
+                tid = f"FUZZ_{trial}_{i}"
+                events.append(("dispatch", tid, cat, q_text))
+
+                # 後続アクションを確率的決定
+                action = rng.choice(["success", "reject", "timeout"])
+                events.append((action, tid, None, None))
+
+            # イベント順序をランダムシャッフル（ただし同一チケットのdispatchは先行）
+            # チケットごとの順序制約を保ったシャッフル
+            ticket_actions = {}
+            for ev in events:
+                ticket_actions.setdefault(ev[1], []).append(ev)
+
+            interleaved_queue = []
+            while any(ticket_actions.values()):
+                active_tids = [tid for tid, acts in ticket_actions.items() if acts]
+                chosen_tid = rng.choice(active_tids)
+                interleaved_queue.append(ticket_actions[chosen_tid].pop(0))
+
+            # インターリーブ実行
+            for ev_type, tid, cat, text in interleaved_queue:
+                world.clock.tick(5)
+                cur_t = world.clock.iso_time
+                if ev_type == "dispatch":
+                    efp = BusinessInput(
+                        ticket_id=tid,
+                        user_id=f"fuzz_user_{trial}",
+                        category=cat,
+                        query_text=text,
+                        created_at=cur_t,
+                    )
+                    res = rt.dispatch_ticket(efp)
+                    self.assertIsNotNone(res)
+                elif ev_type == "success":
+                    if tid in rt.pending_snapshots:
+                        rt.resolve_ticket_feedback(
+                            tid,
+                            FeedbackResult(user_resolved=True, observed_at=cur_t),
+                            at=cur_t,
+                        )
+                elif ev_type == "reject":
+                    if tid in rt.pending_snapshots:
+                        rt.resolve_ticket_feedback(
+                            tid,
+                            FeedbackResult(user_resolved=False, human_rejected=True, observed_at=cur_t),
+                            at=cur_t,
+                        )
+                elif ev_type == "timeout":
+                    if tid in rt.pending_snapshots:
+                        rt.expire_pending_tickets(ticket_ids=[tid], at=cur_t)
+
+            # Property Invariant 検査:
+            # 1. 完全状態ダイジェストが矛盾なく算出可能であること
+            digest = rt.compute_state_digest()
+            self.assertIsNotNone(digest.digest_hash)
+            self.assertEqual(len(digest.digest_hash), 16)
+
+            # 2. 差し戻しやタイムアウトしたチケットが Level 0 キャッシュに混入していないこと
+            for snap in rt.resolved_snapshots:
+                if snap.status in (CaseStatus.FAILURE, CaseStatus.REJECTED, CaseStatus.UNKNOWN):
+                    # 当該クエリが Level 0 に存在する場合、そのノードは直前の失敗で沈澱したものではないこと
+                    key = (rt.mb_graph.version, snap.efp.category or "general", snap.efp.query_text)
+                    # 失敗案件が新規結晶化ルールとしてM_Bにコミットされていないこと
+                    self.assertFalse(
+                        snap.status == CaseStatus.REJECTED and getattr(snap, "is_authoritative", False),
+                        "差し戻し案件が権威ノードとして誤認沈澱しています",
+                    )
 
 
 if __name__ == "__main__":

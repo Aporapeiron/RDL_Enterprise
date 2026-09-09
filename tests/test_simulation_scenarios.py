@@ -298,17 +298,23 @@ class TestSimulationScenariosAcceptance(unittest.TestCase):
         self.assertNotEqual(ctx.world_config_hash, "none")
         self.assertNotEqual(ctx.runtime_config_hash, "none")
 
-        # Replayer による再構築リプレイ実行
-        ok, world_replayed, err = SimulationReplayer.replay_from_context(
+        # Replayer による再構築リプレイ実行 (Self-Verifying ReplayResult)
+        replay_res = SimulationReplayer.replay_from_context(
             context=ctx,
             world_factory=create_test_world,
             scenario=AuthorityConflictScenario(),
             days=2,
+            original_trace=world_orig.trace_logger.records,
         )
-        self.assertTrue(ok)
-        self.assertIsNone(err)
+        self.assertTrue(replay_res.context_verified)
+        self.assertTrue(replay_res.execution_completed)
+        self.assertTrue(replay_res.trace_exact_match)
+        self.assertTrue(replay_res.final_state_match)
+        self.assertIsNone(replay_res.first_divergence)
+        world_replayed = replay_res.world
+        self.assertIsNotNone(world_replayed)
 
-        # オリジナル世界とリプレイ世界の Canonical Exact トレース照合
+        # オリジナル世界とリプレイ世界の Canonical Exact トレース照合 (AIコア完全状態ダイジェストを含む)
         match, diff_msg = SimulationReplayer.compare_traces(
             world_orig.trace_logger.records,
             world_replayed.trace_logger.records,
@@ -318,6 +324,10 @@ class TestSimulationScenariosAcceptance(unittest.TestCase):
         self.assertEqual(
             world_orig.rdl_adapter.runtime.mb_graph.content_hash(),
             world_replayed.rdl_adapter.runtime.mb_graph.content_hash(),
+        )
+        self.assertEqual(
+            world_orig.rdl_adapter.runtime.compute_state_digest().digest_hash,
+            world_replayed.rdl_adapter.runtime.compute_state_digest().digest_hash,
         )
 
         # 【Fail-Closed 検証】: コンテキスト改ざん・不一致時の即時遮断
@@ -353,6 +363,20 @@ class TestSimulationScenariosAcceptance(unittest.TestCase):
                 scenario=AuthorityConflictScenario(),
                 days=2,
             )
+
+        # 4. 【First Divergence 検出検証】: raise_on_mismatch=False でエラー情報・乖離が返されること
+        failed_res = SimulationReplayer.replay_from_context(
+            context=tampered_rt_ctx,
+            world_factory=create_test_world,
+            scenario=AuthorityConflictScenario(),
+            days=2,
+            raise_on_mismatch=False,
+        )
+        self.assertFalse(failed_res.context_verified)
+        self.assertFalse(failed_res.execution_completed)
+        self.assertFalse(failed_res.success)
+        self.assertIsNotNone(failed_res.first_divergence)
+        self.assertIn("mismatches", failed_res.first_divergence)
 
     def test_perturbation_stress_state_transitions(self):
         """
