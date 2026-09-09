@@ -6,6 +6,8 @@
 
 RDLの実装時に認識論的境界を維持する規律は、[RDL Coding Principles](docs/RDL_Coding_Principles.md) に定義します。Operational Lexiconが用語の意味境界を定めるのに対し、本書は観測・Commitment・外生条件・Evidence polarity・Replay・テスト解釈をコードへ落とす際の規則を定めます。
 
+Core抽出時の受入条件と候補分類は、[RDL Core Extraction Gate](docs/RDL_Core_Extraction_Gate.md) に定義します。
+
 本リポジトリにおける「一致」「再現」「十分性」「閉包」は、明示または暗黙に設定された有限境界 $B$、問い $Q$、時点 $t$、観測断面 $O$、運用目的 $P$ に対する性質です。終端的完全性・世界そのものの決定論性・絶対的真理性・絶対的安全性を意味せず、いかなる運用閉包においても $\xi$ は残存します。RDL内部では、真理・現実そのもの・絶対的正解を直接認証せず、支持・対向・権威・来歴・拘束強度・運用採用として有限記述します。
 
 ---
