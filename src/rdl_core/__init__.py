@@ -39,6 +39,12 @@ from .trigger_types import (
     observe_exact_keys,
 )
 from .function_types import FunctionDescription, FunctionInvocation
+from .similarity_types import (
+    RelationConstraintProfile,
+    RelationSimilarityObservation,
+    SimilarityObservationStatus,
+    compare_relation_constraint_profiles,
+)
 
 __all__ = [
     "AuthorityConstraint",
@@ -73,4 +79,8 @@ __all__ = [
     "normalize_exact_key_text",
     "FunctionDescription",
     "FunctionInvocation",
+    "RelationConstraintProfile",
+    "RelationSimilarityObservation",
+    "SimilarityObservationStatus",
+    "compare_relation_constraint_profiles",
 ]

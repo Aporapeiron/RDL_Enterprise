@@ -28,6 +28,10 @@ from rdl_core import (
     observe_exact_keys,
     FunctionDescription,
     FunctionInvocation,
+    RelationConstraintProfile,
+    RelationSimilarityObservation,
+    SimilarityObservationStatus,
+    compare_relation_constraint_profiles,
 )
 
 
@@ -77,6 +81,24 @@ class TestCoreContracts(unittest.TestCase):
         self.assertEqual(invocation.config["threshold"], 0.7)
         with self.assertRaises(TypeError):
             invocation.config["threshold"] = 0.1
+
+    def test_relation_similarity_is_bounded_and_not_truth(self):
+        identity = ConstraintIdentity("c-sim", "a", "supports", "b")
+        left = RelationConstraintProfile(identity, ConstraintStrength(0.8, EvidencePolarity.SUPPORT))
+        right = RelationConstraintProfile(identity, ConstraintStrength(0.6, EvidencePolarity.SUPPORT))
+        observation = compare_relation_constraint_profiles(
+            left, right, BoundaryContext("similarity"),
+            provenance=Provenance("similarity-fixture"),
+        )
+        self.assertEqual(observation.status, SimilarityObservationStatus.SIMILAR)
+        self.assertEqual(observation.coverage, 1.0)
+        self.assertAlmostEqual(observation.score, 0.8)
+        unresolved = compare_relation_constraint_profiles(
+            left,
+            RelationConstraintProfile(identity, ConstraintStrength(0.6)),
+            BoundaryContext("similarity"),
+        )
+        self.assertEqual(unresolved.status, SimilarityObservationStatus.UNRESOLVED)
 
     def test_commitment_record_requires_valid_origin_and_time(self):
         record = CommitmentRecord.from_dict_strict(
