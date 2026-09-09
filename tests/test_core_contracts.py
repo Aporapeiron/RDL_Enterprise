@@ -47,6 +47,25 @@ class TestCoreContracts(unittest.TestCase):
         with self.assertRaises(ValueError):
             FunctionDescription("", "0")
 
+        constraint_function = FunctionDescription("rdl_core.constraint_strength", "0")
+        evaluation = ConstraintEvaluation(
+            strength=ConstraintStrength(0.5), relevance=0.5, freshness=0.5,
+            authority=0.5, source=0.5, convergence=0.5,
+            weights=ConstraintEvaluationWeights(), context=BoundaryContext("function"),
+            evaluator=constraint_function,
+        )
+        self.assertIs(evaluation.evaluator, constraint_function)
+        self.assertEqual(evaluation.evaluator_id, constraint_function.function_id)
+        with self.assertRaises(ValueError):
+            ConstraintEvaluation(
+                strength=ConstraintStrength(0.5), relevance=0.5, freshness=0.5,
+                authority=0.5, source=0.5, convergence=0.5,
+                weights=ConstraintEvaluationWeights(), context=BoundaryContext("function"),
+                evaluator=FunctionDescription("other", "1"),
+                evaluator_id=constraint_function.function_id,
+                evaluator_version=constraint_function.version,
+            )
+
     def test_commitment_record_requires_valid_origin_and_time(self):
         record = CommitmentRecord.from_dict_strict(
             {

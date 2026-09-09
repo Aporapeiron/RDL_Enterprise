@@ -6,6 +6,7 @@ from typing import Optional, Tuple
 import re
 
 from .contracts import BoundaryContext, Provenance
+from .function_types import FunctionDescription
 
 
 class MatchingObservationStatus(str, Enum):
@@ -51,6 +52,7 @@ class MatchingObservation:
     evaluator_id: str = "rdl_core.exact_keys"
     evaluator_version: str = "0"
     provenance: Optional[Provenance] = None
+    evaluator: Optional[FunctionDescription] = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.status, MatchingObservationStatus):
@@ -61,6 +63,10 @@ class MatchingObservation:
             raise TypeError("evaluator identity/versionは文字列である必要があります")
         if not self.evaluator_id.strip() or not self.evaluator_version.strip():
             raise ValueError("evaluator identity/versionは空にできません")
+        evaluator = self.evaluator or FunctionDescription(self.evaluator_id, self.evaluator_version)
+        if (evaluator.function_id, evaluator.version) != (self.evaluator_id, self.evaluator_version):
+            raise ValueError("evaluatorとevaluator_id/versionが一致していません")
+        object.__setattr__(self, "evaluator", evaluator)
         matched_keys = tuple(self.matched_keys)
         if any(not isinstance(key, str) for key in matched_keys):
             raise TypeError("matched_keysは文字列列である必要があります")

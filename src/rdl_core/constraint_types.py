@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from .contracts import AuthorityConstraint, BoundaryContext, EvidencePolarity, Provenance
+from .function_types import FunctionDescription
 
 
 def _unit_interval(value: float, field_name: str) -> float:
@@ -43,12 +44,17 @@ class ConstraintEvaluation:
     evaluator_id: str = "rdl_core.constraint_strength"
     evaluator_version: str = "0"
     provenance: Optional[Provenance] = None
+    evaluator: Optional[FunctionDescription] = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.evaluator_id, str) or not isinstance(self.evaluator_version, str):
             raise TypeError("evaluator identity/version は文字列である必要があります")
         if not self.evaluator_id.strip() or not self.evaluator_version.strip():
             raise ValueError("evaluator identity/version は空にできません")
+        evaluator = self.evaluator or FunctionDescription(self.evaluator_id, self.evaluator_version)
+        if (evaluator.function_id, evaluator.version) != (self.evaluator_id, self.evaluator_version):
+            raise ValueError("evaluatorとevaluator_id/versionが一致していません")
+        object.__setattr__(self, "evaluator", evaluator)
 
 
 @dataclass(frozen=True)
