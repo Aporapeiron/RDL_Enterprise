@@ -14,7 +14,7 @@ def _unit_interval(value: float, field_name: str) -> float:
 
 @dataclass(frozen=True)
 class ConstraintIdentity:
-    """A relation identity, independent of its current activation strength."""
+    """A relation identity, independent of activation or Commitment."""
 
     constraint_id: str
     subject: str
@@ -24,13 +24,14 @@ class ConstraintIdentity:
 
     def __post_init__(self) -> None:
         for field_name in ("constraint_id", "subject", "relation", "object"):
-            if not getattr(self, field_name).strip():
+            value = getattr(self, field_name)
+            if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"{field_name} は空にできません")
 
 
 @dataclass(frozen=True)
 class ConstraintStrength:
-    """A bounded strength observation, not a truth value."""
+    """A bounded strength observation, not a truth value or authority proof."""
 
     value: float
     support: EvidencePolarity = EvidencePolarity.UNRESOLVED
@@ -39,16 +40,17 @@ class ConstraintStrength:
     authority: float = 0.0
 
     def __post_init__(self) -> None:
+        if not isinstance(self.support, EvidencePolarity):
+            raise TypeError("support は EvidencePolarity である必要があります")
         for field_name in ("value", "relevance", "freshness", "authority"):
             object.__setattr__(self, field_name, _unit_interval(getattr(self, field_name), field_name))
 
 
 @dataclass(frozen=True)
 class ConstraintActivation:
-    """A bounded activation of an identity under a recoverable context."""
+    """A bounded activation observation under context; not an M_B Commitment."""
 
     identity: ConstraintIdentity
     context: BoundaryContext
     strength: ConstraintStrength
     authority_constraint: Optional[AuthorityConstraint] = None
-

@@ -109,3 +109,7 @@ class TestCoreContracts(unittest.TestCase):
         self.assertEqual(activation.identity.constraint_id, "c1")
         with self.assertRaises(ValueError):
             ConstraintStrength(value=1.1)
+        with self.assertRaises(TypeError):
+            ConstraintStrength(value=0.5, support="truth")
+        with self.assertRaises(ValueError):
+            ConstraintIdentity("c2", 123, "relates", "object")
