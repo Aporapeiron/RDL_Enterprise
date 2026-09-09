@@ -176,7 +176,7 @@ class SimulationWorld:
             self.rdl_adapter.on_tick(self, curr_tick, curr_day)
             tick_digest_after = self.rdl_adapter.get_state_digest() if hasattr(self.rdl_adapter, "get_state_digest") else None
 
-            # 外来イベントなしに自律代謝によって状態変化が生じた場合、トレースへ記録 (因果律の完全捕捉)
+            # 外来イベントなしに自律代謝によって状態変化が生じた場合、トレースへ記録 (遷移関連因果の境界内捕捉)
             if tick_digest_before and tick_digest_after and tick_digest_before != tick_digest_after:
                 self.trace_logger.record(
                     tick=curr_tick,
@@ -216,7 +216,7 @@ class SimulationWorld:
 
     def _dispatch_event(self, ev: SimEvent) -> None:
         """イベント種別に応じたディスパッチ"""
-        # ディスパッチ前の力学状態およびAIコア完全状態ダイジェストをキャプチャ
+        # ディスパッチ前の力学状態およびAIコア遷移関連状態ダイジェストをキャプチャ
         mb_hash_before = None
         heat_before = None
         state_digest_before = None
@@ -235,7 +235,7 @@ class SimulationWorld:
         elif self.rdl_adapter and hasattr(self.rdl_adapter, "handle_event"):
             self.rdl_adapter.handle_event(ev, self)
 
-        # ディスパッチ後の力学状態およびAIコア完全状態ダイジェストをキャプチャ
+        # ディスパッチ後の力学状態およびAIコア遷移関連状態ダイジェストをキャプチャ
         mb_hash_after = None
         heat_after = None
         transition_type = None
@@ -252,7 +252,7 @@ class SimulationWorld:
             if hasattr(self.rdl_adapter, "get_state_digest"):
                 state_digest_after = self.rdl_adapter.get_state_digest()
 
-        # トレースログ記録（因果前後の完全記録）
+        # トレースログ記録（因果前後の境界内記録）
         self.trace_logger.record(
             tick=ev.scheduled_tick,
             day=self.clock.current_day,

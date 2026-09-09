@@ -4,6 +4,8 @@
 
 既存のLLMを「AIの本体」ではなく「外部推論器・未回収関係（$\xi$）展開器」と位置づけ、業務経験を通じて職場固有の有限関係拘束構造 **$M_B$** を形成・沈澱させ、**「仕事に慣れるほど計算量・コストが逓減する（逆スケーリング）」** 閉じた代謝ループを実現します。
 
+本リポジトリにおける「一致」「再現」「十分性」「閉包」は、明示または暗黙に設定された有限境界 $B$、問い $Q$、時点 $t$、観測断面 $O$、運用目的 $P$ に対する性質です。終端的完全性・世界そのものの決定論性・絶対的真理性を意味せず、いかなる運用閉包においても $\xi$ は残存します。
+
 ---
 
 ## 🧭 コア特徴
@@ -15,7 +17,7 @@
 3. **動的アクティブ制約部分グラフ（Active Constraint Subgraph）**:
    * ドメイン関連度・関係性伝播・ノード種別（組織ポリシー、法令、手続き）に基づき、案件ごとに必要な制約部分グラフを抽出。
 4. **凍結解釈文脈（FrozenInterpretationContext）と ReplayToken**:
-   * 意思決定時のコンテキストハッシュ $h_{ctx}$ とトークン $\tau_{replay}$ を完全記録。監査・差分検証・反実仮想（Counterfactual Simulation）を改ざん不能に担保。
+   * 意思決定時のコンテキストハッシュ $h_{ctx}$ とトークン $\tau_{replay}$ を、条件拘束再演のための有限証跡として記録。監査・差分検証・反実仮想（Counterfactual Simulation）の境界内検証成立を担保。
 5. **自己修正力低下（$\kappa \to 0$）と HITL（Human-in-the-Loop）**:
    * 確信度不足や破断兆候を力学的に検出し、自律的に人間に質問・確認。先輩の回答を成功確認後に $M_B$ へ沈澱（権限者による方針指示は即時反映）。
 6. **環境変化の検知と安全な再編相（$M_\Delta$）**:
@@ -58,7 +60,7 @@ RDL_Enterprise/
 │       ├── clock.py                     # SimulationClock（離散Tick / 仮想日時同期）
 │       ├── events.py                    # SimEvent, EventQueue（優先度付き時系列キュー）
 │       ├── metrics.py                   # SimMetricsCollector（全体統計 & コホート別局所破断追跡）
-│       ├── replay.py                    # SimTraceLogger（イベントトレース / 決定論的再生）
+│       ├── replay.py                    # SimTraceLogger（イベントトレース / 条件固定再現）
 │       ├── scenario.py                  # ScenarioPack, ScenarioEvent（シナリオ定義基底）
 │       └── world.py                     # SimulationWorld（実行統合体）
 ├── tests/
@@ -71,7 +73,7 @@ RDL_Enterprise/
 │   ├── test_shadow.py                   # 反実仮想シャドウ推論テスト
 │   ├── test_property_invariants.py      # 多変量プロパティベース不変条件テスト（UNKNOWN純粋性・OPPOSE非更新・権威遮断等）
 │   ├── test_simulation_harness.py       # シミュレーションハーネス単体・結合テスト
-│   ├── test_simulation_scenarios.py     # 長期シナリオ・権威衝突・決定論・摂動受入アサーションテスト
+│   ├── test_simulation_scenarios.py     # 長期シナリオ・権威衝突・条件固定再現・摂動受入アサーションテスト
 │   └── test_social_adapter.py           # ソーシャル摂動フィクスチャテスト
 ├── run_simulation.py                    # 5大実証シナリオ実行スクリプト
 ├── run_multiagent_sim.py                # 長期・複数主体・イベント駆動シミュレーション実行スクリプト
@@ -131,4 +133,4 @@ py -m pytest -o pythonpath=src
 py -m unittest discover tests
 ```
 
-全 **164件** の単体・結合・受入・ジェネレーティブ不変条件テスト（時間注入・完全決定論Replay・60日ライフサイクル検証・Fail-Closed Replay検証・AIコア完全状態ダイジェスト照合を含む）が高速（約5.6秒）にパスします。
+全 **164件** の単体・結合・受入・ジェネレーティブ不変条件テスト（時間注入・条件固定再現Replay・60日ライフサイクル検証・Fail-Closed Replay検証・AIコア遷移関連状態ダイジェスト照合を含む）が高速（約5.6秒）にパスします。

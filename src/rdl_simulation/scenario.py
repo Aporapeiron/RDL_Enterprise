@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 class SimulationRunContext:
     """
     シミュレーション実行の外生固定条件コンテキスト (BASE v2.0 §4.2 ReplayToken 整合)。
-    同一の RunContext からの実行は、同一のイベント順序および結果を決定論的に再現する。
+    同一の RunContext からの実行は、現在の観測境界内で同一のイベント順序および結果を再現する。
     """
     seed: int
     clock_start_iso: str
@@ -89,7 +89,7 @@ class ScenarioPack(ABC):
         pass
 
     def content_hash(self) -> str:
-        """シナリオの構成およびイベント群の決定論的ハッシュ"""
+        """シナリオの構成およびイベント群の条件固定再現用ハッシュ"""
         import hashlib
         import json
         ev_dicts = [

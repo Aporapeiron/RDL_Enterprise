@@ -235,7 +235,7 @@ class EnterpriseSimAdapter:
         }
 
     def get_state_digest(self) -> str:
-        """AIコアの完全状態ダイジェストハッシュを取得"""
+        """AIコアの遷移関連状態ダイジェストハッシュを取得"""
         if hasattr(self.runtime, "compute_state_digest"):
             return self.runtime.compute_state_digest().digest_hash
         return "unknown"

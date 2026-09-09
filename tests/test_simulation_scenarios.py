@@ -1,7 +1,7 @@
 """
 RDL Simulation Scenarios Acceptance Tests
-シナリオ実行が期待通りのRDL力学的状態遷移（沈澱・破断・発熱・Leap・権威境界・決定論的再現性）を
-機械的に起こすことを証明する包括的受入テスト。
+シナリオ実行が期待通りのRDL力学的状態遷移（沈澱・破断・発熱・Leap・権威境界・条件固定再現性）を
+有限境界内で検証する包括的受入テスト。
 """
 
 import unittest
@@ -137,9 +137,9 @@ def create_test_world(seed: int = 42) -> SimulationWorld:
 class TestSimulationScenariosAcceptance(unittest.TestCase):
     def test_simulation_exact_determinism(self):
         """
-        【決定論的シミュレーション検証】
+        【条件固定シミュレーション再現性検証】
         同一の seed と初期状態から実行された2つのシミュレーション世界は、
-        全Tickのイベントトレースおよび最終 M_B content_hash が完全一致すること。
+        全Tickのイベントトレースおよび観測終了時 M_B content_hash が境界内同値となること。
         """
         world1 = create_test_world(seed=12345)
         world1.load_scenario(AuthorityConflictScenario())
@@ -149,14 +149,14 @@ class TestSimulationScenariosAcceptance(unittest.TestCase):
         world2.load_scenario(AuthorityConflictScenario())
         world2.run_days(2)
 
-        # トレースログ完全一致の検証
+        # トレースログ境界内同値の検証
         ok, msg = SimulationReplayer.compare_traces(
             world1.trace_logger.records,
             world2.trace_logger.records,
         )
-        self.assertTrue(ok, f"決定論的トレース不一致: {msg}")
+        self.assertTrue(ok, f"条件固定トレース不一致: {msg}")
 
-        # 最終グラフハッシュの完全一致
+        # 観測終了時グラフハッシュの境界内同値
         hash1 = world1.rdl_adapter.runtime.mb_graph.content_hash()
         hash2 = world2.rdl_adapter.runtime.mb_graph.content_hash()
         self.assertEqual(hash1, hash2)
@@ -252,10 +252,10 @@ class TestSimulationScenariosAcceptance(unittest.TestCase):
 
     def test_long_term_lifecycle_exact_determinism(self):
         """
-        【長期ライフサイクル完全決定論的再現性検証 (60日間)】
+        【長期ライフサイクル条件固定再現性検証 (60日間)】
         同一シードから開始した2つの独立した60日間シミュレーション世界において、
         定型沈澱・環境激変・発熱破断・シャドウ並行評価・マネージャー承認Leapを含む全プロセスで、
-        全Tickのイベントトレース、中間力学状態遷移、および最終 M_B content_hash が完全一致すること。
+        全Tickのイベントトレース、中間力学状態遷移、および観測終了時 M_B content_hash が境界内同値となること。
         """
         world1 = create_test_world(seed=42)
         world1.load_scenario(LongTermLifecycleScenario())
@@ -265,7 +265,7 @@ class TestSimulationScenariosAcceptance(unittest.TestCase):
         world2.load_scenario(LongTermLifecycleScenario())
         world2.run_days(60)
 
-        # トレースログ（因果前後の力学状態遷移を含む全12フィールド）完全一致の検証
+        # トレースログ（因果前後の力学状態遷移を含む全12フィールド）境界内同値の検証
         ok, msg = SimulationReplayer.compare_traces(
             world1.trace_logger.records,
             world2.trace_logger.records,
@@ -273,23 +273,23 @@ class TestSimulationScenariosAcceptance(unittest.TestCase):
         )
         self.assertTrue(ok, f"60日間長期ライフサイクルのトレース不一致: {msg}")
 
-        # 最終グラフハッシュの完全一致
+        # 観測終了時グラフハッシュの境界内同値
         hash1 = world1.rdl_adapter.runtime.mb_graph.content_hash()
         hash2 = world2.rdl_adapter.runtime.mb_graph.content_hash()
         self.assertEqual(hash1, hash2, "60日間シミュレーション後の最終 M_B content_hash が不一致です")
 
     def test_true_world_replay_from_context(self):
         """
-        【SimulationRunContext からの真のワールド再構築・リプレイ検証】
+        【SimulationRunContext からの条件拘束ワールド再構築・リプレイ検証】
         RunContext（シード・仮想時計・シナリオハッシュ・エージェントハッシュ・アダプターハッシュ）
-        を用いて独立した世界を再構築し、元の世界と100%同一の結果が得られることを検証。
+        を用いて独立した世界を再構築し、元の世界と境界内同値の結果が得られることを検証。
         """
         world_orig = create_test_world(seed=999)
         scen_orig = AuthorityConflictScenario()
         world_orig.load_scenario(scen_orig)
         world_orig.run_days(2)
 
-        # RunContext の完全性検証
+        # RunContext の境界内完全性検証
         ctx = world_orig.run_context
         self.assertIsNotNone(ctx)
         self.assertNotEqual(ctx.scenario_content_hash, "none")
@@ -314,7 +314,7 @@ class TestSimulationScenariosAcceptance(unittest.TestCase):
         world_replayed = replay_res.world
         self.assertIsNotNone(world_replayed)
 
-        # オリジナル世界とリプレイ世界の Canonical Exact トレース照合 (AIコア完全状態ダイジェストを含む)
+        # オリジナル世界とリプレイ世界の Canonical Exact トレース照合 (AIコア遷移関連状態ダイジェストを含む)
         match, diff_msg = SimulationReplayer.compare_traces(
             world_orig.trace_logger.records,
             world_replayed.trace_logger.records,

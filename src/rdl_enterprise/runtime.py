@@ -974,9 +974,10 @@ class EnterpriseRuntime:
 
     def compute_state_digest(self) -> "RuntimeStateDigest":
         """
-        AIコアの完全状態ダイジェスト (T0 BASE v2.0 整合)
+        AIコアの遷移関連状態ダイジェスト (T0 BASE v2.0 整合)
         M_B 単体だけでなく、保持熱、キャッシュ、保留中案件、起草中プロポーザル、
-        シャドウ評価、カナリア展開、外界作用台帳まで含む全状態の暗号論的要約。
+        シャドウ評価、カナリア展開、外界作用台帳まで含む、現在の観測境界で
+        後続遷移に影響すると扱う状態の暗号論的要約。
         """
         import hashlib
         import json
@@ -1130,9 +1131,9 @@ class EnterpriseRuntime:
 @dataclass(frozen=True)
 class RuntimeStateDigest:
     """
-    RDL AI コアの完全状態ダイジェスト (T0 BASE v2.0 §4.2 整合)
+    RDL AI コアの遷移関連状態ダイジェスト (T0 BASE v2.0 §4.2 整合)
     認知・代謝・学習・保留・再編・試験・過去解決履歴・再編履歴・観測統計プールの
-    未来挙動を拘束する全サブシステム状態の決定論的要約。
+    後続挙動を拘束する有限サブシステム状態の条件固定再現用要約。
     """
     digest_hash: str
     mb_hash: str
@@ -1146,4 +1147,3 @@ class RuntimeStateDigest:
     resolved_history_hash: str
     reorg_history_hash: str
     observation_pool_hash: str
-

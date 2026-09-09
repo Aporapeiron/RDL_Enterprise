@@ -4,6 +4,24 @@
 
 ---
 
+## 0. 運用語彙規約（Operational Lexicon）
+
+本仕様における「一致」「再現」「十分性」「閉包」「検証成立」は、明示または暗黙に設定された有限境界 $B$、問い $Q$、時点 $t$、観測断面 $O$、および運用目的 $P$ に対する性質であり、終端的完全性・世界そのものの決定論性・絶対的真理性を意味しない。いかなる運用閉包においても $\xi$ は残存する。
+
+| 従来語 | 本仕様での意味語 | 運用上の読み |
+|---|---|---|
+| 完全 | 運用閉包 / 境界内閉包 | 現在の $B/Q/t/O/P$ で作用継続に必要な関係が一旦閉じている |
+| 完全状態 | 遷移関連状態 | 現在定義した遷移・観測・再演に影響すると扱う有限状態 |
+| future-equivalent | 遷移境界内同値 | 現在採用した遷移観測境界では区別されない |
+| 決定論的 | 条件固定再現性 / 再現安定性 | 固定した外生条件下で同じ観測系列が再現する |
+| 完全一致 | 境界内同値 / 観測同値 | 指定された比較断面で同値 |
+| true replay | 条件拘束再演 / 境界再演 | 指定 RunContext のもとで再演する |
+| 最終状態 | 観測終了時状態 | 指定した観測区間の終了時点における遷移関連状態 |
+| 証明 | 境界内検証成立 | $B$ 内で要求した検査が成立した |
+| 成功 | 局所安定 / 運用成立 | 現在の有限観測で期待した応答関係が成立した |
+
+実装識別子としての `exact`、`content_hash`、`deterministic_replay`、`SUCCESS` などは、ビット列・データ構造・API状態ラベルとして保持する。ただし、それらの結果をRDL意味層で読む際は、常に上記の有限化された意味へ写像する。
+
 ## 1. システム概要と基本思想
 
 ### 1.1 背景と設計目標
@@ -81,14 +99,14 @@ graph TD
 ## 3. 主要コンポーネント詳細仕様
 
 ### 3.1 凍結解釈文脈（FrozenInterpretationContext）と ReplayToken
-推論時の境界 $B$ と $M_B$ の状態を改ざん不能な確定スナップショットとして固定する。
-* **`context_hash` ($C_0$)**: 推論時の解釈前提条件を決定論的に固定する暗号論的ハッシュ (SHA-256)。以下の8フィールドから構成される:
+推論時の境界 $B$ と $M_B$ の遷移関連状態を、条件拘束再演のための確定スナップショットとして固定する。
+* **`context_hash` ($C_0$)**: 推論時の解釈前提条件を条件固定再現性の境界として固定する暗号論的ハッシュ (SHA-256)。以下の8フィールドから構成される:
   1. `mb_version`: $M_B$ のバージョン識別子
   2. `mb_content_hash`: $M_B$ グラフ内容の暗号論的ハッシュ
   3. `target_domain`: 案件の対象ドメイン・業務境界 $B$
   4. `cascade_config`: 推論カスケード動作設定
   5. `llm_identity`: 外部推論器の固有アイデンティティ
-  6. `cache`: Level 0 キャッシュの決定論的ソート済みシリアライズ
+  6. `cache`: Level 0 キャッシュの再現安定的なソート済みシリアライズ
   7. `constraint_config`: 関係拘束評価パラメーター設定
   8. `constraint_evaluation_time`: dispatch 時に凍結された関係拘束評価時刻 (ISO-8601)
 * **`ReplayToken` ($K$)**: 案件ID、タイムスタンプ、入力特徴、および $C_0$ から導出される一意トークン。事後フィードバック時やシャドウ並行推論時の反実仮想比較（Counterfactual Comparison）における基準線となる。
@@ -105,7 +123,7 @@ graph TD
 ### 3.3 最小代謝ループの閉塞（Closed Loop Sedimentation）
 * **Level 0 キャッシュの厳格なバージョン束縛**:
   * キャッシュキーは `(mb_version, domain, normalized_query)` の3組で構造的に束縛される。
-  * グラフ更新（Leap や Rollback）によって `mb_version` が更新された場合、過去バージョンのキャッシュが誤適用される事故をゼロにする。
+  * グラフ更新（Leap や Rollback）によって `mb_version` が更新された場合、過去バージョンのキャッシュが現在境界へ誤適用される経路を閉じる。
   * 旧形式キャッシュの取り込みは、明示的な `migrate_legacy_cache(cache, source_mb_version)` 経由でのみ許可され、由来バージョン（provenance）なしでの自己昇格を禁止。
 * **沈澱（Sedimentation）と観測保留（UNKNOWN ≠ FAILURE）の契約**:
   * 案件受付時（未確認時）にはライブ Level 0 キャッシュへ書き込まず、非同期ライフサイクルを経て `user_resolved == True` かつ `!human_rejected` が確認された段階で初めて `sediment_level0()` を呼び出す。
@@ -113,7 +131,7 @@ graph TD
 * **意味的証拠鮮度と観測残差（`last_observed_at`）の直交分離**:
   * 監査用プロパティとして最新確定証拠時刻 `last_evidence_at = max(last_support_at, last_opposing_at)` を保持しつつ、関係拘束スコア（Core freshness）の計算には肯定的支持証拠時刻 `last_support_at` のみを用いる。
   * 反証証拠時刻 `last_opposing_at` は対向鮮度および歴史的反証拘束シグナル（破断検査側）へと直交伝播させる。
-  * タイムアウト等の観測不能（UNKNOWN）は観測時刻 `last_observed_at` のみを更新し、`last_support_at` / `last_opposing_at` は保存される（「未確認放置案件による不当な鮮度リフレッシュ」の完全遮断）。
+  * タイムアウト等の観測不能（UNKNOWN）は観測時刻 `last_observed_at` のみを更新し、`last_support_at` / `last_opposing_at` は保存される（「未確認放置案件による不当な鮮度リフレッシュ」の境界内遮断）。
   * グラフ同一性（`content_hash`）には行動力学・時間拘束に直結する `last_support_at` および `last_opposing_at` を包含し、過渡的観測残差 $\xi$ である `last_observed_at`、`unresolved_count`、`legacy_evidence_at` は除外する。
 * **証拠極性の分離（Evidence Polarity Separation: 支持 vs 反証）**:
   * 証拠タイムスタンプを肯定的支持証拠（`last_support_at`）と否定的反証証拠（`last_opposing_at`）に分離。
@@ -137,7 +155,7 @@ graph TD
 ### 3.6 認知的ライフサイクルの分離（Description $\to$ Commitment $\to$ Active Constraint）
 * **オブジェクト生成と支持証拠の厳格分離（BASE v2.0 §4.2: Description ≠ Commitment）**:
   * 単なる Python クラス `MBNode(...)` のインスタンス化（関係の記述・仮説定義）をもって、正の支持証拠 `last_support_at` や `freshness` を自己生成・捏造することを禁止。
-  * **Constructor Forgery の完全排除 (新P0)**: 公開コンストラクタ引数 `commitment_origin`, `committed_at`, `commitment_record` は安全のため無視・無効化され、バイパス引数（`_internal_commitment`）も API から完全撤去。公開コンストラクタはいかなる引数を用いても未コミットノードしか生成できない。
+  * **Constructor Forgery の境界内排除 (新P0)**: 公開コンストラクタ引数 `commitment_origin`, `committed_at`, `commitment_record` は安全のため無視・無効化され、バイパス引数（`_internal_commitment`）も API から撤去する。公開コンストラクタはいかなる引数を用いても未コミットノードしか生成できない。
   * **属性イミュータビリティ (P0-P1)**: コミットメント関連プロパティ（`commitment_origin`, `committed_at`, `commitment_record`）および内部保持フィールド `_commitment_record` への直接代入は `AttributeError` で拒絶される（不変性の保証）。
 * **正規コミットメントゲートウェイ（`MBGraph.commit_node()`）**:
   * 記述を $M_B$ の正統な構成要素として昇格・定着させる唯一の手段として `commit_node(node, origin, actor, authority_context, commit_time, evidence_time)` を規定。
@@ -149,7 +167,7 @@ graph TD
     * 反証のみノード（`last_opposing_at` 保持かつ `last_support_at is None`）、レガシー曖昧ノード（`legacy_evidence_at` 保持）、および `MIGRATION_VERIFIED` 移行ノードに対しては、コミット時であっても支持証拠を捏造しない（極性隔離の徹底）。
   * **単一コミットメントモデル（再コミット・出所上書きの遮断）(P1)**:
     * `commit_node()` はすでにコミット済みのノード（`node.is_committed == True`）の再コミット試行を `ValueError` で即座に拒絶。一度確立されたコミットメント出所・刻印時刻・lineage の事後改ざん・上書きを防止する。
-* **未コミットノードのフェイルクローズ完全排除（多層防御）**:
+* **未コミットノードのフェイルクローズ境界内排除（多層防御）**:
   * `MBGraph.add_or_update(node)` は `node.is_committed` を厳格検証し、未コミットの記述オブジェクトの直接注入を `ValueError` で拒絶。
   * `InterpCascade`（推論カスケード）は未コミットノードを `eligible_nodes` および Level 0 キャッシュ参照から 100% 排除（未コミット記述のみでは即時 Tier 3 `ask_human` に安全フォールバック）。
   * `RelationConstraintLocator` は未コミットノードに対する主束縛解決を拒絶し、`locate_bundle_for_node()` は `None` を返却。
@@ -160,7 +178,7 @@ graph TD
 * **実データ検証を伴う真正な移行ゲートウェイ (`migrate_legacy_nodes()`) (P0-P2)**:
   * **互換ショートカットの全廃**: `snapshot: LegacySnapshot`, `context: MigrationContext` の型指定を厳格義務付け。文字列引数による暗黙呼び出しは `TypeError` で即時拒絶し、`admin` ロールへの自動昇格バックドアを根絶。
   * **スナップショット ↔ 対象ノードの同一性・内容完全束縛**:
-    * グラフ内の未コミットノード集合とスナップショットの対象ノードID集合が完全一致すること（`graph_uncommitted_ids == target_ids`）を照合。すり替え・余剰・不足がある場合は `IntegrityError` で遮断。
+    * グラフ内の未コミットノード集合とスナップショットの対象ノードID集合が境界内同値であること（`graph_uncommitted_ids == target_ids`）を照合。すり替え・余剰・不足がある場合は `IntegrityError` で遮断。
     * 各ノードの `domain`, `trigger_pattern`, `action_template` がスナップショットの raw payload と一致することを照合し、改ざん・不整合を `IntegrityError` で遮断。
   * 権限のないアクター（`role` が `admin`, `manager`, `migration_officer` 以外、または `capability != "legacy_migration"`）の移行試行を `PermissionError`、実データハッシュ不一致を `IntegrityError` で遮断し、実データハッシュを刻印した真正な `MIGRATION_VERIFIED` を確立。
 
@@ -217,7 +235,7 @@ $H_{total} \ge \theta_{eff}$ に達した瞬間、巡航相（Cruise）から再
 | **Test 11** | キャッシュ移行の起源明示 | 旧形式キャッシュのインポート時に `source_mb_version` の明示を義務付け、現行バージョンへの不当な自己昇格が防止されること。 |
 | **Test 12** | 意味的鮮度と残差の分離 | タイムアウト案件（UNKNOWN）において、ノードの `last_evidence_at` および `content_hash` が保存され、不当な鮮度リフレッシュが発生しないこと。 |
 | **Test 13** | 証拠極性分離と反証シグナル | 失敗・差し戻し発生時に `last_opposing_at` が更新され、`last_support_at` は保存されて支持鮮度の上昇が防止されること。支持鮮度は `last_support_at` のみから算出され対向のみノードで 0.0 となること、レガシーセッターへの代入が `AttributeError` となること、実績ゼロのレガシーノードで極性捏造を行わないこと、歴史的反証シグナルが破断検査に反映され $C'$ と分離されること。 |
-| **Test 14** | 認知的ライフサイクル分離 | 純粋な `MBNode(...)` 記述生成では支持証拠を持たず、コンストラクタでのコミットメント自己捏造（Constructor Forgery / `_internal_commitment` バイパス）が遮断されること。コミットメント属性および `_commitment_record` の直接代入が `AttributeError` で拒絶されること。正規ゲートウェイ `commit_node()` を通過して初めて正統な出所・支持証拠打刻・不変 `CommitmentRecord` が付与され、再コミット試行が `ValueError` で遮断されること（単一コミットメントモデル）。`CommitmentRecord.from_dict_strict` による直列化データ自己申告偽造の排除、ロード時 `content_hash` 不一致時の `IntegrityError` 遮断、および `LegacySnapshot` + `MigrationContext` による互換ショートカット全廃（文字列引数 `TypeError`）・対象ノード完全束縛（すり替え・内容不一致 `IntegrityError`）を伴う真正な実検証移行が保証されること。 |
+| **Test 14** | 認知的ライフサイクル分離 | 純粋な `MBNode(...)` 記述生成では支持証拠を持たず、コンストラクタでのコミットメント自己捏造（Constructor Forgery / `_internal_commitment` バイパス）が遮断されること。コミットメント属性および `_commitment_record` の直接代入が `AttributeError` で拒絶されること。正規ゲートウェイ `commit_node()` を通過して初めて正統な出所・支持証拠打刻・不変 `CommitmentRecord` が付与され、再コミット試行が `ValueError` で遮断されること（単一コミットメントモデル）。`CommitmentRecord.from_dict_strict` による直列化データ自己申告偽造の排除、ロード時 `content_hash` 不一致時の `IntegrityError` 遮断、および `LegacySnapshot` + `MigrationContext` による互換ショートカット全廃（文字列引数 `TypeError`）・対象ノード境界内束縛（すり替え・内容不一致 `IntegrityError`）を伴う実検証移行が保証されること。 |
 
 ---
 

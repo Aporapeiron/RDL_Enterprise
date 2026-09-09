@@ -248,9 +248,9 @@ class TestPropertyBasedInvariants(unittest.TestCase):
 
     def test_property_same_run_context_always_exact_outcome(self):
         """
-        【Property Invariant 5: RunContext 決定性の一意性】
+        【Property Invariant 5: RunContext 条件固定再現性】
         同一の RunContext からのシミュレーション再演は、中間トレース全フィールドおよび
-        最終 M_B content_hash が 100% 完全同一の結末に収束すること。
+        観測終了時 M_B content_hash が境界内同値の結末に収束すること。
         """
         for seed in [123, 456, 789]:
             world_a = create_world_for_property(seed=seed)
@@ -361,7 +361,7 @@ class TestPropertyBasedInvariants(unittest.TestCase):
                         rt.expire_pending_tickets(ticket_ids=[tid], at=cur_t)
 
             # Property Invariant 検査:
-            # 1. 完全状態ダイジェストが矛盾なく算出可能であること
+            # 1. 遷移関連状態ダイジェストが矛盾なく算出可能であること
             digest = rt.compute_state_digest()
             self.assertIsNotNone(digest.digest_hash)
             self.assertEqual(len(digest.digest_hash), 16)

@@ -1,6 +1,6 @@
 """
 RDL Simulation Harness - Replay & Trace Logger
-シミュレーションの決定論的トレースログ記録と反実仮想再生用モジュール。
+シミュレーションの条件固定再現トレースログ記録と反実仮想再生用モジュール。
 """
 
 import json
@@ -87,7 +87,7 @@ class ReplayContextMismatchError(Exception):
 class SimulationReplayer:
     """
     保存されたトレースおよび RunContext を用いてシミュレーションを再演し、
-    完全な決定論的一致（Exact Determinism）を検証するリプレイヤー。
+    条件固定再現性（Context-Bounded Reproducibility）を検証するリプレイヤー。
     """
     @staticmethod
     def compare_traces(
@@ -99,7 +99,7 @@ class SimulationReplayer:
         """
         2つのトレースレコード群を逐次照合。
         - exact=True (デフォルト): 全フィールド (tick, day, event_type, source_id, target_id, payload,
-          result, mb_hash_before, mb_hash_after, heat_before, heat_after, transition_type) の完全一致を検証。
+          result, mb_hash_before, mb_hash_after, heat_before, heat_after, transition_type) の境界内同値を検証。
         - exact=False (Semantic Replay): 特定のpayloadキーを除外した意味的等価性を検証。
         """
         if len(original) != len(replayed):
@@ -154,7 +154,7 @@ class SimulationReplayer:
             if orig.transition_type != rep.transition_type:
                 return False, f"Record[{i}] transition_type 不一致: orig={orig.transition_type} vs rep={rep.transition_type}"
 
-            # 完全状態ダイジェストの照合
+            # 遷移関連状態ダイジェストの照合
             if exact:
                 if orig.state_digest_before != rep.state_digest_before:
                     return False, f"Record[{i}] state_digest_before 不一致: orig={orig.state_digest_before} vs rep={rep.state_digest_before}"
@@ -176,16 +176,16 @@ class SimulationReplayer:
     ) -> "ReplayResult":
         """
         SimulationRunContext を外生条件として受け取り、
-        world_factory から独立した世界を再構築して完全に再演(Replay)する。
+        world_factory から独立した世界を再構築して条件拘束再演(Replay)する。
         【Fail-Closed 検証】:
         世界構築直後に、コンテキストの全ハッシュ（時計、シナリオ、エージェント、アダプター、
         ワールド設定、ランタイム設定、初期 M_B）を再構築世界と照合し、1点でも不一致があれば
         ReplayContextMismatchError を送出（または即時拒絶）して実行前に遮断する。
         【Self-Verifying ReplayResult】:
         original_trace が渡された場合、実行後に再演トレースと自動照合し、
-        完全一致 (trace_exact_match) および最初の乖離 (first_divergence) を自己診断して返却。
-        【True Final State Proof】:
-        シミュレーション終了時点の実際のランタイム状態ダイジェスト (get_state_digest) を照合。
+        境界内同値 (trace_exact_match) および最初の乖離 (first_divergence) を自己診断して返却。
+        【Observation-End State Verification】:
+        シミュレーション観測終了時点の遷移関連状態ダイジェスト (get_state_digest) を照合。
         """
         # 1. 独立した世界インスタンスを生成
         replayed_world = world_factory(seed=context.seed)
@@ -278,7 +278,7 @@ class SimulationReplayer:
                         "length_mismatch": f"original={len(original_trace)} vs replayed={len(rep_trace)}"
                     }
 
-        # 5. 最終状態ダイジェストの完全一致検証 (真の最終ランタイム状態)
+        # 5. 観測終了時状態ダイジェストの境界内同値検証
         final_state_match = True
         replayed_final_digest = None
         if hasattr(replayed_world, "rdl_adapter") and hasattr(replayed_world.rdl_adapter, "get_state_digest"):
@@ -318,7 +318,7 @@ class ReplayResult:
 
     @property
     def success(self) -> bool:
-        """外生条件が検証され、実行が完了し、トレースが完全一致した場合に True"""
+        """外生条件が検証され、実行が完了し、トレースが境界内同値の場合に True"""
         return self.context_verified and self.execution_completed and self.trace_exact_match
 
     def __iter__(self):
