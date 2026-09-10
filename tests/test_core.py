@@ -93,6 +93,28 @@ class TestRDLCore(unittest.TestCase):
         self.assertTrue(res["must_ask"])
         self.assertEqual(res["query_type"], "permission_request")
 
+    def test_inconsistent_complaint_escalates_for_clarification_without_auto_resolution(self):
+        hq = HumanQuery()
+        efp = BusinessInput(
+            "T_INCONSISTENT_01", "U_COMPLAINANT", "workflow",
+            "返金しろ、でもキャンセルするな、規約通りにしろ、例外にしろ",
+        )
+        from rdl_enterprise.snapshot import InterpretationPrediction
+        pred = InterpretationPrediction(
+            "ask_human",
+            "要求間の優先順位を確認してください",
+            0.91,
+            None,
+            2,
+            domain="workflow",
+            expected_outcome="need_input",
+        )
+
+        result = hq.evaluate(efp, pred, None)
+        self.assertTrue(result["must_ask"])
+        self.assertEqual(result["query_type"], "ask_guidance")
+        self.assertNotEqual(result["query_type"], "none")
+
     def test_async_feedback_lifecycle(self):
         from rdl_enterprise.snapshot import CaseStatus
         graph = MBGraph()
