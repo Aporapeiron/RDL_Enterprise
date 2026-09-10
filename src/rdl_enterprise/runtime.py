@@ -137,10 +137,14 @@ class EnterpriseRuntime:
         if self.case_store:
             for ticket_id, snapshot in self.case_store.load_pending():
                 self.pending_snapshots[ticket_id] = snapshot
+            self.resolved_snapshots.extend(self.case_store.load_resolved())
 
         # 再編相 M_Δ プロポーザル管理
         self.pending_reorganizations: Dict[str, ReorganizationProposal] = {}
         self.reorganization_history: List[ReorganizationProposal] = []
+        if self.case_store and persisted:
+            self.pending_reorganizations.update(persisted.get("pending_reorganizations", {}))
+            self.reorganization_history.extend(persisted.get("reorganization_history", []))
 
         # シャドウ並行推論エンジン (本番 M_B vs 候補 M_B')
         self.active_shadow_evaluator: Optional[ShadowEvaluator] = None
@@ -469,6 +473,8 @@ class EnterpriseRuntime:
                 "mb_graph": self.mb_graph.to_dict(),
                 "h_state": self.h_state,
                 "level0_cache": self.cascade.export_cache(),
+                "pending_reorganizations": self.pending_reorganizations,
+                "reorganization_history": self.reorganization_history,
             })
 
     def _finalize_case_metabolism(

@@ -78,6 +78,8 @@ class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
             self.assertEqual(restarted.h_state.global_heat.total(), expected_heat)
             self.assertEqual(restarted.cascade.export_cache(), expected_cache)
             self.assertEqual(restarted.mb_graph.content_hash(), first.mb_graph.content_hash())
+            self.assertEqual(len(restarted.resolved_snapshots), 1)
+            self.assertEqual(restarted.resolved_snapshots[0].efp.ticket_id, ticket.ticket_id)
 
     def test_metabolic_closed_loop_tier1_to_tier0(self):
         """

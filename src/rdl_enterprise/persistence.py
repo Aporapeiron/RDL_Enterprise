@@ -91,6 +91,13 @@ class SQLiteCaseStore:
             ).fetchall()
         return [(ticket_id, pickle.loads(snapshot)) for ticket_id, snapshot in rows]
 
+    def load_resolved(self) -> List[object]:
+        with self._connect() as db:
+            rows = db.execute(
+                "SELECT snapshot FROM case_records WHERE status != 'pending' ORDER BY updated_at, ticket_id"
+            ).fetchall()
+        return [pickle.loads(snapshot) for (snapshot,) in rows]
+
     def record_event(self, event_type: str, ticket_id: Optional[str] = None, payload: object = None) -> None:
         blob = sqlite3.Binary(pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL))
         with self._connect() as db:
