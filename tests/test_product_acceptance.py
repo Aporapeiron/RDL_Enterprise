@@ -576,6 +576,50 @@ class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
             self.assertNotIn("client-controlled", repr(result))
             self.assertNotIn("jira-secret", repr(result))
             connection.close()
+
+            connection = HTTPConnection("127.0.0.1", port)
+            connection.request("GET", "/query")
+            self.assertEqual(connection.getresponse().status, 405)
+            connection.close()
+
+            connection = HTTPConnection("127.0.0.1", port)
+            connection.request("POST", "/unknown", body, {
+                "Authorization": "Bearer api-secret", "Content-Type": "application/json",
+            })
+            self.assertEqual(connection.getresponse().status, 404)
+            connection.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_local_http_api_rejects_bad_input_without_provider_execution(self):
+        runtime = EnterpriseRuntime(mb_graph=self.prod_graph)
+        service = EnterpriseService(runtime)
+        called = []
+        registry = ToolRegistry()
+        registry.register(ToolSpec(
+            "atlassian.jira.issue.lookup", "workflow", ActionCapability.DRY_RUN_ONLY,
+            lambda payload: called.append(payload),
+        ))
+        server = create_query_server(service, registry, "api-secret", port=0)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            port = server.server_address[1]
+            for body, expected in ((b"not-json", 400), (b"{}", 400), (b'{"text": 42}', 400)):
+                connection = HTTPConnection("127.0.0.1", port)
+                connection.request("POST", "/query", body, {
+                    "Authorization": "Bearer api-secret", "Content-Type": "application/json",
+                })
+                self.assertEqual(connection.getresponse().status, expected)
+                connection.close()
+            connection = HTTPConnection("127.0.0.1", port)
+            connection.request("POST", "/query", json.dumps({
+                "text": "IT-3の状態を確認して", "actor_id": "client", "scope": "all",
+            }), {"Authorization": "Bearer wrong", "Content-Type": "application/json"})
+            self.assertEqual(connection.getresponse().status, 401)
+            connection.close()
+            self.assertEqual(called, [])
         finally:
             server.shutdown()
             server.server_close()

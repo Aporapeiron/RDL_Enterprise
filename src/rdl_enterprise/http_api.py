@@ -55,7 +55,8 @@ def create_query_server(
             self.wfile.write(encoded)
 
         def do_GET(self) -> None:
-            self._write(HTTPStatus.NOT_FOUND, {"error": "not_found"})
+            status = HTTPStatus.METHOD_NOT_ALLOWED if self.path == "/query" else HTTPStatus.NOT_FOUND
+            self._write(status, {"error": "method_not_allowed" if status == HTTPStatus.METHOD_NOT_ALLOWED else "not_found"})
 
         def do_POST(self) -> None:
             if self.path != "/query":
