@@ -284,6 +284,7 @@ class TestCoreContracts(unittest.TestCase):
         self.assertTrue(all(isinstance(item, PatternSlotEvidence) for item in pattern.slot_evidence))
         self.assertEqual(pattern.slot_evidence[0].kind, PatternSlotKind.VARIABLE)
         self.assertEqual(pattern.slot_evidence[1].kind, PatternSlotKind.FIXED)
+
         conditional = build_conditional_relation_candidate(
             pattern, conditions=("subject is observed",),
             exceptions=(RelationSemanticKey("z", "supports", "b"),),
@@ -974,6 +975,58 @@ class TestCoreContracts(unittest.TestCase):
             tuple_context.conditions["items"][0]["seed"] = 2
         with self.assertRaises(TypeError):
             BoundaryContext("b3", conditions={"unsupported": object()})
+
+    def test_scenario_02_similarity_supports_rupture_inspection_without_deciding_it(self):
+        context = BoundaryContext("scenario-02")
+        identity = ConstraintIdentity("scenario-02", "partner-a", "approves", "invoice")
+        profile = RelationConstraintProfile(
+            identity, ConstraintStrength(0.9, EvidencePolarity.SUPPORT)
+        )
+        similarity = compare_relation_constraint_profiles(
+            profile, profile, context,
+            provenance=Provenance("scenario-02-similarity"),
+        )
+        self.assertEqual(similarity.status, SimilarityObservationStatus.SIMILAR)
+        self.assertGreater(similarity.score, 0.0)
+
+        structure = StructureCandidate(
+            (identity.semantic_key,), context,
+            supporting_profiles=(profile,),
+        )
+        function = FunctionDescription("enterprise.approval", "1")
+        candidate = FunctionCandidate(
+            function,
+            FunctionInvocation(function, context, purpose="scenario-02 approval"),
+            structure,
+        )
+        validation = record_compilation_validation(
+            candidate, CompilationValidationStatus.PASSED, context,
+        )
+        artifact = compile_validated_candidate(validation)
+
+        detected = record_rupture_observation(
+            candidate, RuptureObservationStatus.DETECTED, context,
+            check_id="scenario-02-counterexample",
+            reason="runtime counterexample requires inspection",
+        )
+        rejected = evaluate_promotion(
+            artifact, context,
+            ruptures=(detected,),
+            required_checks=("scenario-02-counterexample",),
+        )
+        self.assertEqual(rejected.status, PromotionDecisionStatus.REJECTED)
+        self.assertEqual(similarity.status, SimilarityObservationStatus.SIMILAR)
+
+        not_detected = record_rupture_observation(
+            candidate, RuptureObservationStatus.NOT_DETECTED, context,
+            check_id="scenario-02-counterexample",
+        )
+        approved = evaluate_promotion(
+            artifact, context,
+            ruptures=(not_detected,),
+            required_checks=("scenario-02-counterexample",),
+        )
+        self.assertEqual(approved.status, PromotionDecisionStatus.APPROVED)
 
     def test_core_source_has_no_runtime_package_imports(self):
         from pathlib import Path
