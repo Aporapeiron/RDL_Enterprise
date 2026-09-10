@@ -11,6 +11,8 @@ def format_business_query_result(result: Mapping[str, Any]) -> str:
     if status == "RESOLVED":
         case_id = result.get("case_id", "")
         summary = result.get("summary", "")
+        if isinstance(summary, str) and summary.startswith("「") and summary.endswith("」"):
+            summary = summary[1:-1]
         provider_status = result.get("status", "")
         owner = result.get("owner")
         lines = [

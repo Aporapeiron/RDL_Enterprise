@@ -23,6 +23,15 @@ class TestBusinessQueryPresentation(unittest.TestCase):
         self.assertIn("担当者はまだ割り当てられていません", text)
         self.assertNotIn("None", text)
 
+    def test_resolved_summary_does_not_duplicate_existing_quotes(self):
+        text = format_business_query_result({
+            "routing_status": "RESOLVED", "case_id": "IT-4",
+            "summary": "「社内Wi-Fiに接続できない」", "status": "サポートからの連絡待ち",
+            "owner": None,
+        })
+        self.assertIn("IT-4「社内Wi-Fiに接続できない」は、", text)
+        self.assertNotIn("「「", text)
+
     def test_status_categories_remain_distinct(self):
         self.assertIn("一意に特定", format_business_query_result({"routing_status": "UNRESOLVED"}))
         self.assertIn("評価対象", format_business_query_result({"routing_status": "NOT_EVALUATED"}))
