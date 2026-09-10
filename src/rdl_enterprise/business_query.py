@@ -44,7 +44,7 @@ def handle_business_query(
             candidate.payload,
             actor,
             ticket_id,
-            operation_id or f"query:{ticket_id}:{candidate.payload['case_id']}",
+            operation_id or "",
         )
     except (AuthenticationError, AuthorizationError):
         result["routing_status"] = "AUTHORIZATION_REJECTED"

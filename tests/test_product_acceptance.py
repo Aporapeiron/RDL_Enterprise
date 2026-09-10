@@ -2,6 +2,7 @@ import unittest
 import sys
 import os
 import tempfile
+import json
 from urllib.error import HTTPError
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
@@ -536,6 +537,33 @@ class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
             result = handle_business_query(service, registry, "IT-3の状態を確認して", actor)
             self.assertEqual(result["routing_status"], expected)
             self.assertNotIn("jira-secret", repr(result))
+
+    def test_read_only_business_query_refreshes_provider_observation_each_time(self):
+        class Response:
+            def __init__(self, status):
+                self.status = status
+
+            def read(self):
+                return json.dumps({
+                    "key": "IT-3",
+                    "fields": {"summary": "VPN issue", "status": {"name": self.status}, "assignee": None},
+                }).encode("utf-8")
+
+        statuses = iter(("Open", "In Progress"))
+        connector = AtlassianJiraConnector(
+            "https://jira.example.test", "agent@example.test", "jira-secret",
+            opener=lambda request, timeout: Response(next(statuses)),
+        )
+        runtime = EnterpriseRuntime(mb_graph=self.prod_graph)
+        service = EnterpriseService(runtime)
+        registry = ToolRegistry()
+        registry.register(connector.tool_spec())
+        actor = AuthorityContext("fresh-query-user", "operator", "workflow", "human", "idp_sso")
+
+        first = handle_business_query(service, registry, "IT-3って今どうなってる？", actor, ticket_id="T_FRESH_1")
+        second = handle_business_query(service, registry, "IT-3って今どうなってる？", actor, ticket_id="T_FRESH_2")
+        self.assertEqual(first["status"], "Open")
+        self.assertEqual(second["status"], "In Progress")
 
     def test_http_workflow_provider_can_load_deployment_configuration_without_leaking_token(self):
         class Response:
