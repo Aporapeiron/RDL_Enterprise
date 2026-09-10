@@ -16,7 +16,14 @@ class TestManualSedimentationBenchmark(unittest.TestCase):
         seed = MBGraph.load_json(str(benchmark.ROOT / "data" / "seed_it_support.json"))
         results = [benchmark.run_depth(seed, cases, depth) for depth in ("D1", "D2", "D3")]
         self.assertEqual([row["manual_source"] for row in results], ["data/manual_sedimentation/manual.md"] * 3)
-        self.assertEqual([row["case_ids"] if "case_ids" in row else None for row in results], [None] * 3)
+        expected_case_ids = [case["case_id"] for case in cases]
+        self.assertEqual([row["case_ids"] for row in results], [expected_case_ids] * 3)
+        self.assertEqual([row["node_count"] for row in results], [5, 5, 5])
+        self.assertEqual(results[0]["relation_count"], 0)
+        self.assertGreater(results[1]["relation_count"], 0)
+        self.assertGreater(results[2]["relation_count"], results[1]["relation_count"])
+        self.assertTrue(all(0.0 <= row["behavior_match_rate"] <= 1.0 for row in results))
+        self.assertEqual([row["runtime_status_match_rate"] for row in results], [1.0, 1.0, 1.0])
         self.assertTrue(all(row["baseline_human_override"] is False for row in results))
         self.assertTrue(all(row["expected_labels_in_runtime"] is False for row in results))
         self.assertTrue(all(row["policy_change_applied"] is True for row in results))

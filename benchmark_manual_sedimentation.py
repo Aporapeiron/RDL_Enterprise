@@ -22,16 +22,21 @@ from rdl_core import CommitmentOrigin
 MANUAL = ROOT / "data" / "manual_sedimentation" / "manual.md"
 CASES = ROOT / "data" / "manual_sedimentation" / "cases.json"
 DEPTH_NODES = {
-    "D1": ("node_pwd_reset", "node_wifi_setup"),
-    "D2": ("node_pwd_reset", "node_wifi_setup", "node_vpn_general", "node_admin_privilege"),
+    "D1": ("node_pwd_reset", "node_wifi_setup", "node_vpn_general", "node_admin_privilege", "node_workflow_app"),
+    "D2": ("node_pwd_reset", "node_wifi_setup", "node_vpn_general", "node_admin_privilege", "node_workflow_app"),
     "D3": ("node_pwd_reset", "node_wifi_setup", "node_vpn_general", "node_admin_privilege", "node_workflow_app"),
+}
+DEPTH_RELATIONS = {
+    "D1": {},
+    "D2": {"node_vpn_general": {"node_pwd_reset": "independent"}, "node_admin_privilege": {"node_workflow_app": "support"}},
+    "D3": {"node_vpn_general": {"node_pwd_reset": "independent", "node_workflow_app": "support"}, "node_admin_privilege": {"node_workflow_app": "support", "node_vpn_general": "unknown"}, "node_workflow_app": {"node_admin_privilege": "support", "node_vpn_general": "contradict"}},
 }
 
 
 def graph_for_depth(seed: MBGraph, depth: str) -> MBGraph:
     payload = seed.to_dict()
     payload["nodes"] = {
-        node_id: node
+        node_id: dict(node, node_relations=dict(DEPTH_RELATIONS[depth].get(node_id, {})))
         for node_id, node in payload["nodes"].items()
         if node_id in DEPTH_NODES[depth]
     }
@@ -55,15 +60,20 @@ def run_depth(seed: MBGraph, cases: list[dict], depth: str) -> dict:
         else:
             result = runtime.handle_ticket(input_data, feedback=FeedbackResult(user_resolved=True))
             observed_status = result.status
-        if result.status == CaseStatus.SUCCESS and not result.hitl_required:
+        if observed_status in (CaseStatus.PENDING, CaseStatus.UNKNOWN):
+            actual = "HOLD_UNRESOLVED"
+        elif result.status == CaseStatus.SUCCESS and not result.hitl_required:
             actual = "APPLY"
         elif result.hitl_required:
             actual = "ASK_HUMAN"
         else:
             actual = "HOLD_UNRESOLVED"
         observations.append((case, result, actual, observed_status))
-    expected = [case["expected_behavior"] for case in cases]
-    actual = [item[2] for item in observations]
+    behavior_cases = [item for item in observations if item[0]["expected_behavior"] in {"APPLY", "ASK_HUMAN", "HOLD_UNRESOLVED"}]
+    status_cases = [item for item in observations if item[0]["expected_behavior"] in {"UNKNOWN", "NOT_EVALUATED"}]
+    behavior_match_rate = sum(item[2] == item[0]["expected_behavior"] for item in behavior_cases) / max(1, len(behavior_cases))
+    expected_status = {"UNKNOWN": CaseStatus.UNKNOWN, "NOT_EVALUATED": CaseStatus.PENDING}
+    runtime_status_match_rate = sum(item[3] == expected_status[item[0]["expected_behavior"]] for item in status_cases) / max(1, len(status_cases))
     false_apply = sum(item[2] == "APPLY" and item[0]["expected_behavior"] != "APPLY" for item in observations)
     exceptions = [item for item in observations if item[0]["case_class"] == "exception"]
     exception_detected = sum(item[2] != "APPLY" for item in exceptions)
@@ -114,17 +124,20 @@ def run_depth(seed: MBGraph, cases: list[dict], depth: str) -> dict:
         feedback=FeedbackResult(user_resolved=True),
     )
     status_counts = {status.value: sum(item[3] == status for item in observations) for status in CaseStatus}
+    relation_count = sum(len(node.node_relations) for node in runtime.mb_graph.nodes.values())
     return {
         "depth": depth,
-        "education_proxy": len(DEPTH_NODES[depth]),
+        "case_ids": [case["case_id"] for case in cases],
+        "education_proxy": len(runtime.mb_graph.nodes) + relation_count,
         "node_count": len(runtime.mb_graph.nodes),
-        "relation_count": sum(len(node.node_relations) for node in runtime.mb_graph.nodes.values()),
+        "relation_count": relation_count,
         "tier_0_count": sum(item[1].cost_tier == 0 for item in observations),
         "tier_1_count": sum(item[1].cost_tier == 1 for item in observations),
         "tier_2_count": sum(item[1].cost_tier == 2 for item in observations),
         "tier_3_count": sum(item[1].cost_tier == 3 for item in observations),
         "token_equivalent": sum({0: 0, 1: 0, 2: 300, 3: 1800}[item[1].cost_tier] for item in observations),
-        "correct_apply_rate": sum(a == e for a, e in zip(actual, expected)) / len(cases),
+        "behavior_match_rate": behavior_match_rate,
+        "runtime_status_match_rate": runtime_status_match_rate,
         "false_apply_rate": false_apply / len(cases),
         "unresolved_rate": sum(item[2] == "HOLD_UNRESOLVED" for item in observations) / len(cases),
         "hitl_rate": sum(item[1].hitl_required for item in observations) / len(cases),
