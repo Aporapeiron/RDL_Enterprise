@@ -1076,6 +1076,90 @@ class TestCoreContracts(unittest.TestCase):
         self.assertEqual(observation.provenance.source, "enterprise:probe")
         self.assertEqual(observation.provenance.lineage, "probe-v1")
 
+    def test_stress_scenario_x_conflicting_evidence_and_boundary_drift_stay_unresolved(self):
+        boundary_b1 = BoundaryContext("stress-b1", question="approve invoice", purpose="cruise")
+        boundary_b2 = BoundaryContext("stress-b2", question="approve invoice with regulation", purpose="inspection")
+        semantic = RelationSemanticKey("partner-a", "approves", "invoice")
+        official = ConstraintIdentity(
+            "s1", semantic.subject, semantic.relation, semantic.object,
+            Provenance("official-s1", lineage="policy-older"),
+        )
+        field = ConstraintIdentity(
+            "s2", semantic.subject, semantic.relation, semantic.object,
+            Provenance("field-s2", lineage="observation-newer"),
+        )
+        official_profile = RelationConstraintProfile(
+            official, ConstraintStrength(
+                0.9, EvidencePolarity.SUPPORT,
+                relevance=0.8, freshness=0.2, authority=0.95,
+            )
+        )
+        field_profile = RelationConstraintProfile(
+            field, ConstraintStrength(
+                0.8, EvidencePolarity.OPPOSE,
+                relevance=0.9, freshness=0.95, authority=0.3,
+            )
+        )
+
+        strength_similarity = compare_relation_constraint_profiles(
+            official_profile, field_profile, boundary_b1,
+            provenance=Provenance("stress-strength"),
+        )
+        polarity_similarity = compare_relation_constraint_polarity(
+            official_profile, field_profile, boundary_b1,
+            provenance=Provenance("stress-polarity"),
+        )
+        provenance_similarity = compare_relation_constraint_provenance(
+            official_profile, field_profile, boundary_b1,
+            provenance=Provenance("stress-provenance"),
+        )
+        self.assertEqual(strength_similarity.status, SimilarityObservationStatus.SIMILAR)
+        self.assertEqual(polarity_similarity.status, SimilarityObservationStatus.NOT_SIMILAR)
+        self.assertEqual(provenance_similarity.status, SimilarityObservationStatus.NOT_SIMILAR)
+        self.assertNotEqual(
+            compare_relation_constraint_profiles(
+                official_profile, field_profile, boundary_b2,
+            ).context,
+            strength_similarity.context,
+        )
+
+        missing_source = ConstraintIdentity(
+            "s3", semantic.subject, semantic.relation, semantic.object,
+        )
+        missing_profile = RelationConstraintProfile(
+            missing_source, ConstraintStrength(0.7, EvidencePolarity.UNRESOLVED),
+        )
+        self.assertEqual(
+            compare_relation_constraint_provenance(
+                official_profile, missing_profile, boundary_b1,
+            ).status,
+            SimilarityObservationStatus.UNRESOLVED,
+        )
+
+        profile = AdaptiveMBProfile((official_profile, field_profile, missing_profile), boundary_b1)
+        structure = extract_structure_candidate(profile, boundary_b1)
+        function = FunctionDescription("enterprise.stress.approval", "1")
+        candidate = FunctionCandidate(
+            function,
+            FunctionInvocation(function, boundary_b1, purpose="stress runtime"),
+            structure,
+        )
+        validation = record_compilation_validation(
+            candidate, CompilationValidationStatus.PASSED, boundary_b1,
+        )
+        artifact = compile_validated_candidate(validation)
+        unresolved_rupture = record_rupture_observation(
+            candidate, RuptureObservationStatus.UNRESOLVED, boundary_b2,
+            check_id="stress-boundary-drift",
+            reason="new boundary and conflicting evidence require inspection",
+        )
+        decision = evaluate_promotion(
+            artifact, boundary_b2,
+            ruptures=(unresolved_rupture,),
+            required_checks=("stress-boundary-drift",),
+        )
+        self.assertEqual(decision.status, PromotionDecisionStatus.UNRESOLVED)
+
     def test_scenario_02_similarity_is_t1_inspection_material(self):
         context = BoundaryContext("scenario-02-inspection")
         current = RelationConstraintProfile(
