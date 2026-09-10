@@ -553,6 +553,9 @@ class ConditionalRelationCandidate:
         structured = tuple(self.structured_conditions)
         if any(not isinstance(item, ConditionDescription) for item in structured):
             raise TypeError("structured_conditionsはConditionDescriptionの列である必要があります")
+        condition_ids = tuple(item.condition_id for item in structured)
+        if len(set(condition_ids)) != len(condition_ids):
+            raise ValueError("structured_conditionsのcondition_idが重複しています")
         exceptions_with_shape = tuple(self.exception_candidates)
         if any(not isinstance(item, ExceptionCandidate) for item in exceptions_with_shape):
             raise TypeError("exception_candidatesはExceptionCandidateの列である必要があります")
@@ -904,6 +907,7 @@ class ConditionalRuptureRecord:
     check_id: str
     reason: str = ""
     provenance: Optional[Provenance] = None
+    evidence: Tuple[object, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.candidate, ConditionalRelationCandidate):
@@ -914,6 +918,7 @@ class ConditionalRuptureRecord:
             raise ValueError("check_idは空でない文字列である必要があります")
         if not isinstance(self.reason, str):
             raise TypeError("reasonは文字列である必要があります")
+        object.__setattr__(self, "evidence", tuple(self.evidence))
 
 
 @dataclass(frozen=True)

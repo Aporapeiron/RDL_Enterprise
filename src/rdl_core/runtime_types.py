@@ -1,6 +1,7 @@
 """Finite runtime observations for Conditional local M_B execution."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from enum import Enum
 from typing import Mapping, Optional, Tuple
 
 from .contracts import BoundaryContext, BoundaryInputValue, FrozenBoundaryValue, Provenance, freeze_boundary_value
@@ -89,6 +90,13 @@ def evaluate_condition_set(
     else:
         status = ConditionObservationStatus.MATCH
     return ConditionSetObservation(condition_set, observations, status, context, provenance)
+
+
+class ConditionalRevisionStatus(str, Enum):
+    PROPOSED = "PROPOSED"
+    ACCEPTED = "ACCEPTED"
+    REJECTED = "REJECTED"
+    UNRESOLVED = "UNRESOLVED"
 
 
 @dataclass(frozen=True)
@@ -217,7 +225,8 @@ def evaluate_runtime_rupture(
     else:
         status = ConditionalRuptureStatus.NOT_DETECTED
     return ConditionalRuptureRecord(
-        summary.candidate, status, summary.context, check_id, reason, summary.provenance,
+        summary.candidate, status, summary.context, check_id, reason,
+        summary.provenance, summary.observations,
     )
 
 
@@ -282,6 +291,217 @@ def reintroduce_conditional_to_adaptive(
 
 
 @dataclass(frozen=True)
+class RelearningEvidenceAnalysis:
+    """Finite classification of relearning evidence, without revision commitment."""
+
+    request: ConditionalRelearningRequest
+    observations: Tuple[object, ...] = ()
+    not_match_condition_ids: Tuple[str, ...] = ()
+    unresolved_condition_ids: Tuple[str, ...] = ()
+    rupture_statuses: Tuple[ConditionalRuptureStatus, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.request, ConditionalRelearningRequest):
+            raise TypeError("requestはConditionalRelearningRequestである必要があります")
+        observations = tuple(self.observations)
+        object.__setattr__(self, "observations", observations)
+        for name in ("not_match_condition_ids", "unresolved_condition_ids"):
+            values = tuple(getattr(self, name))
+            if any(not isinstance(item, str) or not item.strip() for item in values):
+                raise ValueError(f"{name}には空でない文字列が必要です")
+            object.__setattr__(self, name, values)
+        statuses = tuple(self.rupture_statuses)
+        if any(not isinstance(item, ConditionalRuptureStatus) for item in statuses):
+            raise TypeError("rupture_statusesはConditionalRuptureStatusの列である必要があります")
+        object.__setattr__(self, "rupture_statuses", statuses)
+
+
+@dataclass(frozen=True)
+class ConditionalRevisionCandidate:
+    """A finite revision proposal; it is not a vNext commitment."""
+
+    request: ConditionalRelearningRequest
+    proposed_conditions: Tuple[str, ...] = ()
+    proposed_structured_conditions: Tuple[ConditionDescription, ...] = ()
+    proposed_exceptions: Tuple[RelationSemanticKey, ...] = ()
+    proposed_exception_candidates: Tuple[ExceptionCandidate, ...] = ()
+    unresolved_reasons: Tuple[str, ...] = ()
+    supporting_ruptures: Tuple[ConditionalRuptureRecord, ...] = ()
+    supporting_evidence: Tuple[object, ...] = ()
+    reconsidered_condition_ids: Tuple[str, ...] = ()
+    proposed_condition_removals: Tuple[str, ...] = ()
+    analysis: Optional[RelearningEvidenceAnalysis] = None
+    status: ConditionalRevisionStatus = ConditionalRevisionStatus.PROPOSED
+
+    @property
+    def proposed_condition_additions(self) -> Tuple[str, ...]:
+        return self.proposed_conditions
+
+    @property
+    def proposed_exception_additions(self) -> Tuple[RelationSemanticKey, ...]:
+        return self.proposed_exceptions
+    context: Optional[BoundaryContext] = None
+    provenance: Optional[Provenance] = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.request, ConditionalRelearningRequest):
+            raise TypeError("requestはConditionalRelearningRequestである必要があります")
+        if not isinstance(self.status, ConditionalRevisionStatus):
+            raise TypeError("statusはConditionalRevisionStatusである必要があります")
+        if self.context is None:
+            object.__setattr__(self, "context", self.request.context)
+        if self.context != self.request.context:
+            raise ValueError("Revision candidateのBoundaryがRelearning requestと一致していません")
+        for name, values, expected in (
+            ("proposed_conditions", self.proposed_conditions, str),
+            ("unresolved_reasons", self.unresolved_reasons, str),
+        ):
+            values = tuple(values)
+            if any(not isinstance(item, expected) or not item.strip() for item in values):
+                raise ValueError(f"{name}には空でない文字列が必要です")
+            object.__setattr__(self, name, values)
+        structured = tuple(self.proposed_structured_conditions)
+        if any(not isinstance(item, ConditionDescription) for item in structured):
+            raise TypeError("proposed_structured_conditionsはConditionDescriptionの列である必要があります")
+        object.__setattr__(self, "proposed_structured_conditions", structured)
+        exceptions = tuple(self.proposed_exceptions)
+        if any(not isinstance(item, RelationSemanticKey) for item in exceptions):
+            raise TypeError("proposed_exceptionsはRelationSemanticKeyの列である必要があります")
+        object.__setattr__(self, "proposed_exceptions", exceptions)
+        exception_candidates = tuple(self.proposed_exception_candidates)
+        if any(not isinstance(item, ExceptionCandidate) for item in exception_candidates):
+            raise TypeError("proposed_exception_candidatesはExceptionCandidateの列である必要があります")
+        object.__setattr__(self, "proposed_exception_candidates", exception_candidates)
+        ruptures = tuple(self.supporting_ruptures)
+        if any(not isinstance(item, ConditionalRuptureRecord) for item in ruptures):
+            raise TypeError("supporting_rupturesはConditionalRuptureRecordの列である必要があります")
+        if any(item not in self.request.ruptures for item in ruptures):
+            raise ValueError("supporting_rupturesはRelearning requestのRuptureである必要があります")
+        object.__setattr__(self, "supporting_ruptures", ruptures)
+        evidence = tuple(item for rupture in ruptures for item in rupture.evidence)
+        if self.analysis is not None:
+            evidence = self.analysis.observations
+        object.__setattr__(self, "supporting_evidence", evidence)
+        condition_ids = tuple(self.reconsidered_condition_ids)
+        if any(not isinstance(item, str) or not item.strip() for item in condition_ids):
+            raise ValueError("reconsidered_condition_idsには空でない文字列が必要です")
+        object.__setattr__(self, "reconsidered_condition_ids", condition_ids)
+        removals = tuple(self.proposed_condition_removals)
+        if any(not isinstance(item, str) or not item.strip() for item in removals):
+            raise ValueError("proposed_condition_removalsには空でない文字列が必要です")
+        object.__setattr__(self, "proposed_condition_removals", removals)
+        if self.analysis is not None:
+            if not isinstance(self.analysis, RelearningEvidenceAnalysis):
+                raise TypeError("analysisはRelearningEvidenceAnalysisである必要があります")
+            if self.analysis.request != self.request:
+                raise ValueError("analysisのRelearning requestが一致していません")
+
+
+def analyze_conditional_relearning(
+    request: ConditionalRelearningRequest,
+    *,
+    proposed_conditions: Tuple[str, ...] = (),
+    proposed_structured_conditions: Tuple[ConditionDescription, ...] = (),
+    proposed_exceptions: Tuple[RelationSemanticKey, ...] = (),
+    proposed_exception_candidates: Tuple[ExceptionCandidate, ...] = (),
+    provenance: Optional[Provenance] = None,
+) -> ConditionalRevisionCandidate:
+    """Record evidence-backed revision proposals without applying them."""
+    unresolved = tuple(
+        f"rupture:{record.check_id}:{record.status.value}"
+        for record in request.ruptures
+        if record.status in (ConditionalRuptureStatus.UNRESOLVED, ConditionalRuptureStatus.NOT_EVALUATED)
+    )
+    reconsidered = []
+    removals = []
+    unresolved_condition_ids = []
+    evidence_items = list(item for rupture in request.ruptures for item in rupture.evidence)
+    cursor = 0
+    while cursor < len(evidence_items):
+        evidence = evidence_items[cursor]
+        evidence_items.extend(getattr(evidence, "observations", ()))
+        condition_set_observation = getattr(evidence, "condition_observation", None)
+        if condition_set_observation is not None:
+            evidence_items.append(condition_set_observation)
+        cursor += 1
+        status = getattr(evidence, "status", None)
+        condition = getattr(evidence, "condition", None)
+        if status == ConditionObservationStatus.NOT_MATCH and condition is not None:
+            reconsidered.append(condition.condition_id)
+            removals.append(condition.condition_id)
+        elif status in (ConditionObservationStatus.UNRESOLVED, ConditionObservationStatus.NOT_EVALUATED):
+            unresolved = unresolved + ("condition-observation-unresolved",)
+            if condition is not None:
+                unresolved_condition_ids.append(condition.condition_id)
+    if not proposed_conditions and not proposed_structured_conditions and not proposed_exceptions and not proposed_exception_candidates:
+        unresolved = unresolved + ("no_structural_revision_proposal",)
+    analysis = RelearningEvidenceAnalysis(
+        request=request,
+        observations=tuple(evidence_items),
+        not_match_condition_ids=tuple(dict.fromkeys(reconsidered)),
+        unresolved_condition_ids=tuple(dict.fromkeys(unresolved_condition_ids)),
+        rupture_statuses=tuple(record.status for record in request.ruptures),
+    )
+    return ConditionalRevisionCandidate(
+        request=request,
+        proposed_conditions=proposed_conditions,
+        proposed_structured_conditions=proposed_structured_conditions,
+        proposed_exceptions=proposed_exceptions,
+        proposed_exception_candidates=proposed_exception_candidates,
+        unresolved_reasons=unresolved,
+        supporting_ruptures=request.ruptures,
+        reconsidered_condition_ids=tuple(dict.fromkeys(reconsidered)),
+        proposed_condition_removals=tuple(dict.fromkeys(removals)),
+        analysis=analysis,
+        provenance=provenance or request.provenance,
+    )
+
+
+def accept_conditional_revision(
+    revision: ConditionalRevisionCandidate,
+) -> ConditionalRevisionCandidate:
+    """Mark a resolved proposal as explicitly accepted; do not build a vNext."""
+    if not isinstance(revision, ConditionalRevisionCandidate):
+        raise TypeError("revisionはConditionalRevisionCandidateである必要があります")
+    if revision.unresolved_reasons:
+        raise ValueError("未解決のRevision candidateは承認できません")
+    return replace(revision, status=ConditionalRevisionStatus.ACCEPTED)
+
+
+def build_conditional_vnext_from_revision(
+    revision: ConditionalRevisionCandidate,
+    pattern: RelationPatternCandidate,
+    *,
+    provenance: Optional[Provenance] = None,
+) -> Tuple[ConditionalRelationCandidate, "ConditionalStructureDelta"]:
+    """Apply an explicit revision proposal to prior structure without promotion."""
+    if not isinstance(revision, ConditionalRevisionCandidate):
+        raise TypeError("revisionはConditionalRevisionCandidateである必要があります")
+    if revision.status != ConditionalRevisionStatus.ACCEPTED:
+        raise ValueError("Revision candidateは明示的に承認されていません")
+    if revision.unresolved_reasons:
+        raise ValueError("未解決のRevision candidateはvNextへ適用できません")
+    previous = revision.request.active.promotion.artifact.conditional_candidate
+
+    def merge(previous_values, additions):
+        return tuple(dict.fromkeys(tuple(previous_values) + tuple(additions)))
+
+    current = build_conditional_relation_candidate(
+        pattern,
+        conditions=merge(previous.conditions, revision.proposed_conditions),
+        structured_conditions=tuple(
+            item for item in merge(previous.structured_conditions, revision.proposed_structured_conditions)
+            if item.condition_id not in revision.proposed_condition_removals
+        ),
+        exceptions=merge(previous.exceptions, revision.proposed_exceptions),
+        exception_candidates=merge(previous.exception_candidates, revision.proposed_exception_candidates),
+        context=revision.context,
+        provenance=provenance or revision.provenance or previous.provenance,
+    )
+    return current, ConditionalStructureDelta(previous, current)
+
+
+@dataclass(frozen=True)
 class ConditionalStructureDelta:
     """Finite change record between conditional candidates, not a quality judgment."""
 
@@ -336,6 +556,26 @@ class ConditionalStructureDelta:
             for item in self.current.structured_conditions
             if item.condition_id in previous_by_id and previous_by_id[item.condition_id] != item
         )
+
+    @property
+    def pattern_changed(self) -> bool:
+        return self.previous.pattern != self.current.pattern
+
+    @property
+    def variable_bindings_changed(self) -> bool:
+        return self.previous.variable_bindings != self.current.variable_bindings
+
+    @property
+    def unresolved_slots_changed(self) -> bool:
+        return self.previous.unresolved_slots != self.current.unresolved_slots
+
+    @property
+    def condition_set_changed(self) -> bool:
+        return self.previous.condition_set != self.current.condition_set
+
+    @property
+    def evidence_changed(self) -> bool:
+        return self.previous.evidence != self.current.evidence
 
 
 @dataclass(frozen=True)

@@ -70,6 +70,12 @@ from rdl_core import (
     RupturePolicyDescription,
     evaluate_runtime_rupture,
     ConditionalRelearningRequest,
+    ConditionalRevisionCandidate,
+    RelearningEvidenceAnalysis,
+    ConditionalRevisionStatus,
+    accept_conditional_revision,
+    analyze_conditional_relearning,
+    build_conditional_vnext_from_revision,
     request_conditional_relearning,
     reintroduce_conditional_to_adaptive,
     ConditionalStructureDelta,
@@ -533,6 +539,36 @@ class TestCoreContracts(unittest.TestCase):
         )
         self.assertEqual(adaptive_reentry.recompilation_reason, "runtime mismatch threshold")
         self.assertEqual(adaptive_reentry.relearning_evidence, (detected,))
+        revision = analyze_conditional_relearning(relearning)
+        self.assertIsInstance(revision, ConditionalRevisionCandidate)
+        self.assertIsInstance(revision.analysis, RelearningEvidenceAnalysis)
+        self.assertIn("no_structural_revision_proposal", revision.unresolved_reasons)
+        with self.assertRaises(ValueError):
+            accept_conditional_revision(revision)
+        proposed_revision = analyze_conditional_relearning(
+            relearning, proposed_conditions=("runtime mismatch reviewed",),
+        )
+        self.assertEqual(proposed_revision.proposed_conditions, ("runtime mismatch reviewed",))
+        self.assertEqual(proposed_revision.proposed_condition_additions, proposed_revision.proposed_conditions)
+        self.assertEqual(proposed_revision.proposed_exception_additions, proposed_revision.proposed_exceptions)
+        self.assertEqual(proposed_revision.unresolved_reasons, ())
+        self.assertEqual(proposed_revision.supporting_ruptures, relearning.ruptures)
+        self.assertGreaterEqual(len(proposed_revision.supporting_evidence), 2)
+        self.assertEqual(proposed_revision.reconsidered_condition_ids, ("condition-1",))
+        self.assertEqual(proposed_revision.proposed_condition_removals, ("condition-1",))
+        self.assertEqual(proposed_revision.status, ConditionalRevisionStatus.PROPOSED)
+        with self.assertRaises(ValueError):
+            build_conditional_vnext_from_revision(proposed_revision, pattern)
+        accepted_revision = accept_conditional_revision(proposed_revision)
+        self.assertEqual(accepted_revision.status, ConditionalRevisionStatus.ACCEPTED)
+        revised_vnext, revised_delta = build_conditional_vnext_from_revision(
+            accepted_revision, pattern,
+        )
+        self.assertEqual(
+            revised_vnext.conditions,
+            ("subject is observed", "runtime mismatch reviewed"),
+        )
+        self.assertEqual(revised_delta.added_conditions, ("runtime mismatch reviewed",))
         vnext, conditional_delta = build_conditional_vnext(
             relearning, pattern,
             conditions=("subject is observed", "runtime mismatch reviewed"),
@@ -554,6 +590,11 @@ class TestCoreContracts(unittest.TestCase):
         structured_delta = ConditionalStructureDelta(structured, structured_with_set)
         self.assertEqual(structured_delta.added_structured_conditions, ())
         self.assertEqual(structured_delta.removed_structured_conditions, ())
+        self.assertFalse(structured_delta.pattern_changed)
+        self.assertFalse(structured_delta.variable_bindings_changed)
+        self.assertFalse(structured_delta.unresolved_slots_changed)
+        self.assertTrue(structured_delta.condition_set_changed)
+        self.assertFalse(structured_delta.evidence_changed)
         vnext_validation = record_conditional_validation(
             vnext, ConditionalValidationStatus.PASSED, conditional.context,
         )
