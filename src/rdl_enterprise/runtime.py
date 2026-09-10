@@ -154,6 +154,7 @@ class EnterpriseRuntime:
         if self.case_store and persisted:
             self.canary_manager.active_deployment = persisted.get("active_canary_deployment")
             self.canary_manager.deployment_history = list(persisted.get("canary_deployment_history", []))
+            self.canary_manager.action_ledger.records = list(persisted.get("action_ledger_records", []))
 
         # 外界作用ロールバック用の社内標準訂正ハンドラを登録 (外部接続または fail-closed)
         self.canary_manager.action_ledger.executor.register_handler(
@@ -332,6 +333,8 @@ class EnterpriseRuntime:
             capability=node_cap,
             compensating_action=compensating_action,
         )
+        if self.case_store:
+            self._persist_runtime_state()
 
         return TicketDispatchResult(
             ticket_id=efp.ticket_id,
@@ -480,6 +483,7 @@ class EnterpriseRuntime:
                 "reorganization_history": self.reorganization_history,
                 "active_canary_deployment": self.canary_manager.active_deployment,
                 "canary_deployment_history": self.canary_manager.deployment_history,
+                "action_ledger_records": self.canary_manager.action_ledger.records,
             })
 
     def _finalize_case_metabolism(
