@@ -123,6 +123,13 @@ class EnterpriseRuntime:
         self.default_promotion_policy = default_promotion_policy
         self.external_compensation_client = external_compensation_client
         self.case_store = SQLiteCaseStore(store_path) if store_path else None
+        if self.case_store:
+            persisted = self.case_store.load_runtime_state()
+            if persisted:
+                self.mb_graph = MBGraph.from_dict(persisted["mb_graph"])
+                self.h_state = persisted["h_state"]
+                self.cascade.mb_graph = self.mb_graph
+                self.cascade.import_cache(persisted.get("level0_cache", {}))
 
         # 非同期案件スナップショット管理
         self.pending_snapshots: Dict[str, CaseSnapshot] = {}
@@ -255,6 +262,7 @@ class EnterpriseRuntime:
         if self.case_store:
             self.case_store.save_case(efp.ticket_id, snapshot, snapshot.status.value)
             self.case_store.record_event("ticket_dispatched", efp.ticket_id, {"status": snapshot.status.value})
+            self._persist_runtime_state()
 
         # 3. 人間問い合わせ (HITL) ゲート判定
         hitl_eval = self.human.evaluate(efp, pred, matched_node)
@@ -351,6 +359,7 @@ class EnterpriseRuntime:
         if self.case_store:
             self.case_store.save_case(ticket_id, snapshot, snapshot.status.value)
             self.case_store.record_event("ticket_resolved", ticket_id, {"status": snapshot.status.value})
+            self._persist_runtime_state()
 
         # シャドウ三者比較の記録 (有効な場合)
         if self.active_shadow_evaluator:
@@ -457,6 +466,14 @@ class EnterpriseRuntime:
             is_timeout=False,
             at=at or getattr(snapshot, "resolved_at", None),
         )
+
+    def _persist_runtime_state(self) -> None:
+        if self.case_store:
+            self.case_store.save_runtime_state({
+                "mb_graph": self.mb_graph.to_dict(),
+                "h_state": self.h_state,
+                "level0_cache": self.cascade.export_cache(),
+            })
 
     def _finalize_case_metabolism(
         self,

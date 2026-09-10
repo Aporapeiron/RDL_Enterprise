@@ -55,6 +55,23 @@ class SQLiteCaseStore:
                 "INSERT OR IGNORE INTO schema_metadata(key, value) VALUES('version', ?)",
                 (str(self.SCHEMA_VERSION),),
             )
+            version = db.execute("SELECT value FROM schema_metadata WHERE key = 'version'").fetchone()[0]
+            if version != str(self.SCHEMA_VERSION):
+                raise RuntimeError(f"Unsupported case store schema version: {version}")
+
+    def save_runtime_state(self, state: object) -> None:
+        payload = sqlite3.Binary(pickle.dumps(state, protocol=pickle.HIGHEST_PROTOCOL))
+        with self._connect() as db:
+            db.execute(
+                """INSERT INTO schema_metadata(key, value) VALUES('runtime_state', ?)
+                   ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
+                (payload, ),
+            )
+
+    def load_runtime_state(self) -> Optional[object]:
+        with self._connect() as db:
+            row = db.execute("SELECT value FROM schema_metadata WHERE key = 'runtime_state'").fetchone()
+        return pickle.loads(row[0]) if row else None
 
     def save_case(self, ticket_id: str, snapshot: object, status: str) -> None:
         payload = sqlite3.Binary(pickle.dumps(snapshot, protocol=pickle.HIGHEST_PROTOCOL))
