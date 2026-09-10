@@ -1054,6 +1054,28 @@ class TestCoreContracts(unittest.TestCase):
         self.assertEqual(probed.context, context)
         self.assertEqual(probed.provenance, probe_provenance)
 
+    def test_scenario_03_enterprise_probe_adapter_preserves_core_provenance(self):
+        from rdl_enterprise.mb_graph import MBNode
+        from rdl_enterprise.trigger_adapter import matching_observation_from_mbnode
+
+        node = MBNode(
+            id="scenario-03-probe-node",
+            domain="workflow",
+            trigger_pattern={"exact_keys": ["approval", "confirmed"]},
+            action_template={"type": "ask_human"},
+            source_id="enterprise:probe",
+            source_lineage="probe-v1",
+        )
+        observation = matching_observation_from_mbnode(
+            node,
+            "approval confirmed",
+            BoundaryContext("scenario-03-adapter"),
+        )
+        self.assertEqual(observation.status, MatchingObservationStatus.MATCHED)
+        self.assertIsNotNone(observation.provenance)
+        self.assertEqual(observation.provenance.source, "enterprise:probe")
+        self.assertEqual(observation.provenance.lineage, "probe-v1")
+
     def test_scenario_02_similarity_is_t1_inspection_material(self):
         context = BoundaryContext("scenario-02-inspection")
         current = RelationConstraintProfile(
