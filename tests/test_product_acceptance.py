@@ -21,6 +21,7 @@ from rdl_enterprise.workflow_provider import (
     WorkflowProviderAuthError,
     WorkflowProviderNotFoundError,
     WorkflowProviderUnavailableError,
+    WorkflowProviderRateLimitError,
 )
 
 
@@ -291,6 +292,22 @@ class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
             )
             with self.assertRaises(error_type):
                 failing.lookup({"case_id": "WF-204"})
+
+    def test_http_workflow_provider_rate_limit_and_secret_redaction(self):
+        class RateLimitHeaders:
+            def get(self, name):
+                return "30" if name == "Retry-After" else None
+
+        def rate_limited(request, timeout):
+            raise HTTPError(request.full_url, 429, "slow down", RateLimitHeaders(), None)
+
+        connector = WorkflowHttpConnector(
+            "https://workflow.example.test/api", api_token="secret-token", opener=rate_limited,
+        )
+        with self.assertRaises(WorkflowProviderRateLimitError) as caught:
+            connector.lookup({"case_id": "WF-205"})
+        self.assertEqual(caught.exception.retry_after, "30")
+        self.assertNotIn("secret-token", str(caught.exception))
 
     def test_tool_scope_is_checked_before_execution(self):
         runtime = EnterpriseRuntime(mb_graph=self.prod_graph)

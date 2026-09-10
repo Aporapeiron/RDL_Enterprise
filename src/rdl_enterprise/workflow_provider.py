@@ -28,6 +28,15 @@ class WorkflowProviderUnavailableError(WorkflowProviderError):
     """The provider could not be reached or returned a server failure."""
 
 
+class WorkflowProviderRateLimitError(WorkflowProviderError):
+    """The provider asked the caller to slow down."""
+
+    def __init__(self, retry_after: Optional[str] = None):
+        self.retry_after = retry_after
+        suffix = f"; retry after {retry_after}" if retry_after else ""
+        super().__init__(f"workflow provider rate limit exceeded{suffix}")
+
+
 class WorkflowHttpConnector:
     """Translate a workflow provider's JSON lookup endpoint into a ToolSpec."""
 
@@ -67,6 +76,8 @@ class WorkflowHttpConnector:
                 raise WorkflowProviderAuthError("workflow provider rejected credentials or scope") from exc
             if exc.code == 404:
                 raise WorkflowProviderNotFoundError("workflow case was not found") from exc
+            if exc.code == 429:
+                raise WorkflowProviderRateLimitError(exc.headers.get("Retry-After")) from exc
             if exc.code >= 500:
                 raise WorkflowProviderUnavailableError("workflow provider returned a server error") from exc
             raise WorkflowProviderError(f"workflow provider returned HTTP {exc.code}") from exc

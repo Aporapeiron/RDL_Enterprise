@@ -61,6 +61,7 @@ from .workflow_provider import (
     WorkflowProviderAuthError,
     WorkflowProviderNotFoundError,
     WorkflowProviderUnavailableError,
+    WorkflowProviderRateLimitError,
 )
 
 __all__ = [
@@ -123,4 +124,5 @@ __all__ = [
     "WorkflowProviderAuthError",
     "WorkflowProviderNotFoundError",
     "WorkflowProviderUnavailableError",
+    "WorkflowProviderRateLimitError",
 ]
