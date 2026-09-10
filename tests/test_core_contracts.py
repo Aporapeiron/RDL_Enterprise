@@ -1051,6 +1051,44 @@ class TestCoreContracts(unittest.TestCase):
         self.assertEqual(probed.condition, condition)
         self.assertEqual(probed.context, context)
 
+    def test_scenario_02_similarity_is_t1_inspection_material(self):
+        context = BoundaryContext("scenario-02-inspection")
+        current = RelationConstraintProfile(
+            ConstraintIdentity("current-case", "partner-a", "approves", "invoice"),
+            ConstraintStrength(0.8, EvidencePolarity.SUPPORT),
+        )
+        prior = RelationConstraintProfile(
+            ConstraintIdentity("prior-case", "partner-a", "approves", "invoice"),
+            ConstraintStrength(0.7, EvidencePolarity.SUPPORT),
+        )
+        similarity = compare_relation_constraint_profiles(
+            current, prior, context,
+            provenance=Provenance("scenario-02-history"),
+        )
+        self.assertEqual(similarity.status, SimilarityObservationStatus.SIMILAR)
+
+        profile = AdaptiveMBProfile((current, prior), context)
+        inspected = induce_structure_candidate(
+            profile, context, (similarity,), min_score=0.5,
+        )
+        self.assertIn(current.identity.semantic_key, inspected.common_relations)
+        self.assertEqual(inspected.unresolved_observations, ())
+        self.assertIsNotNone(inspected.candidate)
+
+        # The T1 inspection material is retained as candidate evidence only.
+        function = FunctionDescription("enterprise.approval.inspected", "1")
+        candidate = FunctionCandidate(
+            function,
+            FunctionInvocation(function, context, purpose="scenario-02 inspection"),
+            inspected.candidate,
+        )
+        rupture = record_rupture_observation(
+            candidate, RuptureObservationStatus.DETECTED, context,
+            check_id="scenario-02-inspection-counterexample",
+        )
+        self.assertEqual(rupture.status, RuptureObservationStatus.DETECTED)
+        self.assertEqual(similarity.status, SimilarityObservationStatus.SIMILAR)
+
     def test_core_source_has_no_runtime_package_imports(self):
         from pathlib import Path
 
