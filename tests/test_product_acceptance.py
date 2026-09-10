@@ -10,7 +10,7 @@ from rdl_enterprise.snapshot import BusinessInput, FeedbackResult, CaseStatus
 from rdl_enterprise.authority import AuthorityContext
 from rdl_enterprise.promotion_gate import ProposalState, PromotionPolicy
 from rdl_enterprise.runtime import EnterpriseRuntime, ReorganizationProposal
-from rdl_enterprise.service import EnterpriseService, AuthenticationError
+from rdl_enterprise.service import EnterpriseService, AuthenticationError, AuthorizationError
 
 
 class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
@@ -122,6 +122,14 @@ class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
         actor = AuthorityContext("operator-1", "operator", "workflow", "human", None)
         with self.assertRaises(AuthenticationError):
             service.submit(BusinessInput("T_SERVICE_02", "U_SERVICE", "workflow", "稟議申請の方法"), actor)
+
+    def test_service_rejects_untrusted_auth_method_and_scope_mismatch(self):
+        service = EnterpriseService(EnterpriseRuntime(mb_graph=self.prod_graph))
+        request = BusinessInput("T_SERVICE_03", "U_SERVICE", "workflow", "稟議申請の方法")
+        with self.assertRaises(AuthenticationError):
+            service.submit(request, AuthorityContext("u1", "operator", "workflow", "human", "untrusted"))
+        with self.assertRaises(AuthorizationError):
+            service.submit(request, AuthorityContext("u2", "operator", "finance", "human", "idp_sso"))
 
     def test_metabolic_closed_loop_tier1_to_tier0(self):
         """

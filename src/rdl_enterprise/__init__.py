@@ -52,7 +52,7 @@ from .runtime import (
     ReorganizationProposal,
 )
 from .persistence import SQLiteCaseStore
-from .service import EnterpriseService, AuthenticationError
+from .service import EnterpriseService, AuthenticationError, AuthorizationError
 
 __all__ = [
     "MBNode",
@@ -99,4 +99,5 @@ __all__ = [
     "SQLiteCaseStore",
     "EnterpriseService",
     "AuthenticationError",
+    "AuthorizationError",
 ]
