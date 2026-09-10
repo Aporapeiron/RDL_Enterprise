@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from typing import Any, Callable, Dict, Mapping, Optional
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
@@ -54,6 +55,19 @@ class WorkflowHttpConnector:
         self._opener = opener or urlopen
         self.timeout = timeout
         self.api_token = api_token
+
+    @classmethod
+    def from_environment(cls, *, opener: Optional[Callable[..., Any]] = None, timeout: float = 5.0) -> "WorkflowHttpConnector":
+        """Build a connector from deployment configuration without persisting credentials."""
+        base_url = os.environ.get("RDL_WORKFLOW_PROVIDER_URL", "")
+        if not base_url.strip():
+            raise ValueError("RDL_WORKFLOW_PROVIDER_URL is required")
+        return cls(
+            base_url,
+            opener=opener,
+            timeout=timeout,
+            api_token=os.environ.get("RDL_WORKFLOW_PROVIDER_TOKEN"),
+        )
 
     def lookup(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         case_id = payload.get("case_id")

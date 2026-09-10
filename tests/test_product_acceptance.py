@@ -309,6 +309,36 @@ class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
         self.assertEqual(caught.exception.retry_after, "30")
         self.assertNotIn("secret-token", str(caught.exception))
 
+    def test_http_workflow_provider_can_load_deployment_configuration_without_leaking_token(self):
+        class Response:
+            def read(self):
+                return b'{"case_id":"WF-206","status":"pending","owner":"ops","summary":"review"}'
+
+        original_url = os.environ.get("RDL_WORKFLOW_PROVIDER_URL")
+        original_token = os.environ.get("RDL_WORKFLOW_PROVIDER_TOKEN")
+        try:
+            os.environ["RDL_WORKFLOW_PROVIDER_URL"] = "https://workflow.example.test/api"
+            os.environ["RDL_WORKFLOW_PROVIDER_TOKEN"] = "deployment-secret"
+            seen = []
+
+            def opener(request, timeout):
+                seen.append(dict(request.headers))
+                return Response()
+
+            connector = WorkflowHttpConnector.from_environment(opener=opener)
+            self.assertEqual(connector.lookup({"case_id": "WF-206"})["status"], "pending")
+            self.assertEqual(seen[0]["Authorization"], "Bearer deployment-secret")
+            self.assertNotIn("deployment-secret", repr(connector.tool_spec()))
+        finally:
+            if original_url is None:
+                os.environ.pop("RDL_WORKFLOW_PROVIDER_URL", None)
+            else:
+                os.environ["RDL_WORKFLOW_PROVIDER_URL"] = original_url
+            if original_token is None:
+                os.environ.pop("RDL_WORKFLOW_PROVIDER_TOKEN", None)
+            else:
+                os.environ["RDL_WORKFLOW_PROVIDER_TOKEN"] = original_token
+
     def test_tool_scope_is_checked_before_execution(self):
         runtime = EnterpriseRuntime(mb_graph=self.prod_graph)
         service = EnterpriseService(runtime)
