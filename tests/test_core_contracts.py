@@ -1480,6 +1480,19 @@ class TestCoreContracts(unittest.TestCase):
         )
         self.assertEqual(decision.status, PromotionDecisionStatus.UNRESOLVED)
 
+        from rdl_enterprise.human import HumanQuery
+        from rdl_enterprise.snapshot import BusinessInput, InterpretationPrediction
+        human_gate = HumanQuery().evaluate(
+            BusinessInput("omega", "customer", "billing", "approve exception"),
+            InterpretationPrediction(
+                "ask_human", "authority approval required", 0.2, None, 3,
+                expected_outcome="need_input",
+            ),
+            None,
+        )
+        self.assertTrue(human_gate["must_ask"])
+        self.assertEqual(human_gate["query_type"], "ask_guidance")
+
         authority = Provenance("authority-probe", lineage="case-only-exception")
         b2_action = inspect_joint_action_feasibility(
             {"refund-and-continue-approved": {
@@ -1498,6 +1511,11 @@ class TestCoreContracts(unittest.TestCase):
             provenance=authority,
         )
         self.assertEqual(b2_action.status, ActionFeasibilityStatus.FEASIBLE)
+        selected_action = next(
+            item for item in b2_action.actions
+            if item.status is ActionFeasibilityStatus.FEASIBLE
+        )
+        self.assertEqual(selected_action.action_id, "refund-and-continue-approved")
 
         profile_b2 = RelationConstraintProfile(
             ConstraintIdentity("omega-b2", "customer", "requests", "refund"),
@@ -1544,7 +1562,7 @@ class TestCoreContracts(unittest.TestCase):
         active_b2 = activate_promoted_artifact(
             promotion_b2,
             boundary_b2,
-            registry=FunctionDescription("billing.incident.b2", "1"),
+            registry=FunctionDescription("billing.incident.registry", "1"),
             provenance=authority,
         )
         self.assertIsInstance(active_b2, ActiveCompiledMB)
@@ -1568,13 +1586,27 @@ class TestCoreContracts(unittest.TestCase):
         active_b1 = activate_promoted_artifact(
             promotion_b1,
             boundary_b1,
-            registry=FunctionDescription("billing.incident.b1", "1"),
+            registry=FunctionDescription("billing.incident.registry", "1"),
             provenance=Provenance("omega-b1-active"),
         )
         b1_state = project_current_function_state(active_b1)
         b2_state = project_current_function_state(active_b2)
         self.assertEqual(b1_state.status, RegistryStatus.ACTIVE)
         self.assertEqual(b2_state.status, RegistryStatus.ACTIVE)
+        self.assertEqual(active_b1.registry, active_b2.registry)
+        from rdl_enterprise.registry_routing import select_active_for_boundary
+        shared_registry = active_b1.registry
+        self.assertIs(
+            select_active_for_boundary((active_b1, active_b2), shared_registry, boundary_b1),
+            active_b1,
+        )
+        self.assertIs(
+            select_active_for_boundary((active_b1, active_b2), shared_registry, boundary_b2),
+            active_b2,
+        )
+        self.assertIsNone(
+            select_active_for_boundary((active_b1, active_b2), shared_registry, BoundaryContext("unknown")),
+        )
         self.assertEqual(b1_state.active.artifact.function.version, "1")
         self.assertEqual(b2_state.active.artifact.function.version, "2")
 
