@@ -15,6 +15,7 @@ from .snapshot import (
     LLMBridgeIdentity,
     ObservedOutcome,
 )
+from .persistence import SQLiteCaseStore
 from .cascade import InterpCascade, CascadeConfig
 from .human import HumanQuery
 from .authority import AuthorityContext
@@ -110,6 +111,7 @@ class EnterpriseRuntime:
         auto_promote_authority: Optional[AuthorityContext] = None,  # 事前委任された権限コンテキスト (限定スコープ用)
         default_promotion_policy: Optional[PromotionPolicy] = None,  # カスタム昇格ポリシー (未指定時はドメイン標準)
         external_compensation_client: Optional[Any] = None,  # 外部補償API/メッセージングクライアント (fail-closed防止)
+        store_path: Optional[str] = None,
     ):
         self.mb_graph = mb_graph or MBGraph()
         self.h_state = HState(theta_0=theta_0, gamma=gamma)
@@ -120,10 +122,14 @@ class EnterpriseRuntime:
         self.auto_promote_authority = auto_promote_authority
         self.default_promotion_policy = default_promotion_policy
         self.external_compensation_client = external_compensation_client
+        self.case_store = SQLiteCaseStore(store_path) if store_path else None
 
         # 非同期案件スナップショット管理
         self.pending_snapshots: Dict[str, CaseSnapshot] = {}
         self.resolved_snapshots: List[CaseSnapshot] = []
+        if self.case_store:
+            for ticket_id, snapshot in self.case_store.load_pending():
+                self.pending_snapshots[ticket_id] = snapshot
 
         # 再編相 M_Δ プロポーザル管理
         self.pending_reorganizations: Dict[str, ReorganizationProposal] = {}
@@ -246,6 +252,9 @@ class EnterpriseRuntime:
             interpretation_trace=trace,
         )
         self.pending_snapshots[efp.ticket_id] = snapshot
+        if self.case_store:
+            self.case_store.save_case(efp.ticket_id, snapshot, snapshot.status.value)
+            self.case_store.record_event("ticket_dispatched", efp.ticket_id, {"status": snapshot.status.value})
 
         # 3. 人間問い合わせ (HITL) ゲート判定
         hitl_eval = self.human.evaluate(efp, pred, matched_node)
@@ -339,6 +348,9 @@ class EnterpriseRuntime:
         snapshot = self.pending_snapshots.pop(ticket_id)
         e_pred, e_input = snapshot.record_feedback(feedback, at=at)
         self.resolved_snapshots.append(snapshot)
+        if self.case_store:
+            self.case_store.save_case(ticket_id, snapshot, snapshot.status.value)
+            self.case_store.record_event("ticket_resolved", ticket_id, {"status": snapshot.status.value})
 
         # シャドウ三者比較の記録 (有効な場合)
         if self.active_shadow_evaluator:

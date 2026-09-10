@@ -1,6 +1,7 @@
 import unittest
 import sys
 import os
+import tempfile
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
@@ -35,6 +36,30 @@ class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
             action_template={"type": "direct_reply", "payload": "新SaaSワークフローポータルから申請してください"},
             confidence=0.9,
         ), origin=CommitmentOrigin.TEST_FIXTURE)
+
+    def test_pending_case_recovers_after_runtime_restart(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store_path = os.path.join(directory, "enterprise.sqlite3")
+            first = EnterpriseRuntime(mb_graph=self.prod_graph, store_path=store_path)
+            ticket = BusinessInput(
+                ticket_id="T_RESTART_01",
+                user_id="U_RESTART",
+                category="workflow",
+                query_text="稟議申請の方法",
+            )
+
+            first.dispatch_ticket(ticket)
+            self.assertIn(ticket.ticket_id, first.pending_snapshots)
+
+            restarted = EnterpriseRuntime(mb_graph=self.prod_graph, store_path=store_path)
+            self.assertIn(ticket.ticket_id, restarted.pending_snapshots)
+
+            result = restarted.resolve_ticket_feedback(
+                ticket.ticket_id,
+                FeedbackResult(user_resolved=True, actual_response_text="解決しました"),
+            )
+            self.assertEqual(result.ticket_id, ticket.ticket_id)
+            self.assertNotIn(ticket.ticket_id, restarted.pending_snapshots)
 
     def test_metabolic_closed_loop_tier1_to_tier0(self):
         """

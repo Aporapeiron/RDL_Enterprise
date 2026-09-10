@@ -69,6 +69,9 @@ class ReadOnlyDict(dict):
         import copy
         return ReadOnlyDict({copy.deepcopy(k, memo): copy.deepcopy(v, memo) for k, v in self.items()})
 
+    def __reduce__(self):
+        return (ReadOnlyDict, (dict(self),))
+
     def __setitem__(self, key, value):
         raise TypeError(f"ReadOnlyDict は凍結されており変更できません (キー: {key})")
 
@@ -99,6 +102,9 @@ class ReadOnlyList(list):
     def __deepcopy__(self, memo):
         import copy
         return ReadOnlyList([copy.deepcopy(x, memo) for x in self])
+
+    def __reduce__(self):
+        return (ReadOnlyList, (list(self),))
 
     def __setitem__(self, index, value):
         raise TypeError(f"ReadOnlyList は凍結されており変更できません (インデックス: {index})")

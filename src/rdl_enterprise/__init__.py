@@ -51,6 +51,7 @@ from .runtime import (
     TicketResolutionResult,
     ReorganizationProposal,
 )
+from .persistence import SQLiteCaseStore
 
 __all__ = [
     "MBNode",
@@ -94,4 +95,5 @@ __all__ = [
     "TicketDispatchResult",
     "TicketResolutionResult",
     "ReorganizationProposal",
+    "SQLiteCaseStore",
 ]
