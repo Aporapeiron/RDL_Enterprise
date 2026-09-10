@@ -13,7 +13,7 @@ RDL Enterpriseの設計・実装・レビューで参照する外部リポジト
 - 参照対象: BASE、SPEC、SILN操作、共有語彙、展開・検査・選別・再構成
 - 用途: RDLの意味境界、最低動作、形成・代謝工程の確認
 
-RDL_CoreのT0/T1/T2役割定義を、Enterprise側の実装解釈より上位の意味参照とします。
+RDL_CoreのT0/T1/TDと、そこに規定されたT2・各系との責務分担を、Enterprise側の実装解釈より上位の意味参照とします。T2の具体的な道具は、RDL_FunctionsやRDL_Durability_Modulesなどの対応リポジトリを参照します。
 
 ## 組織内の補助参照
 
