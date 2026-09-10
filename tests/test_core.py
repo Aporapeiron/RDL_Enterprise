@@ -115,6 +115,20 @@ class TestRDLCore(unittest.TestCase):
         self.assertEqual(result["query_type"], "ask_guidance")
         self.assertNotEqual(result["query_type"], "none")
 
+    def test_stress_y_raw_inconsistent_complaint_uses_safe_unknown_fallback(self):
+        cascade = InterpCascade(MBGraph())
+        efp = BusinessInput(
+            "T_INCONSISTENT_RAW", "U_COMPLAINANT", "workflow",
+            "返金しろ、でもキャンセルするな、規約通りにしろ、例外にしろ",
+        )
+
+        prediction = cascade.interpret(efp)
+
+        self.assertEqual(prediction.action_type, "ask_human")
+        self.assertEqual(prediction.expected_outcome, "escalate")
+        self.assertEqual(prediction.locus_basis, "fallback")
+        self.assertIsNone(prediction.matched_node_id)
+
     def test_async_feedback_lifecycle(self):
         from rdl_enterprise.snapshot import CaseStatus
         graph = MBGraph()
