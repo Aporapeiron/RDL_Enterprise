@@ -14,6 +14,7 @@ from rdl_enterprise.service import EnterpriseService, AuthenticationError, Autho
 from rdl_enterprise.tool_execution import ToolSpec, ToolRegistry, ExecutionUncertain, execute_tool, reconcile_tool_execution
 from rdl_enterprise.canary import ActionCapability
 from rdl_enterprise.workflow_connector import WorkflowCase, WorkflowConnector
+from rdl_enterprise.workflow_provider import WorkflowHttpConnector, WorkflowProviderError
 
 
 class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
@@ -180,6 +181,40 @@ class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
         self.assertEqual(result.output["status"], "pending")
         self.assertEqual(result.output["owner"], "ops-team")
         self.assertEqual(runtime.canary_manager.action_ledger.records[-1].action_type, "tool:workflow.lookup")
+
+    def test_http_workflow_provider_adapter_runs_through_authorized_tool_boundary(self):
+        class Response:
+            def read(self):
+                return b'{"case_id":"WF-200","status":"approved","owner":"finance"}'
+
+        requests = []
+
+        def opener(request, timeout):
+            requests.append((request.full_url, timeout))
+            return Response()
+
+        runtime = EnterpriseRuntime(mb_graph=self.prod_graph)
+        service = EnterpriseService(runtime)
+        registry = ToolRegistry()
+        connector = WorkflowHttpConnector("https://workflow.example.test/api", opener=opener)
+        registry.register(connector.tool_spec())
+        actor = AuthorityContext("provider-user", "operator", "workflow", "human", "idp_sso")
+
+        result = execute_tool(
+            service, registry, "workflow.provider.lookup", {"case_id": "WF-200"},
+            actor, "T_PROVIDER_01",
+        )
+
+        self.assertEqual(result.output["status"], "approved")
+        self.assertEqual(requests, [("https://workflow.example.test/api/cases/WF-200", 5.0)])
+
+    def test_http_workflow_provider_adapter_preserves_provider_failure(self):
+        def opener(request, timeout):
+            raise OSError("provider unavailable")
+
+        connector = WorkflowHttpConnector("https://workflow.example.test/api", opener=opener)
+        with self.assertRaises(WorkflowProviderError):
+            connector.lookup({"case_id": "WF-500"})
 
     def test_tool_scope_is_checked_before_execution(self):
         runtime = EnterpriseRuntime(mb_graph=self.prod_graph)

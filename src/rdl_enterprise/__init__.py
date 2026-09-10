@@ -55,6 +55,7 @@ from .persistence import SQLiteCaseStore
 from .service import EnterpriseService, AuthenticationError, AuthorizationError
 from .tool_execution import ToolSpec, ToolRegistry, ToolExecutionResult, ReconciliationResult, ExecutionUncertain, execute_tool, reconcile_tool_execution
 from .workflow_connector import WorkflowCase, WorkflowConnector
+from .workflow_provider import WorkflowHttpConnector, WorkflowProviderError
 
 __all__ = [
     "MBNode",
@@ -111,4 +112,6 @@ __all__ = [
     "reconcile_tool_execution",
     "WorkflowCase",
     "WorkflowConnector",
+    "WorkflowHttpConnector",
+    "WorkflowProviderError",
 ]
