@@ -7,6 +7,7 @@
 RDLの実装時に認識論的境界を維持する規律は、[RDL Coding Principles](docs/RDL_Coding_Principles.md) に定義します。Operational Lexiconが用語の意味境界を定めるのに対し、本書は観測・Commitment・外生条件・Evidence polarity・Replay・テスト解釈をコードへ落とす際の規則を定めます。
 
 Core抽出時の受入条件と候補分類は、[RDL Core Extraction Gate](docs/RDL_Core_Extraction_Gate.md) に定義します。
+Coreの役割分離、必要時だけ深掘りする方針、代表シナリオの実行ゲートは、[RDL Core Route v0.1](docs/RDL_Core_Route_v0.1.md) に定義します。
 
 Enterprise `MBNode` のfield分類とCore投影範囲は、[MBNode Field Projection Map](docs/RDL_MBNode_Field_Projection.md) に定義します。
 
