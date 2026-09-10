@@ -24,6 +24,7 @@ from rdl_enterprise.workflow_provider import (
     WorkflowProviderRateLimitError,
 )
 from rdl_enterprise.atlassian_jira_provider import AtlassianJiraConnector, AtlassianProviderError
+from rdl_enterprise.tool_routing import ToolRoutingStatus, route_business_text
 
 
 class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
@@ -422,6 +423,36 @@ class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
         self.assertIsInstance(result.output["summary"], str)
         self.assertIsInstance(result.output["status"], str)
         self.assertTrue(result.output["owner"] is None or isinstance(result.output["owner"], str))
+        self.assertEqual(runtime.canary_manager.action_ledger.records[-1].action_type,
+                         "tool:atlassian.jira.issue.lookup")
+
+    def test_business_text_routes_to_unexecuted_read_only_candidate(self):
+        routed = route_business_text("IT-3って今どうなってる？")
+        self.assertEqual(routed.status, ToolRoutingStatus.RESOLVED)
+        self.assertIsNotNone(routed.candidate)
+        self.assertEqual(routed.candidate.tool_id, "atlassian.jira.issue.lookup")
+        self.assertEqual(routed.candidate.payload, {"case_id": "IT-3"})
+        self.assertTrue(routed.candidate.read_only)
+
+        ambiguous = route_business_text("VPNの件どうなった？")
+        self.assertEqual(ambiguous.status, ToolRoutingStatus.UNRESOLVED)
+        self.assertIsNone(ambiguous.candidate)
+
+    def test_business_text_candidate_requires_authority_before_execution(self):
+        routed = route_business_text("IT-3の状態を確認して")
+        self.assertEqual(routed.status, ToolRoutingStatus.RESOLVED)
+        runtime = EnterpriseRuntime(mb_graph=self.prod_graph)
+        service = EnterpriseService(runtime)
+        registry = ToolRegistry()
+        registry.register(AtlassianJiraConnector(
+            "https://jira.example.test", "agent@example.test", "jira-secret",
+            opener=lambda request, timeout: type("Response", (), {
+                "read": lambda self: b'{"key":"IT-3","fields":{"summary":"VPN issue","status":{"name":"Open"},"assignee":null}}',
+            })(),
+        ).tool_spec())
+        actor = AuthorityContext("router-user", "operator", "workflow", "human", "idp_sso")
+        result = execute_tool(service, registry, routed.candidate.tool_id, routed.candidate.payload, actor, "T_ROUTED_IT3")
+        self.assertEqual(result.output["case_id"], "IT-3")
         self.assertEqual(runtime.canary_manager.action_ledger.records[-1].action_type,
                          "tool:atlassian.jira.issue.lookup")
 

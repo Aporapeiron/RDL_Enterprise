@@ -70,6 +70,7 @@ from .atlassian_jira_provider import (
     AtlassianProviderNotFoundError,
     AtlassianProviderUnavailableError,
 )
+from .tool_routing import ToolCandidate, ToolRoutingResult, ToolRoutingStatus, route_business_text
 
 __all__ = [
     "MBNode",
@@ -137,4 +138,8 @@ __all__ = [
     "AtlassianProviderAuthError",
     "AtlassianProviderNotFoundError",
     "AtlassianProviderUnavailableError",
+    "ToolCandidate",
+    "ToolRoutingResult",
+    "ToolRoutingStatus",
+    "route_business_text",
 ]
