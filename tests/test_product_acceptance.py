@@ -4,6 +4,7 @@ import os
 import tempfile
 import json
 import threading
+from unittest.mock import patch
 from http.client import HTTPConnection
 from http.server import ThreadingHTTPServer
 from urllib.error import HTTPError
@@ -623,6 +624,72 @@ class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
         finally:
             server.shutdown()
             server.server_close()
+
+    def test_api_entrypoint_requires_durable_store_path(self):
+        import rdl_api
+
+        with patch.dict(os.environ, {"RDL_API_BEARER_TOKEN": "api-secret"}, clear=False):
+            os.environ.pop("RDL_API_STORE_PATH", None)
+            with self.assertRaises(ValueError):
+                rdl_api.build_server()
+
+    def test_api_runtime_recovers_tool_ledger_and_refreshes_after_restart(self):
+        class Response:
+            def __init__(self, status):
+                self.status = status
+
+            def read(self):
+                return json.dumps({
+                    "key": "IT-3",
+                    "fields": {"summary": "VPN issue", "status": {"name": self.status}, "assignee": None},
+                }).encode("utf-8")
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "api-restart.sqlite3")
+            statuses = iter(("Open", "In Progress"))
+            def make_server(runtime):
+                service = EnterpriseService(runtime)
+                registry = ToolRegistry()
+                registry.register(AtlassianJiraConnector(
+                    "https://jira.example.test", "agent@example.test", "jira-secret",
+                    opener=lambda request, timeout: Response(next(statuses)),
+                ).tool_spec())
+                return create_query_server(service, registry, "api-secret", port=0)
+
+            runtime_1 = EnterpriseRuntime(mb_graph=self.prod_graph, store_path=path)
+            server_1 = make_server(runtime_1)
+            thread_1 = threading.Thread(target=server_1.serve_forever, daemon=True)
+            thread_1.start()
+            try:
+                conn = HTTPConnection("127.0.0.1", server_1.server_address[1])
+                conn.request("POST", "/query", json.dumps({"text": "IT-3って今どうなってる？"}), {
+                    "Authorization": "Bearer api-secret", "Content-Type": "application/json",
+                })
+                first = json.loads(conn.getresponse().read())
+                conn.close()
+            finally:
+                server_1.shutdown()
+                server_1.server_close()
+            self.assertEqual(first["status"], "Open")
+            self.assertEqual(len(runtime_1.canary_manager.action_ledger.records), 1)
+
+            runtime_2 = EnterpriseRuntime(mb_graph=self.prod_graph, store_path=path)
+            self.assertEqual(len(runtime_2.canary_manager.action_ledger.records), 1)
+            server_2 = make_server(runtime_2)
+            thread_2 = threading.Thread(target=server_2.serve_forever, daemon=True)
+            thread_2.start()
+            try:
+                conn = HTTPConnection("127.0.0.1", server_2.server_address[1])
+                conn.request("POST", "/query", json.dumps({"text": "IT-3って今どうなってる？"}), {
+                    "Authorization": "Bearer api-secret", "Content-Type": "application/json",
+                })
+                second = json.loads(conn.getresponse().read())
+                conn.close()
+            finally:
+                server_2.shutdown()
+                server_2.server_close()
+            self.assertEqual(second["status"], "In Progress")
+            self.assertEqual(len(runtime_2.canary_manager.action_ledger.records), 2)
 
     def test_read_only_business_query_refreshes_provider_observation_each_time(self):
         class Response:

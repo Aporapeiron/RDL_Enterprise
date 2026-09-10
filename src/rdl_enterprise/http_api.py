@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hmac
 import json
+import threading
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, Optional
@@ -39,6 +40,7 @@ def create_query_server(
     """Create a server; binding beyond localhost requires an explicit caller choice."""
     if not bearer_token:
         raise ValueError("RDL_API_BEARER_TOKEN is required")
+    transition_lock = threading.Lock()
 
     class QueryHandler(BaseHTTPRequestHandler):
         server_version = "RDLQuery/0.1"
@@ -93,7 +95,8 @@ def create_query_server(
                 authenticated_by="api_key",
                 source="official_system",
             )
-            result = handle_business_query(service, registry, body["text"], actor)
+            with transition_lock:
+                result = handle_business_query(service, registry, body["text"], actor)
             self._write(_response_status(result), result)
 
     return ThreadingHTTPServer((host, port), QueryHandler)
