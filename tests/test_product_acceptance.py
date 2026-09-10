@@ -351,6 +351,40 @@ class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
         with self.assertRaises(AtlassianProviderError):
             wrong.lookup({"case_id": "IT-3"})
 
+    def test_atlassian_it3_runs_through_tool_ledger_and_restart_without_secret(self):
+        class Response:
+            def read(self):
+                return b'{"key":"IT-3","fields":{"summary":"VPN issue","status":{"name":"Open"},"assignee":null}}'
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "jira-vertical.sqlite3")
+            runtime = EnterpriseRuntime(mb_graph=self.prod_graph, store_path=path)
+            service = EnterpriseService(runtime)
+            registry = ToolRegistry()
+            connector = AtlassianJiraConnector(
+                "https://jira.example.test", "agent@example.test", "jira-secret",
+                opener=lambda request, timeout: Response(),
+            )
+            registry.register(connector.tool_spec())
+            actor = AuthorityContext("jira-operator", "operator", "workflow", "human", "idp_sso")
+            ticket = BusinessInput("T_JIRA_IT3", "U_JIRA", "workflow", "IT-3の状態を確認")
+            dispatch = service.submit(ticket, actor)
+            result = execute_tool(
+                service, registry, "atlassian.jira.issue.lookup", {"case_id": "IT-3"},
+                actor, dispatch.ticket_id,
+            )
+            self.assertEqual(result.output, {
+                "case_id": "IT-3", "summary": "VPN issue", "status": "Open", "owner": None,
+            })
+            ledger_record = runtime.canary_manager.action_ledger.records[-1]
+            self.assertNotIn("jira-secret", repr(ledger_record))
+            runtime._persist_runtime_state()
+
+            restarted = EnterpriseRuntime(mb_graph=MBGraph(), store_path=path)
+            self.assertEqual(restarted.canary_manager.action_ledger.records[-1].action_type,
+                             "tool:atlassian.jira.issue.lookup")
+            self.assertNotIn("jira-secret", repr(restarted.canary_manager.action_ledger.records[-1]))
+
     @unittest.skipUnless(
         all(os.environ.get(name) for name in (
             "RDL_ATLASSIAN_BASE_URL", "RDL_ATLASSIAN_EMAIL", "RDL_ATLASSIAN_TOKEN",
