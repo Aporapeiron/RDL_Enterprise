@@ -185,7 +185,7 @@ class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
     def test_http_workflow_provider_adapter_runs_through_authorized_tool_boundary(self):
         class Response:
             def read(self):
-                return b'{"case_id":"WF-200","status":"approved","owner":"finance"}'
+                return b'{"case_id":"WF-200","status":"approved","owner":"finance","summary":"approval complete"}'
 
         requests = []
 
@@ -215,6 +215,32 @@ class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
         connector = WorkflowHttpConnector("https://workflow.example.test/api", opener=opener)
         with self.assertRaises(WorkflowProviderError):
             connector.lookup({"case_id": "WF-500"})
+
+    def test_http_workflow_provider_adapter_escapes_path_and_validates_schema(self):
+        class Response:
+            def __init__(self, body):
+                self.body = body
+
+            def read(self):
+                return self.body
+
+        requests = []
+
+        def opener(request, timeout):
+            requests.append(request.full_url)
+            return Response(b'{"case_id":"WF/201","status":"pending","owner":"ops","summary":"review"}')
+
+        connector = WorkflowHttpConnector("https://workflow.example.test/api", opener=opener)
+        result = connector.lookup({"case_id": "WF/201"})
+        self.assertEqual(result["case_id"], "WF/201")
+        self.assertEqual(requests, ["https://workflow.example.test/api/cases/WF%2F201"])
+
+        def malformed_opener(request, timeout):
+            return Response(b'{"case_id":"WF-202","status":"pending"}')
+
+        malformed = WorkflowHttpConnector("https://workflow.example.test/api", opener=malformed_opener)
+        with self.assertRaises(WorkflowProviderError):
+            malformed.lookup({"case_id": "WF-202"})
 
     def test_tool_scope_is_checked_before_execution(self):
         runtime = EnterpriseRuntime(mb_graph=self.prod_graph)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from typing import Any, Callable, Dict, Mapping, Optional
+from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 from .canary import ActionCapability
@@ -35,7 +36,7 @@ class WorkflowHttpConnector:
         if not isinstance(case_id, str) or not case_id.strip():
             raise ValueError("case_id is required")
         request = Request(
-            f"{self.base_url}/cases/{case_id}",
+            f"{self.base_url}/cases/{quote(case_id, safe='')}",
             headers={"Accept": "application/json"},
             method="GET",
         )
@@ -47,7 +48,10 @@ class WorkflowHttpConnector:
             raise WorkflowProviderError("workflow provider lookup failed") from exc
         if not isinstance(body, Mapping):
             raise WorkflowProviderError("workflow provider returned a non-object response")
-        return dict(body)
+        required = ("case_id", "status", "owner", "summary")
+        if any(not isinstance(body.get(field), str) for field in required):
+            raise WorkflowProviderError("workflow provider response has an invalid schema")
+        return {field: body[field] for field in required}
 
     def tool_spec(self) -> ToolSpec:
         return ToolSpec(
