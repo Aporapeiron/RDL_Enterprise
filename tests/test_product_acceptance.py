@@ -3,6 +3,9 @@ import sys
 import os
 import tempfile
 import json
+import threading
+from http.client import HTTPConnection
+from http.server import ThreadingHTTPServer
 from urllib.error import HTTPError
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
@@ -27,6 +30,7 @@ from rdl_enterprise.workflow_provider import (
 from rdl_enterprise.atlassian_jira_provider import AtlassianJiraConnector, AtlassianProviderError
 from rdl_enterprise.tool_routing import ToolRoutingStatus, route_business_text
 from rdl_enterprise.business_query import handle_business_query
+from rdl_enterprise.http_api import create_query_server
 
 
 class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
@@ -537,6 +541,44 @@ class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
             result = handle_business_query(service, registry, "IT-3の状態を確認して", actor)
             self.assertEqual(result["routing_status"], expected)
             self.assertNotIn("jira-secret", repr(result))
+
+    def test_local_http_api_authenticates_and_routes_read_only_query(self):
+        class Response:
+            def read(self):
+                return b'{"key":"IT-3","fields":{"summary":"VPN issue","status":{"name":"Open"},"assignee":null}}'
+
+        runtime = EnterpriseRuntime(mb_graph=self.prod_graph)
+        service = EnterpriseService(runtime)
+        registry = ToolRegistry()
+        registry.register(AtlassianJiraConnector(
+            "https://jira.example.test", "agent@example.test", "jira-secret",
+            opener=lambda request, timeout: Response(),
+        ).tool_spec())
+        server = create_query_server(service, registry, "api-secret", port=0)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            port = server.server_address[1]
+            body = json.dumps({"text": "IT-3って今どうなってる？", "actor_id": "client-controlled"})
+            connection = HTTPConnection("127.0.0.1", port)
+            connection.request("POST", "/query", body, {"Content-Type": "application/json"})
+            self.assertEqual(connection.getresponse().status, 401)
+            connection.close()
+
+            connection = HTTPConnection("127.0.0.1", port)
+            connection.request("POST", "/query", body, {
+                "Authorization": "Bearer api-secret", "Content-Type": "application/json",
+            })
+            response = connection.getresponse()
+            result = json.loads(response.read())
+            self.assertEqual(response.status, 200)
+            self.assertEqual(result["case_id"], "IT-3")
+            self.assertNotIn("client-controlled", repr(result))
+            self.assertNotIn("jira-secret", repr(result))
+            connection.close()
+        finally:
+            server.shutdown()
+            server.server_close()
 
     def test_read_only_business_query_refreshes_provider_observation_each_time(self):
         class Response:
