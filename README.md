@@ -59,7 +59,7 @@ FunctionとCompiled M_Bの関係、および再コンパイル境界は、[RDL C
 
 ---
 
-### 📂 ディレクトリ構成
+### 📂 ディレクトリ構成（全体概要）
 
 ```text
 RDL_Enterprise/
@@ -116,6 +116,29 @@ RDL_Enterprise/
 ```
 
 ---
+
+### 現在の主要ファイル
+
+上の一覧は初期シミュレーション構成を含む概要です。現在の業務AI入口に関係する主要ファイルは次のとおりです。
+
+```text
+RDL_Enterprise/
+├── rdl_api.py                         # localhost read-only HTTP API
+├── rdl_query.py                       # read-only business query CLI
+├── src/rdl_enterprise/
+│   ├── http_api.py                    # POST /query、Bearer、localhost boundary
+│   ├── business_query.py              # 自然文routingとread-only query orchestration
+│   ├── tool_routing.py                # 自然文からTool Candidateを生成
+│   ├── tool_execution.py              # ToolRegistry、operation identity、実行状態
+│   ├── atlassian_jira_provider.py     # Jira/JSM read-only provider adapter
+│   ├── service.py                     # 認証済みEnterpriseService境界
+│   ├── persistence.py                 # SQLite case/runtime/ledger persistence
+│   ├── runtime.py                     # 業務Runtimeとrestart recovery
+│   └── presentation.py                # 人間向け結果表示
+├── tests/test_product_acceptance.py   # 製品受入・restart・provider縦断テスト
+├── tests/test_cli.py                  # CLI表示テスト
+└── docs/RDL_Product_Status_v0.1.md    # 製品Boundaryと残件
+```
 
 ## 🚀 クイックスタート
 
