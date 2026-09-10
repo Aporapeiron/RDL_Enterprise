@@ -151,6 +151,9 @@ class EnterpriseRuntime:
 
         # カナリア展開・監視マネージャー (Leap後の段階的配分と自動ロールバック)
         self.canary_manager = CanaryManager()
+        if self.case_store and persisted:
+            self.canary_manager.active_deployment = persisted.get("active_canary_deployment")
+            self.canary_manager.deployment_history = list(persisted.get("canary_deployment_history", []))
 
         # 外界作用ロールバック用の社内標準訂正ハンドラを登録 (外部接続または fail-closed)
         self.canary_manager.action_ledger.executor.register_handler(
@@ -475,6 +478,8 @@ class EnterpriseRuntime:
                 "level0_cache": self.cascade.export_cache(),
                 "pending_reorganizations": self.pending_reorganizations,
                 "reorganization_history": self.reorganization_history,
+                "active_canary_deployment": self.canary_manager.active_deployment,
+                "canary_deployment_history": self.canary_manager.deployment_history,
             })
 
     def _finalize_case_metabolism(
