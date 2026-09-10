@@ -25,6 +25,7 @@ from rdl_enterprise.workflow_provider import (
 )
 from rdl_enterprise.atlassian_jira_provider import AtlassianJiraConnector, AtlassianProviderError
 from rdl_enterprise.tool_routing import ToolRoutingStatus, route_business_text
+from rdl_enterprise.business_query import handle_business_query
 
 
 class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
@@ -481,6 +482,60 @@ class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
         self.assertEqual(result.output["case_id"], "IT-3")
         self.assertEqual(runtime.canary_manager.action_ledger.records[-1].action_type,
                          "tool:atlassian.jira.issue.lookup")
+
+    def test_business_query_orchestrator_returns_bounded_operator_result(self):
+        runtime = EnterpriseRuntime(mb_graph=self.prod_graph)
+        service = EnterpriseService(runtime)
+        registry = ToolRegistry()
+        registry.register(AtlassianJiraConnector(
+            "https://jira.example.test", "agent@example.test", "jira-secret",
+            opener=lambda request, timeout: type("Response", (), {
+                "read": lambda self: b'{"key":"IT-3","fields":{"summary":"VPN issue","status":{"name":"Open"},"assignee":null}}',
+            })(),
+        ).tool_spec())
+        actor = AuthorityContext("query-user", "operator", "workflow", "human", "idp_sso")
+        result = handle_business_query(
+            service, registry, "IT-3って今どうなってる？", actor,
+            ticket_id="T_QUERY_01", operation_id="op-query-01",
+        )
+        self.assertEqual(result, {
+            "routing_status": "RESOLVED", "case_id": "IT-3", "summary": "VPN issue",
+            "status": "Open", "owner": None, "source": "atlassian_jira",
+        })
+        self.assertNotIn("jira-secret", repr(result))
+
+    def test_business_query_orchestrator_keeps_ambiguous_and_unauthorized_requests_inactive(self):
+        runtime = EnterpriseRuntime(mb_graph=self.prod_graph)
+        service = EnterpriseService(runtime)
+        registry = ToolRegistry()
+        called = []
+        registry.register(ToolSpec(
+            "atlassian.jira.issue.lookup", "workflow", ActionCapability.DRY_RUN_ONLY,
+            lambda payload: called.append(payload),
+        ))
+        unauthorized = AuthorityContext("finance-user", "operator", "finance", "human", "idp_sso")
+        ambiguous = handle_business_query(service, registry, "VPNの件どうなった？", unauthorized)
+        self.assertEqual(ambiguous["routing_status"], "UNRESOLVED")
+        self.assertEqual(called, [])
+        rejected = handle_business_query(service, registry, "IT-3の状態を確認して", unauthorized)
+        self.assertEqual(rejected["routing_status"], "AUTHORIZATION_REJECTED")
+        self.assertEqual(called, [])
+
+    def test_business_query_orchestrator_preserves_provider_error_categories(self):
+        actor = AuthorityContext("query-user", "operator", "workflow", "human", "idp_sso")
+        for code, expected in ((403, "PROVIDER_AUTH_ERROR"), (404, "PROVIDER_NOT_FOUND"), (503, "PROVIDER_UNAVAILABLE")):
+            def opener(request, timeout, code=code):
+                raise HTTPError(request.full_url, code, "provider failure", {}, None)
+
+            runtime = EnterpriseRuntime(mb_graph=self.prod_graph)
+            service = EnterpriseService(runtime)
+            registry = ToolRegistry()
+            registry.register(AtlassianJiraConnector(
+                "https://jira.example.test", "agent@example.test", "jira-secret", opener=opener,
+            ).tool_spec())
+            result = handle_business_query(service, registry, "IT-3の状態を確認して", actor)
+            self.assertEqual(result["routing_status"], expected)
+            self.assertNotIn("jira-secret", repr(result))
 
     def test_http_workflow_provider_can_load_deployment_configuration_without_leaking_token(self):
         class Response:

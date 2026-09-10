@@ -71,6 +71,7 @@ from .atlassian_jira_provider import (
     AtlassianProviderUnavailableError,
 )
 from .tool_routing import ToolCandidate, ToolRoutingResult, ToolRoutingStatus, route_business_text
+from .business_query import handle_business_query
 
 __all__ = [
     "MBNode",
@@ -142,4 +143,5 @@ __all__ = [
     "ToolRoutingResult",
     "ToolRoutingStatus",
     "route_business_text",
+    "handle_business_query",
 ]
