@@ -1232,6 +1232,36 @@ class TestCoreContracts(unittest.TestCase):
             structure.conflicting_profiles[0].identity.semantic_key,
         )
 
+    def test_stress_scenario_y_same_relation_conflict_is_observed_not_resolved(self):
+        context = BoundaryContext("complaint-conflict")
+        support = RelationConstraintProfile(
+            ConstraintIdentity(
+                "customer-support", "customer-17", "requires", "refund",
+                Provenance("customer-statement", lineage="t1"),
+            ),
+            ConstraintStrength(0.85, EvidencePolarity.SUPPORT),
+        )
+        oppose = RelationConstraintProfile(
+            ConstraintIdentity(
+                "policy-opposition", "customer-17", "requires", "refund",
+                Provenance("enterprise-policy", lineage="policy-v1"),
+            ),
+            ConstraintStrength(0.9, EvidencePolarity.OPPOSE),
+        )
+        strength = compare_relation_constraint_profiles(
+            support, oppose, context,
+            provenance=Provenance("complaint-strength"),
+        )
+        polarity = compare_relation_constraint_polarity(
+            support, oppose, context,
+            provenance=Provenance("complaint-polarity"),
+        )
+        self.assertEqual(strength.status, SimilarityObservationStatus.SIMILAR)
+        self.assertEqual(strength.conflict, 1.0)
+        self.assertEqual(polarity.status, SimilarityObservationStatus.NOT_SIMILAR)
+        self.assertEqual(support.identity.semantic_key, oppose.identity.semantic_key)
+        self.assertNotEqual(support.strength.support, oppose.strength.support)
+
     def test_scenario_02_similarity_is_t1_inspection_material(self):
         context = BoundaryContext("scenario-02-inspection")
         current = RelationConstraintProfile(
