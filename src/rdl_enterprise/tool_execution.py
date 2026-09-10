@@ -8,6 +8,10 @@ from .canary import ActionCapability
 from .service import AuthorizationError, AuthenticationError, EnterpriseService
 
 
+class ExecutionUncertain(RuntimeError):
+    """A durable planned action has no authoritative external outcome yet."""
+
+
 @dataclass(frozen=True)
 class ToolSpec:
     tool_id: str
@@ -47,12 +51,17 @@ def execute_tool(service: EnterpriseService, registry: ToolRegistry, tool_id: st
     service._require_authenticated(actor)
     spec = registry.get(tool_id)
     service._require_scope(actor, spec.domain)
-    if spec.capability == ActionCapability.IRREVERSIBLE and not allow_irreversible:
-        raise AuthorizationError("irreversible tool execution requires explicit approval")
+    if spec.capability == ActionCapability.IRREVERSIBLE:
+        if not allow_irreversible or not actor.is_human_authenticated() or actor.role not in ("admin", "manager"):
+            raise AuthorizationError("irreversible tool execution requires authenticated manager approval")
     for existing in service.runtime.canary_manager.action_ledger.records:
         if getattr(existing, "operation_id", None) == operation_id and operation_id:
             if existing.ticket_id != ticket_id or existing.action_type != f"tool:{tool_id}":
                 raise ValueError("operation_id is bound to another tool operation")
+            if existing.status == "planned":
+                raise ExecutionUncertain(f"tool operation outcome is uncertain: {operation_id}")
+            if existing.status == "failed":
+                raise RuntimeError(f"tool operation previously failed: {operation_id}")
             return ToolExecutionResult(tool_id, existing.action_id, existing.compensation_result.get("output") if existing.compensation_result else None)
     
     record = service.runtime.canary_manager.action_ledger.record_action(

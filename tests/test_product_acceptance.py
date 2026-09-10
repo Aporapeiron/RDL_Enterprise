@@ -11,7 +11,7 @@ from rdl_enterprise.authority import AuthorityContext
 from rdl_enterprise.promotion_gate import ProposalState, PromotionPolicy
 from rdl_enterprise.runtime import EnterpriseRuntime, ReorganizationProposal
 from rdl_enterprise.service import EnterpriseService, AuthenticationError, AuthorizationError
-from rdl_enterprise.tool_execution import ToolSpec, ToolRegistry, execute_tool
+from rdl_enterprise.tool_execution import ToolSpec, ToolRegistry, ExecutionUncertain, execute_tool
 from rdl_enterprise.canary import ActionCapability
 
 
@@ -167,6 +167,21 @@ class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
         with self.assertRaises(AuthorizationError):
             execute_tool(service, registry, "finance.lookup", {}, actor, "T-TOOL-2")
         self.assertEqual(called, [])
+
+    def test_planned_tool_retry_is_uncertain_and_irreversible_requires_manager(self):
+        runtime = EnterpriseRuntime(mb_graph=self.prod_graph)
+        service = EnterpriseService(runtime)
+        registry = ToolRegistry()
+        registry.register(ToolSpec("workflow.write", "workflow", ActionCapability.IRREVERSIBLE, lambda p: p))
+        operator = AuthorityContext("operator", "operator", "workflow", "human", "idp_sso")
+        manager = AuthorityContext("manager", "manager", "workflow", "human", "idp_sso")
+        with self.assertRaises(AuthorizationError):
+            execute_tool(service, registry, "workflow.write", {}, operator, "T-UNCERTAIN", "op-uncertain", True)
+        result = execute_tool(service, registry, "workflow.write", {}, manager, "T-UNCERTAIN", "op-uncertain", True)
+        record = runtime.canary_manager.action_ledger.records[-1]
+        record.status = "planned"
+        with self.assertRaises(ExecutionUncertain):
+            execute_tool(service, registry, "workflow.write", {}, manager, "T-UNCERTAIN", "op-uncertain", True)
 
     def test_metabolic_closed_loop_tier1_to_tier0(self):
         """
