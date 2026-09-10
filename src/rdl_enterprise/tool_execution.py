@@ -42,11 +42,19 @@ class ToolRegistry:
 
 
 def execute_tool(service: EnterpriseService, registry: ToolRegistry, tool_id: str,
-                 payload: Dict[str, Any], actor: AuthorityContext, ticket_id: str) -> ToolExecutionResult:
+                 payload: Dict[str, Any], actor: AuthorityContext, ticket_id: str,
+                 operation_id: str = "", allow_irreversible: bool = False) -> ToolExecutionResult:
     service._require_authenticated(actor)
     spec = registry.get(tool_id)
     service._require_scope(actor, spec.domain)
-    output = spec.handler(payload)
+    if spec.capability == ActionCapability.IRREVERSIBLE and not allow_irreversible:
+        raise AuthorizationError("irreversible tool execution requires explicit approval")
+    for existing in service.runtime.canary_manager.action_ledger.records:
+        if getattr(existing, "operation_id", None) == operation_id and operation_id:
+            if existing.ticket_id != ticket_id or existing.action_type != f"tool:{tool_id}":
+                raise ValueError("operation_id is bound to another tool operation")
+            return ToolExecutionResult(tool_id, existing.action_id, existing.compensation_result.get("output") if existing.compensation_result else None)
+    
     record = service.runtime.canary_manager.action_ledger.record_action(
         ticket_id=ticket_id,
         mb_version=getattr(service.runtime.mb_graph, "version", "unknown"),
@@ -55,6 +63,20 @@ def execute_tool(service: EnterpriseService, registry: ToolRegistry, tool_id: st
         payload=payload,
         capability=spec.capability,
     )
+    record.operation_id = operation_id
+    record.status = "planned"
+    if service.runtime.case_store:
+        service.runtime._persist_runtime_state()
+    try:
+        output = spec.handler(payload)
+        record.status = "succeeded"
+        record.compensation_result = {"output": output}
+    except Exception as exc:
+        record.status = "failed"
+        record.compensation_result = {"error": str(exc)}
+        if service.runtime.case_store:
+            service.runtime._persist_runtime_state()
+        raise
     if service.runtime.case_store:
         service.runtime._persist_runtime_state()
     return ToolExecutionResult(tool_id, record.action_id, output)
