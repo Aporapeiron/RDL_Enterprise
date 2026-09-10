@@ -1356,6 +1356,71 @@ class TestCoreContracts(unittest.TestCase):
             {ActionFeasibilityStatus.INFEASIBLE},
         )
 
+    def test_stress_omega_boundary_drift_recomputes_action_feasibility(self):
+        boundary_b1 = BoundaryContext(
+            "incident-response",
+            question="refund while preserving service",
+            purpose="incident-resolution",
+        )
+        boundary_b2 = BoundaryContext(
+            "regulated-customer",
+            question="refund while preserving service under regulation",
+            purpose="regulated-resolution",
+        )
+        current = RelationConstraintProfile(
+            ConstraintIdentity("omega-current", "customer", "requests", "refund"),
+            ConstraintStrength(0.9, EvidencePolarity.SUPPORT),
+        )
+        prior = RelationConstraintProfile(
+            ConstraintIdentity("omega-prior", "customer", "requests", "refund"),
+            ConstraintStrength(0.88, EvidencePolarity.SUPPORT),
+        )
+        similarity_b1 = compare_relation_constraint_profiles(
+            current, prior, boundary_b1,
+            provenance=Provenance("omega-b1-similarity"),
+        )
+        similarity_b2 = compare_relation_constraint_profiles(
+            current, prior, boundary_b2,
+            provenance=Provenance("omega-b2-similarity"),
+        )
+        self.assertEqual(similarity_b1.status, SimilarityObservationStatus.SIMILAR)
+        self.assertEqual(similarity_b2.status, SimilarityObservationStatus.SIMILAR)
+        self.assertNotEqual(similarity_b1.context, similarity_b2.context)
+
+        action = {"refund-and-continue": {"full-refund": True, "active-service": True}}
+        b1 = inspect_joint_action_feasibility(
+            action,
+            {"full-refund": True, "active-service": True},
+        )
+        b2 = inspect_joint_action_feasibility(
+            action,
+            {
+                "full-refund": True,
+                "active-service": True,
+                "cancellation-settlement": True,
+                "regulated-exception": True,
+            },
+        )
+        authority_exception = inspect_joint_action_feasibility(
+            {
+                "refund-and-continue-under-approved-exception": {
+                    "full-refund": True,
+                    "active-service": True,
+                    "cancellation-settlement": True,
+                    "regulated-exception": True,
+                },
+            },
+            {
+                "full-refund": True,
+                "active-service": True,
+                "cancellation-settlement": True,
+                "regulated-exception": True,
+            },
+        )
+        self.assertEqual(b1.status, ActionFeasibilityStatus.FEASIBLE)
+        self.assertEqual(b2.status, ActionFeasibilityStatus.UNRESOLVED)
+        self.assertEqual(authority_exception.status, ActionFeasibilityStatus.FEASIBLE)
+
     def test_joint_action_missing_effect_remains_unresolved(self):
         inspection = inspect_joint_action_feasibility(
             {"deferred-exception": {"full-refund": True}},
