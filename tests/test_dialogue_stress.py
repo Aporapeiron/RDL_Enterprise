@@ -163,6 +163,18 @@ class TestDialogueStress(unittest.TestCase):
         self.assertEqual(mb1.selected_turn_ids, ("t2", "t4", "t6", "t7", "t9"))
         self.assertEqual(mb2.selected_turn_ids, ("t10", "t11", "t12", "t13", "t14"))
         self.assertGreaterEqual(mb2.current.unresolved_count, 1)
+        with self.assertRaises(ValueError):
+            reconstruct_selected_dialogue_structure(
+                observations, b3, selected_turn_ids=("t14", "missing"),
+            )
+        with self.assertRaises(ValueError):
+            reconstruct_selected_dialogue_structure(
+                observations, b3, selected_turn_ids=("t14", "t14"),
+            )
+        with self.assertRaises(ValueError):
+            reconstruct_selected_dialogue_structure(
+                observations, b3, selected_turn_ids=("t2",),
+            )
 
 
 if __name__ == "__main__":

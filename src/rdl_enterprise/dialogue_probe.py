@@ -132,9 +132,22 @@ def reconstruct_selected_dialogue_structure(
     provenance: Provenance | None = None,
 ) -> DialogueStructureRevision:
     """Reconstruct from explicitly selected turns without deleting prior M_B."""
+    requested = tuple(selected_turn_ids)
+    if len(set(requested)) != len(requested):
+        raise ValueError("selected_turn_idsに重複があります")
+    available = {observation.turn_id: observation for observation in observations}
+    missing = tuple(turn_id for turn_id in requested if turn_id not in available)
+    if missing:
+        raise ValueError(f"存在しないturn_idがSelectionされています: {missing}")
+    wrong_boundary = tuple(
+        turn_id for turn_id in requested
+        if available[turn_id].context != context
+    )
+    if wrong_boundary:
+        raise ValueError(f"現在Boundary外のturn_idがSelectionされています: {wrong_boundary}")
     selected = tuple(
         observation for observation in observations
-        if observation.turn_id in selected_turn_ids and observation.context == context
+        if observation.turn_id in requested
     )
     if not selected:
         raise ValueError("selected_turn_idsは現在BoundaryのObservationを少なくとも1件含む必要があります")
@@ -143,7 +156,7 @@ def reconstruct_selected_dialogue_structure(
     return DialogueStructureRevision(
         previous=previous,
         current=current,
-        selected_turn_ids=tuple(selected_turn_ids),
+        selected_turn_ids=requested,
         context=context,
         provenance=source,
     )
