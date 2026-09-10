@@ -13,6 +13,7 @@ from rdl_enterprise.runtime import EnterpriseRuntime, ReorganizationProposal
 from rdl_enterprise.service import EnterpriseService, AuthenticationError, AuthorizationError
 from rdl_enterprise.tool_execution import ToolSpec, ToolRegistry, ExecutionUncertain, execute_tool, reconcile_tool_execution
 from rdl_enterprise.canary import ActionCapability
+from rdl_enterprise.workflow_connector import WorkflowCase, WorkflowConnector
 
 
 class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
@@ -155,6 +156,29 @@ class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
         actor = AuthorityContext("tool-user", "operator", "workflow", "human", "idp_sso")
         result = execute_tool(service, registry, "workflow.lookup", {"ticket": "T-TOOL"}, actor, "T-TOOL")
         self.assertEqual(result.output, {"found": "T-TOOL"})
+        self.assertEqual(runtime.canary_manager.action_ledger.records[-1].action_type, "tool:workflow.lookup")
+
+    def test_business_vertical_slice_submits_interprets_executes_and_exposes_result(self):
+        runtime = EnterpriseRuntime(mb_graph=self.prod_graph)
+        service = EnterpriseService(runtime)
+        connector = WorkflowConnector({
+            "WF-100": WorkflowCase("WF-100", "pending", "ops-team", "稟議の承認待ち"),
+        })
+        registry = ToolRegistry()
+        registry.register(connector.tool_spec())
+        actor = AuthorityContext("operator-vertical", "operator", "workflow", "human", "idp_sso")
+
+        dispatch = service.submit(
+            BusinessInput("T_VERTICAL_01", "U_VERTICAL", "workflow", "WF-100の状態を確認"),
+            actor,
+        )
+        result = execute_tool(
+            service, registry, "workflow.lookup", {"case_id": "WF-100"},
+            actor, dispatch.ticket_id,
+        )
+
+        self.assertEqual(result.output["status"], "pending")
+        self.assertEqual(result.output["owner"], "ops-team")
         self.assertEqual(runtime.canary_manager.action_ledger.records[-1].action_type, "tool:workflow.lookup")
 
     def test_tool_scope_is_checked_before_execution(self):
