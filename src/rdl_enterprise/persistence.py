@@ -49,6 +49,13 @@ class SQLiteCaseStore:
                     payload BLOB NOT NULL,
                     created_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS processed_operations (
+                    operation_id TEXT PRIMARY KEY,
+                    operation_type TEXT NOT NULL,
+                    ticket_id TEXT,
+                    result BLOB NOT NULL,
+                    committed_at TEXT NOT NULL
+                );
                 """
             )
             db.execute(
@@ -105,3 +112,23 @@ class SQLiteCaseStore:
                 "INSERT INTO audit_events(ticket_id, event_type, payload, created_at) VALUES (?, ?, ?, ?)",
                 (ticket_id, event_type, blob, datetime.utcnow().isoformat()),
             )
+
+    def load_operation(self, operation_id: str) -> Optional[object]:
+        with self._connect() as db:
+            row = db.execute("SELECT result FROM processed_operations WHERE operation_id = ?", (operation_id,)).fetchone()
+        return pickle.loads(row[0]) if row else None
+
+    def commit_transition(self, ticket_id: str, snapshot: object, state: object,
+                          event_payload: object, operation_id: Optional[str] = None,
+                          result: object = None) -> bool:
+        now = datetime.utcnow().isoformat()
+        with self._connect() as db:
+            if operation_id and db.execute("SELECT 1 FROM processed_operations WHERE operation_id = ?", (operation_id,)).fetchone():
+                return False
+            blobs = [sqlite3.Binary(pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)) for value in (snapshot, state, event_payload, result)]
+            db.execute("INSERT INTO case_records(ticket_id, status, snapshot, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(ticket_id) DO UPDATE SET status=excluded.status, snapshot=excluded.snapshot, updated_at=excluded.updated_at", (ticket_id, snapshot.status.value, blobs[0], now))
+            db.execute("INSERT INTO audit_events(ticket_id, event_type, payload, created_at) VALUES (?, 'ticket_resolved', ?, ?)", (ticket_id, blobs[2], now))
+            db.execute("INSERT INTO schema_metadata(key, value) VALUES('runtime_state', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (blobs[1],))
+            if operation_id:
+                db.execute("INSERT INTO processed_operations VALUES (?, 'ticket_resolved', ?, ?, ?)", (operation_id, ticket_id, blobs[3], now))
+        return True

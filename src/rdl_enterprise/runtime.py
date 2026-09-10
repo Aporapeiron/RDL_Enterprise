@@ -354,6 +354,7 @@ class EnterpriseRuntime:
         ticket_id: str,
         feedback: FeedbackResult,
         at: Optional[Any] = None,
+        operation_id: Optional[str] = None,
     ) -> TicketResolutionResult:
         """
         フェーズ2：後続結果 EFP' の回収と代謝反映
@@ -361,6 +362,10 @@ class EnterpriseRuntime:
         H >= θ_eff 時は、再編相 M_Δ で候補 M_B' の起草と耐久検査パイプラインを起動する。
         """
         if ticket_id not in self.pending_snapshots:
+            if self.case_store and operation_id:
+                prior = self.case_store.load_operation(operation_id)
+                if prior is not None:
+                    return prior
             raise KeyError(f"Ticket ID '{ticket_id}' は保留中(PENDING)に存在しません。")
 
         snapshot = self.pending_snapshots.pop(ticket_id)
@@ -471,6 +476,7 @@ class EnterpriseRuntime:
             opposing_strength=opposing_strength,
             is_timeout=False,
             at=at or getattr(snapshot, "resolved_at", None),
+            operation_id=operation_id,
         )
 
     def _persist_runtime_state(self) -> None:
@@ -496,6 +502,7 @@ class EnterpriseRuntime:
         opposing_strength: float = 1.0,
         is_timeout: bool = False,
         at: Optional[Any] = None,
+        operation_id: Optional[str] = None,
     ) -> TicketResolutionResult:
         """
         全案件（通常フィードバック解決／タイムアウト）に共通する代謝終端処理 (BASE v2.0 代謝閉ループ)
@@ -651,9 +658,16 @@ class EnterpriseRuntime:
         )
         if self.case_store:
             # Persist only after H/cache/M_B metabolism has completed.
-            self.case_store.save_case(ticket_id, snapshot, snapshot.status.value)
-            self.case_store.record_event("ticket_resolved", ticket_id, {"status": snapshot.status.value})
-            self._persist_runtime_state()
+            state = {
+                "mb_graph": self.mb_graph.to_dict(), "h_state": self.h_state,
+                "level0_cache": self.cascade.export_cache(),
+                "pending_reorganizations": self.pending_reorganizations,
+                "reorganization_history": self.reorganization_history,
+                "active_canary_deployment": self.canary_manager.active_deployment,
+                "canary_deployment_history": self.canary_manager.deployment_history,
+                "action_ledger_records": self.canary_manager.action_ledger.records,
+            }
+            self.case_store.commit_transition(ticket_id, snapshot, state, {"status": snapshot.status.value}, operation_id, result)
         return result
 
     def _trigger_m_delta_proposal(

@@ -81,6 +81,21 @@ class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
             self.assertEqual(len(restarted.resolved_snapshots), 1)
             self.assertEqual(restarted.resolved_snapshots[0].efp.ticket_id, ticket.ticket_id)
 
+    def test_feedback_operation_retry_is_idempotent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = EnterpriseRuntime(mb_graph=self.prod_graph, store_path=os.path.join(directory, "ops.sqlite3"))
+            ticket = BusinessInput("T_OP_01", "U_OP", "workflow", "稟議申請の方法")
+            runtime.dispatch_ticket(ticket)
+            first = runtime.resolve_ticket_feedback(
+                ticket.ticket_id, FeedbackResult(user_resolved=True), operation_id="op-feedback-01"
+            )
+            heat = runtime.h_state.global_heat.total()
+            retry = runtime.resolve_ticket_feedback(
+                ticket.ticket_id, FeedbackResult(user_resolved=True), operation_id="op-feedback-01"
+            )
+            self.assertEqual(retry, first)
+            self.assertEqual(runtime.h_state.global_heat.total(), heat)
+
     def test_metabolic_closed_loop_tier1_to_tier0(self):
         """
         受入条件 1: Tier 1 ルール適合 -> 成功確認 -> Tier 0 キャッシュ沈澱 -> 次回同一クエリが Tier 0 解決
