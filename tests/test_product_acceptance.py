@@ -11,6 +11,8 @@ from rdl_enterprise.authority import AuthorityContext
 from rdl_enterprise.promotion_gate import ProposalState, PromotionPolicy
 from rdl_enterprise.runtime import EnterpriseRuntime, ReorganizationProposal
 from rdl_enterprise.service import EnterpriseService, AuthenticationError, AuthorizationError
+from rdl_enterprise.tool_execution import ToolSpec, ToolRegistry, execute_tool
+from rdl_enterprise.canary import ActionCapability
 
 
 class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
@@ -144,6 +146,27 @@ class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
             restarted = EnterpriseService(EnterpriseRuntime(mb_graph=MBGraph(), store_path=path))
             with self.assertRaises(AuthorizationError):
                 restarted.record_feedback(ticket.ticket_id, FeedbackResult(user_resolved=True), finance, "op-service-replay")
+
+    def test_authorized_tool_execution_records_action(self):
+        runtime = EnterpriseRuntime(mb_graph=self.prod_graph)
+        service = EnterpriseService(runtime)
+        registry = ToolRegistry()
+        registry.register(ToolSpec("workflow.lookup", "workflow", ActionCapability.DRY_RUN_ONLY, lambda p: {"found": p["ticket"]}))
+        actor = AuthorityContext("tool-user", "operator", "workflow", "human", "idp_sso")
+        result = execute_tool(service, registry, "workflow.lookup", {"ticket": "T-TOOL"}, actor, "T-TOOL")
+        self.assertEqual(result.output, {"found": "T-TOOL"})
+        self.assertEqual(runtime.canary_manager.action_ledger.records[-1].action_type, "tool:workflow.lookup")
+
+    def test_tool_scope_is_checked_before_execution(self):
+        runtime = EnterpriseRuntime(mb_graph=self.prod_graph)
+        service = EnterpriseService(runtime)
+        registry = ToolRegistry()
+        called = []
+        registry.register(ToolSpec("finance.lookup", "finance", handler=lambda p: called.append(p)))
+        actor = AuthorityContext("tool-user", "operator", "workflow", "human", "idp_sso")
+        with self.assertRaises(AuthorizationError):
+            execute_tool(service, registry, "finance.lookup", {}, actor, "T-TOOL-2")
+        self.assertEqual(called, [])
 
     def test_metabolic_closed_loop_tier1_to_tier0(self):
         """
