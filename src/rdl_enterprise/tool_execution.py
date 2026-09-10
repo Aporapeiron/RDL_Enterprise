@@ -1,6 +1,8 @@
 """Enterprise-local tool execution boundary with explicit capability checks."""
 
 from dataclasses import dataclass
+import hashlib
+import json
 from typing import Any, Callable, Dict
 
 from .authority import AuthorityContext
@@ -53,6 +55,10 @@ class ToolRegistry:
             raise KeyError(f"unknown tool: {tool_id}") from exc
 
 
+def _payload_hash(payload: Dict[str, Any]) -> str:
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")).hexdigest()
+
+
 def execute_tool(service: EnterpriseService, registry: ToolRegistry, tool_id: str,
                  payload: Dict[str, Any], actor: AuthorityContext, ticket_id: str,
                  operation_id: str = "", allow_irreversible: bool = False) -> ToolExecutionResult:
@@ -64,27 +70,34 @@ def execute_tool(service: EnterpriseService, registry: ToolRegistry, tool_id: st
     if spec.capability == ActionCapability.IRREVERSIBLE:
         if not allow_irreversible or not actor.is_human_authenticated() or actor.role not in ("admin", "manager"):
             raise AuthorizationError("irreversible tool execution requires authenticated manager approval")
-    for existing in service.runtime.canary_manager.action_ledger.records:
+    payload_hash = _payload_hash(payload)
+    for existing in reversed(service.runtime.canary_manager.action_ledger.records):
         if getattr(existing, "operation_id", None) == operation_id and operation_id:
             if existing.ticket_id != ticket_id or existing.action_type != f"tool:{tool_id}":
                 raise ValueError("operation_id is bound to another tool operation")
+            if getattr(existing, "payload_hash", payload_hash) != payload_hash:
+                raise ValueError("operation_id is bound to a different payload")
             if existing.status == "planned":
                 raise ExecutionUncertain(f"tool operation outcome is uncertain: {operation_id}")
             if existing.status == "not_executed":
+                record = existing
+                record.status = "planned"
                 break
             if existing.status == "failed":
                 raise RuntimeError(f"tool operation previously failed: {operation_id}")
             return ToolExecutionResult(tool_id, existing.action_id, existing.compensation_result.get("output") if existing.compensation_result else None)
     
-    record = service.runtime.canary_manager.action_ledger.record_action(
+    if "record" not in locals():
+        record = service.runtime.canary_manager.action_ledger.record_action(
         ticket_id=ticket_id,
         mb_version=getattr(service.runtime.mb_graph, "version", "unknown"),
         is_canary=False,
         action_type=f"tool:{tool_id}",
         payload=payload,
         capability=spec.capability,
-    )
-    record.operation_id = operation_id
+        )
+        record.operation_id = operation_id
+        record.payload_hash = payload_hash
     record.status = "planned"
     if service.runtime.case_store:
         service.runtime._persist_runtime_state()

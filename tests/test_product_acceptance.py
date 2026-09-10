@@ -231,6 +231,22 @@ class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
         with self.assertRaises(ValueError):
             reconcile_tool_execution(service, registry, "workflow.lookup", "op-final", actor)
 
+    def test_not_executed_retry_reuses_record_and_rejects_payload_change(self):
+        runtime = EnterpriseRuntime(mb_graph=self.prod_graph)
+        service = EnterpriseService(runtime)
+        registry = ToolRegistry()
+        registry.register(ToolSpec("workflow.write", "workflow", ActionCapability.REVERSIBLE, lambda p: p))
+        actor = AuthorityContext("manager", "manager", "workflow", "human", "idp_sso")
+        first = execute_tool(service, registry, "workflow.write", {"x": 1}, actor, "T-UNEXEC", "op-unexec")
+        record = runtime.canary_manager.action_ledger.records[-1]
+        record.status = "not_executed"
+        retry = execute_tool(service, registry, "workflow.write", {"x": 1}, actor, "T-UNEXEC", "op-unexec")
+        self.assertEqual(first.action_id, retry.action_id)
+        self.assertEqual(len(runtime.canary_manager.action_ledger.records), 1)
+        record.status = "not_executed"
+        with self.assertRaises(ValueError):
+            execute_tool(service, registry, "workflow.write", {"x": 2}, actor, "T-UNEXEC", "op-unexec")
+
     def test_metabolic_closed_loop_tier1_to_tier0(self):
         """
         受入条件 1: Tier 1 ルール適合 -> 成功確認 -> Tier 0 キャッシュ沈澱 -> 次回同一クエリが Tier 0 解決
