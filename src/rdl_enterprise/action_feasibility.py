@@ -58,7 +58,11 @@ def inspect_joint_action_feasibility(
         results.append(ActionFeasibility(action_id, status, tuple(violated), tuple(unresolved)))
 
     inspections = tuple(results)
-    if any(item.status is ActionFeasibilityStatus.FEASIBLE for item in inspections):
+    if not inspections:
+        # No candidate was expanded or inspected; absence is not proof of
+        # infeasibility.
+        overall = ActionFeasibilityStatus.UNRESOLVED
+    elif any(item.status is ActionFeasibilityStatus.FEASIBLE for item in inspections):
         overall = ActionFeasibilityStatus.FEASIBLE
     elif any(item.status is ActionFeasibilityStatus.UNRESOLVED for item in inspections):
         overall = ActionFeasibilityStatus.UNRESOLVED

@@ -1363,6 +1363,14 @@ class TestCoreContracts(unittest.TestCase):
         )
         self.assertEqual(inspection.status, ActionFeasibilityStatus.UNRESOLVED)
 
+    def test_joint_action_without_candidates_is_unresolved(self):
+        inspection = inspect_joint_action_feasibility(
+            {},
+            {"full-refund": True, "active-contract": True},
+        )
+        self.assertEqual(inspection.actions, ())
+        self.assertEqual(inspection.status, ActionFeasibilityStatus.UNRESOLVED)
+
     def test_scenario_02_similarity_is_t1_inspection_material(self):
         context = BoundaryContext("scenario-02-inspection")
         current = RelationConstraintProfile(
