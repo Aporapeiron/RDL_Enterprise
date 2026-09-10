@@ -61,6 +61,24 @@ class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
             self.assertEqual(result.ticket_id, ticket.ticket_id)
             self.assertNotIn(ticket.ticket_id, restarted.pending_snapshots)
 
+    def test_brain_state_persists_after_successful_metabolism(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store_path = os.path.join(directory, "brain.sqlite3")
+            first = EnterpriseRuntime(mb_graph=self.prod_graph, store_path=store_path)
+            ticket = BusinessInput("T_BRAIN_01", "U_BRAIN", "workflow", "稟議申請の方法")
+            first.dispatch_ticket(ticket)
+            first.resolve_ticket_feedback(
+                ticket.ticket_id,
+                FeedbackResult(user_resolved=True, actual_response_text="解決しました"),
+            )
+            expected_heat = first.h_state.global_heat.total()
+            expected_cache = first.cascade.export_cache()
+
+            restarted = EnterpriseRuntime(mb_graph=MBGraph(), store_path=store_path)
+            self.assertEqual(restarted.h_state.global_heat.total(), expected_heat)
+            self.assertEqual(restarted.cascade.export_cache(), expected_cache)
+            self.assertEqual(restarted.mb_graph.content_hash(), first.mb_graph.content_hash())
+
     def test_metabolic_closed_loop_tier1_to_tier0(self):
         """
         受入条件 1: Tier 1 ルール適合 -> 成功確認 -> Tier 0 キャッシュ沈澱 -> 次回同一クエリが Tier 0 解決

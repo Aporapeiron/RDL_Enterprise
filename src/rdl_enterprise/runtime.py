@@ -356,10 +356,6 @@ class EnterpriseRuntime:
         snapshot = self.pending_snapshots.pop(ticket_id)
         e_pred, e_input = snapshot.record_feedback(feedback, at=at)
         self.resolved_snapshots.append(snapshot)
-        if self.case_store:
-            self.case_store.save_case(ticket_id, snapshot, snapshot.status.value)
-            self.case_store.record_event("ticket_resolved", ticket_id, {"status": snapshot.status.value})
-            self._persist_runtime_state()
 
         # シャドウ三者比較の記録 (有効な場合)
         if self.active_shadow_evaluator:
@@ -625,7 +621,7 @@ class EnterpriseRuntime:
                 if status == CaseStatus.SUCCESS and (not feedback or not getattr(snapshot.efp_prime, "human_approved", False)):
                     self.auto_resolved_count += 1
 
-        return TicketResolutionResult(
+        result = TicketResolutionResult(
             ticket_id=ticket_id,
             status=status,
             e_prediction=e_pred,
@@ -638,6 +634,12 @@ class EnterpriseRuntime:
             canary_rolled_back=canary_rolled_back,
             canary_rollback_reason=canary_rollback_reason,
         )
+        if self.case_store:
+            # Persist only after H/cache/M_B metabolism has completed.
+            self.case_store.save_case(ticket_id, snapshot, snapshot.status.value)
+            self.case_store.record_event("ticket_resolved", ticket_id, {"status": snapshot.status.value})
+            self._persist_runtime_state()
+        return result
 
     def _trigger_m_delta_proposal(
         self,
