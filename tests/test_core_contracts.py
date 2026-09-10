@@ -1371,6 +1371,68 @@ class TestCoreContracts(unittest.TestCase):
         self.assertEqual(inspection.actions, ())
         self.assertEqual(inspection.status, ActionFeasibilityStatus.UNRESOLVED)
 
+    def test_stress_omega_preserves_cascading_boundaries_without_shortcutting(self):
+        boundary_b1 = BoundaryContext(
+            "incident-response",
+            question="refund and preserve service",
+            purpose="incident-resolution",
+        )
+        boundary_b2 = BoundaryContext(
+            "regulated-customer",
+            question="refund and preserve service under regulation",
+            purpose="regulated-resolution",
+        )
+        current = RelationConstraintProfile(
+            ConstraintIdentity("omega-current", "customer", "requests", "refund"),
+            ConstraintStrength(0.9, EvidencePolarity.SUPPORT, authority=0.8),
+        )
+        prior = RelationConstraintProfile(
+            ConstraintIdentity(
+                "omega-prior", "customer", "requests", "refund",
+                Provenance("prior-case", lineage="missing"),
+            ),
+            ConstraintStrength(0.88, EvidencePolarity.SUPPORT, authority=0.4),
+        )
+        similarity = compare_relation_constraint_profiles(
+            current, prior, boundary_b1,
+            provenance=Provenance("omega-similarity"),
+        )
+        missing_lineage = compare_relation_constraint_provenance(
+            current, prior, boundary_b1,
+            provenance=Provenance("omega-provenance"),
+        )
+        self.assertEqual(similarity.status, SimilarityObservationStatus.SIMILAR)
+        self.assertEqual(missing_lineage.status, SimilarityObservationStatus.UNRESOLVED)
+
+        requirements = {
+            "full-refund": True,
+            "active-service": True,
+            "cancellation-settlement": True,
+            "regulated-exception": True,
+        }
+        actions = {
+            "refund-and-cancel": {
+                "full-refund": True,
+                "active-service": False,
+                "cancellation-settlement": True,
+                "regulated-exception": False,
+            },
+            "refund-and-continue": {
+                "full-refund": True,
+                "active-service": True,
+                "cancellation-settlement": False,
+                "regulated-exception": False,
+            },
+            "authority-exception": {
+                "full-refund": True,
+                "active-service": True,
+                "cancellation-settlement": True,
+            },
+        }
+        feasibility = inspect_joint_action_feasibility(actions, requirements)
+        self.assertEqual(feasibility.status, ActionFeasibilityStatus.UNRESOLVED)
+        self.assertNotEqual(boundary_b1, boundary_b2)
+
     def test_scenario_02_similarity_is_t1_inspection_material(self):
         context = BoundaryContext("scenario-02-inspection")
         current = RelationConstraintProfile(
