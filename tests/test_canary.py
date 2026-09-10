@@ -1,6 +1,7 @@
 import unittest
 import sys
 import os
+import tempfile
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
@@ -162,6 +163,32 @@ class TestCanaryDeploymentAndRollback(unittest.TestCase):
 
         runtime.promote_candidate_mb("prop_manual_03", authority=mgr, use_canary=True, canary_ratio=0.5)
         self.assertIsNotNone(runtime.canary_manager.active_deployment)
+
+    def test_canary_action_ledger_survives_restart_for_rollback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store_path = os.path.join(directory, "canary.sqlite3")
+            runtime = EnterpriseRuntime(mb_graph=self.prod_graph, store_path=store_path)
+            prop = ReorganizationProposal(
+                proposal_id="prop_restart_ledger",
+                hot_node_id="node_wf",
+                candidate_mb=self.candidate_graph,
+                durability_test_result={"all_passed": True},
+                policy=PromotionPolicy(require_durability=True, require_shadow=False, require_human_approval=True),
+                status=ProposalState.APPROVAL_READY,
+            )
+            runtime.pending_reorganizations[prop.proposal_id] = prop
+            mgr = AuthorityContext("mgr_restart", "manager", "workflow", "human", "idp_sso")
+            self.assertTrue(runtime.promote_candidate_mb(prop.proposal_id, mgr, use_canary=True, canary_ratio=1.0))
+            runtime.dispatch_ticket(BusinessInput("T_LEDGER_RESTART", "U1", "workflow", "稟議申請"))
+            self.assertEqual(len(runtime.canary_manager.action_ledger.records), 1)
+
+            restarted = EnterpriseRuntime(mb_graph=MBGraph(), store_path=store_path)
+            self.assertIsNotNone(restarted.canary_manager.active_deployment)
+            self.assertEqual(len(restarted.canary_manager.action_ledger.records), 1)
+            self.assertTrue(restarted.rollback_active_canary("restart rollback"))
+            record = restarted.canary_manager.action_ledger.records[0]
+            self.assertEqual(record.status, "failed")
+            self.assertIsNone(restarted.canary_manager.active_deployment)
 
     def test_canary_heat_does_not_pollute_prod_h_state(self):
         """Version-aware 熱管理: カナリア新本番で発生した熱が旧本番 M_B の熱状態を汚染しないこと"""
