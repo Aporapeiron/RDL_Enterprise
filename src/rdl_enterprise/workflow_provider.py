@@ -51,6 +51,8 @@ class WorkflowHttpConnector:
         required = ("case_id", "status", "owner", "summary")
         if any(not isinstance(body.get(field), str) for field in required):
             raise WorkflowProviderError("workflow provider response has an invalid schema")
+        if body["case_id"] != case_id:
+            raise WorkflowProviderError("workflow provider response does not match requested case")
         return {field: body[field] for field in required}
 
     def tool_spec(self) -> ToolSpec:

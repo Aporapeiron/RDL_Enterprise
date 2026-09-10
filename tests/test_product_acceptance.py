@@ -242,6 +242,18 @@ class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
         with self.assertRaises(WorkflowProviderError):
             malformed.lookup({"case_id": "WF-202"})
 
+    def test_http_workflow_provider_adapter_rejects_mismatched_case(self):
+        class Response:
+            def read(self):
+                return b'{"case_id":"WF-999","status":"approved","owner":"ops","summary":"wrong case"}'
+
+        connector = WorkflowHttpConnector(
+            "https://workflow.example.test/api",
+            opener=lambda request, timeout: Response(),
+        )
+        with self.assertRaises(WorkflowProviderError):
+            connector.lookup({"case_id": "WF-201"})
+
     def test_tool_scope_is_checked_before_execution(self):
         runtime = EnterpriseRuntime(mb_graph=self.prod_graph)
         service = EnterpriseService(runtime)
