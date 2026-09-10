@@ -96,6 +96,18 @@ class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
             self.assertEqual(retry, first)
             self.assertEqual(runtime.h_state.global_heat.total(), heat)
 
+    def test_operation_id_collision_is_rejected_before_mutation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = EnterpriseRuntime(mb_graph=self.prod_graph, store_path=os.path.join(directory, "ops.sqlite3"))
+            runtime.dispatch_ticket(BusinessInput("T_OP_A", "U_OP", "workflow", "稟議申請の方法"))
+            runtime.resolve_ticket_feedback("T_OP_A", FeedbackResult(user_resolved=True), operation_id="op-collision")
+            runtime.dispatch_ticket(BusinessInput("T_OP_B", "U_OP", "workflow", "稟議申請の方法"))
+            heat = runtime.h_state.global_heat.total()
+            with self.assertRaises(ValueError):
+                runtime.resolve_ticket_feedback("T_OP_B", FeedbackResult(user_resolved=True), operation_id="op-collision")
+            self.assertIn("T_OP_B", runtime.pending_snapshots)
+            self.assertEqual(runtime.h_state.global_heat.total(), heat)
+
     def test_metabolic_closed_loop_tier1_to_tier0(self):
         """
         受入条件 1: Tier 1 ルール適合 -> 成功確認 -> Tier 0 キャッシュ沈澱 -> 次回同一クエリが Tier 0 解決

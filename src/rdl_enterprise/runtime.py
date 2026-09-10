@@ -361,11 +361,15 @@ class EnterpriseRuntime:
         成功確認後に candidate_knowledge を昇格。
         H >= θ_eff 時は、再編相 M_Δ で候補 M_B' の起草と耐久検査パイプラインを起動する。
         """
+        if self.case_store and operation_id:
+            prior = self.case_store.get_operation(operation_id)
+            if prior is not None:
+                operation_type, prior_ticket_id, result = prior
+                if operation_type != "ticket_resolved" or prior_ticket_id != ticket_id:
+                    raise ValueError(f"operation_id '{operation_id}' is already bound to another operation")
+                return result
+
         if ticket_id not in self.pending_snapshots:
-            if self.case_store and operation_id:
-                prior = self.case_store.load_operation(operation_id)
-                if prior is not None:
-                    return prior
             raise KeyError(f"Ticket ID '{ticket_id}' は保留中(PENDING)に存在しません。")
 
         snapshot = self.pending_snapshots.pop(ticket_id)

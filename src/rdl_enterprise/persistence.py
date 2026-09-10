@@ -118,6 +118,16 @@ class SQLiteCaseStore:
             row = db.execute("SELECT result FROM processed_operations WHERE operation_id = ?", (operation_id,)).fetchone()
         return pickle.loads(row[0]) if row else None
 
+    def get_operation(self, operation_id: str):
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT operation_type, ticket_id, result FROM processed_operations WHERE operation_id = ?",
+                (operation_id,),
+            ).fetchone()
+        if not row:
+            return None
+        return row[0], row[1], pickle.loads(row[2])
+
     def commit_transition(self, ticket_id: str, snapshot: object, state: object,
                           event_payload: object, operation_id: Optional[str] = None,
                           result: object = None) -> bool:
