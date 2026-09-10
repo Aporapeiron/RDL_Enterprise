@@ -1044,12 +1044,15 @@ class TestCoreContracts(unittest.TestCase):
         self.assertNotEqual(unresolved.status, ConditionObservationStatus.NOT_MATCH)
 
         # A Probe supplies a finite observation; it does not commit a proposition.
+        probe_provenance = Provenance("scenario-03-probe")
         probed = evaluate_condition(
             condition, {"partner": "confirmed"}, context,
+            provenance=probe_provenance,
         )
         self.assertEqual(probed.status, ConditionObservationStatus.MATCH)
         self.assertEqual(probed.condition, condition)
         self.assertEqual(probed.context, context)
+        self.assertEqual(probed.provenance, probe_provenance)
 
     def test_scenario_02_similarity_is_t1_inspection_material(self):
         context = BoundaryContext("scenario-02-inspection")
