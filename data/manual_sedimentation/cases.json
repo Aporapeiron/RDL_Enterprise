@@ -1,0 +1,11 @@
+[
+  {"case_id": "MS-001", "category": "account", "input": "パスワードリセットの方法を教えてください", "case_class": "standard", "expected_behavior": "APPLY"},
+  {"case_id": "MS-002", "category": "account", "input": "パスワードを忘れたので再発行したい", "case_class": "paraphrase", "expected_behavior": "APPLY"},
+  {"case_id": "MS-003", "category": "network", "input": "社外からVPNに接続できません", "case_class": "standard", "expected_behavior": "APPLY"},
+  {"case_id": "MS-004", "category": "network", "input": "VPN接続エラー691の対応を知りたい", "case_class": "paraphrase", "expected_behavior": "APPLY"},
+  {"case_id": "MS-005", "category": "hardware", "input": "社用PCのバッテリーが膨張した", "case_class": "exception", "expected_behavior": "ASK_HUMAN"},
+  {"case_id": "MS-006", "category": "security", "input": "特権アカウントのアクセス申請先はどこですか", "case_class": "standard", "expected_behavior": "APPLY"},
+  {"case_id": "MS-007", "category": "account", "input": "パスワードとVPNを同時に設定したい", "case_class": "composition", "expected_behavior": "HOLD_UNRESOLVED"},
+  {"case_id": "MS-008", "category": "network", "input": "VPNの規則が変更された後も接続できますか", "case_class": "policy_change", "expected_behavior": "NOT_EVALUATED"},
+  {"case_id": "MS-009", "category": "hardware", "input": "未知の設備障害を調査してほしい", "case_class": "exception", "expected_behavior": "UNKNOWN"}
+]

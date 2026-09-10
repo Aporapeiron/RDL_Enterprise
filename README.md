@@ -149,6 +149,16 @@ python .\benchmark_cost_curve.py
 python -m pytest -q
 ```
 
+### Manual sedimentation benchmark
+
+合成マニュアルと合成案件だけを使い、教育深度、再利用、例外停止、修復後回帰を比較する構造特性ベンチマークです。実務価値や普遍的な正しさを証明するものではありません。
+
+```powershell
+python .\benchmark_manual_sedimentation.py
+```
+
+結果は`benchmark_results/manual_sedimentation_latest.json`と`.csv`へ出力されます。D1/D2/D3は同一manual・同一case setの保持深度だけを変え、golden outcomeはRuntimeへ渡しません。
+
 ## 現在の主要構成
 
 ```text
