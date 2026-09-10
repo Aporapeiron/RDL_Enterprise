@@ -47,6 +47,17 @@ class DialogueObservation:
     provenance: Provenance
 
 
+@dataclass(frozen=True)
+class DialogueStructureRevision:
+    """A selected dialogue reconstruction, retaining the prior finite M_B."""
+
+    previous: StructureCandidate | None
+    current: StructureCandidate
+    selected_turn_ids: Tuple[str, ...]
+    context: BoundaryContext
+    provenance: Provenance | None = None
+
+
 def select_probe_intent(
     profiles: Tuple[RelationConstraintProfile, ...],
     context: BoundaryContext,
@@ -108,5 +119,31 @@ def reconstruct_dialogue_structure(
     return extract_structure_candidate(
         AdaptiveMBProfile(profiles, context, provenance=source),
         context,
+        provenance=source,
+    )
+
+
+def reconstruct_selected_dialogue_structure(
+    observations: Tuple[DialogueObservation, ...],
+    context: BoundaryContext,
+    *,
+    selected_turn_ids: Tuple[str, ...],
+    previous: StructureCandidate | None = None,
+    provenance: Provenance | None = None,
+) -> DialogueStructureRevision:
+    """Reconstruct from explicitly selected turns without deleting prior M_B."""
+    selected = tuple(
+        observation for observation in observations
+        if observation.turn_id in selected_turn_ids and observation.context == context
+    )
+    if not selected:
+        raise ValueError("selected_turn_idsは現在BoundaryのObservationを少なくとも1件含む必要があります")
+    source = provenance or selected[-1].provenance
+    current = reconstruct_dialogue_structure(selected, context, provenance=source)
+    return DialogueStructureRevision(
+        previous=previous,
+        current=current,
+        selected_turn_ids=tuple(selected_turn_ids),
+        context=context,
         provenance=source,
     )

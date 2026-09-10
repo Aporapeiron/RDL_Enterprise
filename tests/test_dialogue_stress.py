@@ -12,10 +12,12 @@ from rdl_core import (
 )
 from rdl_enterprise.dialogue_probe import (
     DialogueObservation,
+    DialogueStructureRevision,
     ProbeIntent,
     generate_question,
     record_human_response,
     reconstruct_dialogue_structure,
+    reconstruct_selected_dialogue_structure,
     select_probe_intent,
 )
 
@@ -140,6 +142,27 @@ class TestDialogueStress(unittest.TestCase):
         self.assertEqual(observations[0].turn_id, "t1")
         self.assertEqual(len(observations), 11)
         self.assertEqual(observations[-1].context.purpose, "planning")
+
+        # Explicit T1 selection creates M_B1 first, then reconstructs M_B2
+        # from selected planning turns. Boundary drift is not silently merged.
+        mb1 = reconstruct_selected_dialogue_structure(
+            observations, b2,
+            selected_turn_ids=("t2", "t4", "t6", "t7", "t9"),
+            provenance=source,
+        )
+        mb2 = reconstruct_selected_dialogue_structure(
+            observations, b3,
+            selected_turn_ids=("t10", "t11", "t12", "t13", "t14"),
+            previous=mb1.current,
+            provenance=source,
+        )
+        self.assertIsInstance(mb1, DialogueStructureRevision)
+        self.assertIs(mb2.previous, mb1.current)
+        self.assertEqual(mb1.context, b2)
+        self.assertEqual(mb2.context, b3)
+        self.assertEqual(mb1.selected_turn_ids, ("t2", "t4", "t6", "t7", "t9"))
+        self.assertEqual(mb2.selected_turn_ids, ("t10", "t11", "t12", "t13", "t14"))
+        self.assertGreaterEqual(mb2.current.unresolved_count, 1)
 
 
 if __name__ == "__main__":
