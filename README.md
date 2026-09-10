@@ -10,6 +10,8 @@ Core抽出時の受入条件と候補分類は、[RDL Core Extraction Gate](docs
 Coreの役割分離、必要時だけ深掘りする方針、代表シナリオの実行ゲートは、[RDL Core Route v0.1](docs/RDL_Core_Route_v0.1.md) に定義します。
 重要な外部参照先と参照順は、[RDL Reference Sources](docs/RDL_Reference_Sources.md) に定義します。
 
+現在の業務AI製品化の到達点と、実装済み範囲・明示的な未実装境界は、[RDL Enterprise Product Status v0.1](docs/RDL_Product_Status_v0.1.md) に記録します。
+
 Enterprise `MBNode` のfield分類とCore投影範囲は、[MBNode Field Projection Map](docs/RDL_MBNode_Field_Projection.md) に定義します。
 
 `trigger_pattern` の意味分類とCore昇格条件は、[RDL Trigger Semantics](docs/RDL_Trigger_Semantics.md) に定義します。
@@ -145,4 +147,4 @@ py -m pytest -o pythonpath=src
 py -m unittest discover tests
 ```
 
-全 **164件** の単体・結合・受入・ジェネレーティブ不変条件テスト（時間注入・条件固定再現Replay・60日ライフサイクル検証・Fail-Closed Replay検証・AIコア遷移関連状態ダイジェスト照合を含む）が高速（約5.6秒）にパスします。
+全テストを実行することで、Core契約、代謝ライフサイクル、永続化・再起動復元、認証境界、Tool execution、Workflow vertical sliceまで検証できます。
