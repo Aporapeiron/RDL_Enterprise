@@ -1262,6 +1262,59 @@ class TestCoreContracts(unittest.TestCase):
         self.assertEqual(support.identity.semantic_key, oppose.identity.semantic_key)
         self.assertNotEqual(support.strength.support, oppose.strength.support)
 
+    def test_stress_scenario_z_individually_supported_constraints_need_joint_action_inspection(self):
+        context = BoundaryContext(
+            "contract-outage",
+            question="refund while keeping the active contract",
+            purpose="incident-resolution",
+        )
+        profiles = tuple(
+            RelationConstraintProfile(
+                ConstraintIdentity(
+                    constraint_id, subject, relation, object_name,
+                    Provenance(source, lineage=lineage),
+                ),
+                ConstraintStrength(0.9, EvidencePolarity.SUPPORT, authority=authority),
+            )
+            for constraint_id, subject, relation, object_name, source, lineage, authority in (
+                ("r1", "customer", "requests", "full-refund", "contract-a", "v1", 0.8),
+                ("r2", "customer", "requests", "active-service", "contract-b", "v1", 0.8),
+                ("p1", "billing", "requires", "cancellation-settlement", "policy-p1", "v2", 0.95),
+                ("p2", "service", "requires", "active-contract", "policy-p2", "v2", 0.95),
+            )
+        )
+        adaptive = AdaptiveMBProfile(profiles, context, provenance=Provenance("stress-z-case"))
+        structure = extract_structure_candidate(adaptive, context)
+
+        self.assertEqual(len(structure.supporting_profiles), 4)
+        self.assertEqual(structure.conflicting_profiles, ())
+        self.assertEqual(
+            {profile.strength.support for profile in profiles},
+            {EvidencePolarity.SUPPORT},
+        )
+
+        function = FunctionDescription("enterprise.billing.incident", "1")
+        candidate = FunctionCandidate(
+            function,
+            FunctionInvocation(function, context, purpose="joint-action-selection"),
+            structure,
+        )
+        validation = record_compilation_validation(
+            candidate, CompilationValidationStatus.PASSED, context,
+        )
+        artifact = compile_validated_candidate(validation)
+        joint_action_unresolved = record_rupture_observation(
+            candidate, RuptureObservationStatus.UNRESOLVED, context,
+            check_id="joint-action-feasibility",
+            reason="individual constraints are supported but no feasible joint action is evaluated",
+        )
+        decision = evaluate_promotion(
+            artifact, context,
+            ruptures=(joint_action_unresolved,),
+            required_checks=("joint-action-feasibility",),
+        )
+        self.assertEqual(decision.status, PromotionDecisionStatus.UNRESOLVED)
+
     def test_scenario_02_similarity_is_t1_inspection_material(self):
         context = BoundaryContext("scenario-02-inspection")
         current = RelationConstraintProfile(
