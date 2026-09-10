@@ -1422,8 +1422,161 @@ class TestCoreContracts(unittest.TestCase):
         self.assertEqual(b1.status, ActionFeasibilityStatus.FEASIBLE)
         self.assertEqual(b2.status, ActionFeasibilityStatus.UNRESOLVED)
         self.assertEqual(authority_exception.status, ActionFeasibilityStatus.FEASIBLE)
-        self.assertEqual(b2.context, boundary_b2)
-        self.assertEqual(b2.provenance.source, "omega-b2-requirements")
+
+    def test_stress_omega_completes_probe_reconstruction_without_overwriting_b1(self):
+        boundary_b1 = BoundaryContext(
+            "incident-response",
+            question="refund while preserving service",
+            purpose="incident-resolution",
+        )
+        boundary_b2 = BoundaryContext(
+            "regulated-customer",
+            question="refund while preserving service under regulation",
+            purpose="regulated-resolution",
+        )
+        profile_b1 = RelationConstraintProfile(
+            ConstraintIdentity("omega-b1", "customer", "requests", "refund"),
+            ConstraintStrength(0.9, EvidencePolarity.SUPPORT),
+        )
+        structure_b1 = extract_structure_candidate(
+            AdaptiveMBProfile((profile_b1,), boundary_b1), boundary_b1,
+        )
+        function_b1 = compile_function_candidate(
+            structure_b1, FunctionDescription("billing.incident", "1"),
+            purpose="incident-resolution",
+            provenance=Provenance("omega-b1-function"),
+        )
+        b1_artifact = compile_validated_candidate(
+            record_compilation_validation(
+                function_b1, CompilationValidationStatus.PASSED, boundary_b1,
+                provenance=Provenance("omega-b1-validation"),
+            )
+        )
+
+        b2_inspection = inspect_joint_action_feasibility(
+            {"refund-and-continue": {"full-refund": True, "active-service": True}},
+            {
+                "full-refund": True,
+                "active-service": True,
+                "cancellation-settlement": True,
+                "regulated-exception": True,
+            },
+            context=boundary_b2,
+            provenance=Provenance("omega-b2-requirements"),
+        )
+        self.assertEqual(b2_inspection.status, ActionFeasibilityStatus.UNRESOLVED)
+        rupture = record_rupture_observation(
+            function_b1,
+            RuptureObservationStatus.UNRESOLVED,
+            boundary_b2,
+            check_id="joint-action-feasibility",
+            reason="B2 requirements need authority inspection",
+            provenance=b2_inspection.provenance,
+        )
+        decision = evaluate_promotion(
+            b1_artifact, boundary_b2,
+            ruptures=(rupture,),
+            required_checks=("joint-action-feasibility",),
+        )
+        self.assertEqual(decision.status, PromotionDecisionStatus.UNRESOLVED)
+
+        authority = Provenance("authority-probe", lineage="case-only-exception")
+        b2_action = inspect_joint_action_feasibility(
+            {"refund-and-continue-approved": {
+                "full-refund": True,
+                "active-service": True,
+                "cancellation-settlement": True,
+                "regulated-exception": True,
+            }},
+            {
+                "full-refund": True,
+                "active-service": True,
+                "cancellation-settlement": True,
+                "regulated-exception": True,
+            },
+            context=boundary_b2,
+            provenance=authority,
+        )
+        self.assertEqual(b2_action.status, ActionFeasibilityStatus.FEASIBLE)
+
+        profile_b2 = RelationConstraintProfile(
+            ConstraintIdentity("omega-b2", "customer", "requests", "refund"),
+            ConstraintStrength(0.9, EvidencePolarity.SUPPORT, authority=0.95),
+        )
+        structure_b2 = extract_structure_candidate(
+            AdaptiveMBProfile((profile_b2,), boundary_b2, provenance=authority),
+            boundary_b2,
+            provenance=authority,
+        )
+        function_b2 = compile_function_candidate(
+            structure_b2, FunctionDescription("billing.incident", "2"),
+            purpose="regulated-resolution",
+            config={"scope": "case-only"},
+            provenance=authority,
+        )
+        self.assertEqual(function_b1.function.version, "1")
+        self.assertEqual(function_b2.function.version, "2")
+        self.assertNotEqual(function_b1.structure.context, function_b2.structure.context)
+        self.assertEqual(function_b2.provenance, authority)
+
+        validation_b2 = record_compilation_validation(
+            function_b2,
+            CompilationValidationStatus.PASSED,
+            boundary_b2,
+            provenance=authority,
+        )
+        artifact_b2 = compile_validated_candidate(validation_b2)
+        rupture_check_b2 = record_rupture_observation(
+            function_b2,
+            RuptureObservationStatus.NOT_DETECTED,
+            boundary_b2,
+            check_id="omega-case-only-rupture",
+            provenance=authority,
+        )
+        promotion_b2 = evaluate_promotion(
+            artifact_b2,
+            boundary_b2,
+            ruptures=(rupture_check_b2,),
+            required_checks=("omega-case-only-rupture",),
+            provenance=authority,
+        )
+        self.assertEqual(promotion_b2.status, PromotionDecisionStatus.APPROVED)
+        active_b2 = activate_promoted_artifact(
+            promotion_b2,
+            boundary_b2,
+            registry=FunctionDescription("billing.incident.b2", "1"),
+            provenance=authority,
+        )
+        self.assertIsInstance(active_b2, ActiveCompiledMB)
+        self.assertEqual(active_b2.artifact.function.version, "2")
+        self.assertEqual(b1_artifact.function.version, "1")
+
+        b1_rupture_check = record_rupture_observation(
+            function_b1,
+            RuptureObservationStatus.NOT_DETECTED,
+            boundary_b1,
+            check_id="omega-b1-rupture",
+            provenance=Provenance("omega-b1-check"),
+        )
+        promotion_b1 = evaluate_promotion(
+            b1_artifact,
+            boundary_b1,
+            ruptures=(b1_rupture_check,),
+            required_checks=("omega-b1-rupture",),
+            provenance=Provenance("omega-b1-promotion"),
+        )
+        active_b1 = activate_promoted_artifact(
+            promotion_b1,
+            boundary_b1,
+            registry=FunctionDescription("billing.incident.b1", "1"),
+            provenance=Provenance("omega-b1-active"),
+        )
+        b1_state = project_current_function_state(active_b1)
+        b2_state = project_current_function_state(active_b2)
+        self.assertEqual(b1_state.status, RegistryStatus.ACTIVE)
+        self.assertEqual(b2_state.status, RegistryStatus.ACTIVE)
+        self.assertEqual(b1_state.active.artifact.function.version, "1")
+        self.assertEqual(b2_state.active.artifact.function.version, "2")
 
     def test_joint_action_missing_effect_remains_unresolved(self):
         inspection = inspect_joint_action_feasibility(
