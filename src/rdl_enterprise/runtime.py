@@ -776,6 +776,7 @@ class EnterpriseRuntime:
             proposal.reasons.append(fail_reason)
             self.pending_reorganizations.pop(proposal_id)
             self.reorganization_history.append(proposal)
+            self._persist_runtime_state()
             return False
 
         # 二重ゲート通過！
@@ -793,6 +794,7 @@ class EnterpriseRuntime:
             # シャドウを終了
             if self.active_shadow_evaluator and self.active_shadow_evaluator.proposal_id == proposal_id:
                 self.active_shadow_evaluator = None
+            self._persist_runtime_state()
             return True
 
         # 一括置換 (Leap)
@@ -813,11 +815,15 @@ class EnterpriseRuntime:
         if self.active_shadow_evaluator and self.active_shadow_evaluator.proposal_id == proposal_id:
             self.active_shadow_evaluator = None
 
+        self._persist_runtime_state()
         return True
 
     def step_up_canary(self, new_ratio: float) -> bool:
         """カナリア配分比率を拡大 (例: 0.1 -> 0.5 -> 1.0)"""
-        return self.canary_manager.step_up_traffic(new_ratio)
+        changed = self.canary_manager.step_up_traffic(new_ratio)
+        if changed:
+            self._persist_runtime_state()
+        return changed
 
     def complete_canary_rollout(self, policy: Optional[CanaryCompletionPolicy] = None, at: Optional[str] = None) -> bool:
         """カナリア展開を完了し、新 M_B' を本番として確定コミット (エビデンス検証を含む)"""
@@ -844,6 +850,7 @@ class EnterpriseRuntime:
             cand_ver = getattr(new_mb, "version", "unknown")
             self.h_state.inherit_canary_state_to_prod(canary_version=cand_ver, heat_ratio=0.5)
 
+        self._persist_runtime_state()
         return True
 
     def rollback_active_canary(self, reason: str = "手動指示によるロールバック") -> bool:
@@ -867,6 +874,7 @@ class EnterpriseRuntime:
             proposal.reasons.append(f"カナリアロールバック: {reason}")
             self.reorganization_history.append(proposal)
 
+        self._persist_runtime_state()
         return True
 
     def enable_shadow_mode(
