@@ -2,6 +2,7 @@ import unittest
 import sys
 import os
 import tempfile
+from urllib.error import HTTPError
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
@@ -14,7 +15,13 @@ from rdl_enterprise.service import EnterpriseService, AuthenticationError, Autho
 from rdl_enterprise.tool_execution import ToolSpec, ToolRegistry, ExecutionUncertain, execute_tool, reconcile_tool_execution
 from rdl_enterprise.canary import ActionCapability
 from rdl_enterprise.workflow_connector import WorkflowCase, WorkflowConnector
-from rdl_enterprise.workflow_provider import WorkflowHttpConnector, WorkflowProviderError
+from rdl_enterprise.workflow_provider import (
+    WorkflowHttpConnector,
+    WorkflowProviderError,
+    WorkflowProviderAuthError,
+    WorkflowProviderNotFoundError,
+    WorkflowProviderUnavailableError,
+)
 
 
 class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
@@ -253,6 +260,37 @@ class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
         )
         with self.assertRaises(WorkflowProviderError):
             connector.lookup({"case_id": "WF-201"})
+
+    def test_http_workflow_provider_auth_header_and_error_classes(self):
+        class Response:
+            def read(self):
+                return b'{"case_id":"WF-203","status":"pending","owner":"ops","summary":"review"}'
+
+        seen = []
+
+        def opener(request, timeout):
+            seen.append(dict(request.headers))
+            return Response()
+
+        connector = WorkflowHttpConnector(
+            "https://workflow.example.test/api", api_token="token-1", opener=opener,
+        )
+        connector.lookup({"case_id": "WF-203"})
+        self.assertEqual(seen[0]["Authorization"], "Bearer token-1")
+
+        for status_code, error_type in (
+            (401, WorkflowProviderAuthError),
+            (404, WorkflowProviderNotFoundError),
+            (503, WorkflowProviderUnavailableError),
+        ):
+            def failing_opener(request, timeout, status_code=status_code):
+                raise HTTPError(request.full_url, status_code, "provider error", {}, None)
+
+            failing = WorkflowHttpConnector(
+                "https://workflow.example.test/api", opener=failing_opener,
+            )
+            with self.assertRaises(error_type):
+                failing.lookup({"case_id": "WF-204"})
 
     def test_tool_scope_is_checked_before_execution(self):
         runtime = EnterpriseRuntime(mb_graph=self.prod_graph)
