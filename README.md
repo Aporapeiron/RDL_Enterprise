@@ -12,6 +12,25 @@ Coreの役割分離、必要時だけ深掘りする方針、代表シナリオ�
 
 現在の業務AI製品化の到達点と、実装済み範囲・明示的な未実装境界は、[RDL Enterprise Product Status v0.1](docs/RDL_Product_Status_v0.1.md) に記録します。
 
+## 現在の業務AI入口
+
+現在の有限Boundaryでは、自然文によるJira/JSMのread-only照会をlocalhost APIから実行できます。
+
+```text
+自然文
+  -> Tool Candidate
+  -> Bearer / Authority check
+  -> read-only Jira observation
+  -> bounded result
+  -> ActionLedger
+  -> SQLite persistence
+  -> process restart recovery
+```
+
+実証済みの対象は、Atlassian Jira/JSMのissue `IT-3`等です。現在の運用Boundaryは、localhost (`127.0.0.1`)、上流で設定されたBearerによるサービス入口、単一Runtime・単一writerのSQLite、read-only Jira lookupです。
+
+これは完全な自律業務AI、internet-facing security、HA、改ざん不能監査を意味しません。Bearer確認は人間の実identityの証明ではなく、ActionLedgerはTruthそのものではありません。永続化された過去のObservationも、現在のprovider Observationとは別です。詳しい到達点と残差は [Product Status](docs/RDL_Product_Status_v0.1.md) を参照してください。
+
 Enterprise `MBNode` のfield分類とCore投影範囲は、[MBNode Field Projection Map](docs/RDL_MBNode_Field_Projection.md) に定義します。
 
 `trigger_pattern` の意味分類とCore昇格条件は、[RDL Trigger Semantics](docs/RDL_Trigger_Semantics.md) に定義します。
@@ -101,6 +120,34 @@ RDL_Enterprise/
 ## 🚀 クイックスタート
 
 外部依存ライブラリなし（Python 3.9+ 標準ライブラリのみ）で動作します。
+
+### 0. Read-only業務Query API
+
+Atlassian Jira/JSMへ接続する場合は、credentialをファイルへ書かず環境変数から渡します。
+
+```powershell
+$env:RDL_API_BEARER_TOKEN = "<local-api-token>"
+$env:RDL_API_STORE_PATH = "D:\\GitHub\\RDL_Enterprise\\data\\rdl_api.sqlite3"
+$env:RDL_ATLASSIAN_BASE_URL = "https://<your-domain>.atlassian.net"
+$env:RDL_ATLASSIAN_EMAIL = "<service-email>"
+$env:RDL_ATLASSIAN_TOKEN = "<api-token>"
+
+python .\\rdl_api.py
+```
+
+別のPowerShellから、Bearer付きでread-only照会します。
+
+```powershell
+$body = @{ text = "IT-3って今どうなってる？" } | ConvertTo-Json -Compress
+$bytes = [System.Text.Encoding]::UTF8.GetBytes($body)
+Invoke-WebRequest -UseBasicParsing -Method Post `
+  -Uri "http://127.0.0.1:8765/query" `
+  -Headers @{ Authorization = "Bearer <local-api-token>" } `
+  -ContentType "application/json; charset=utf-8" `
+  -Body $bytes
+```
+
+`Tool Candidate`の生成と実行は別段階です。曖昧な入力は実行せず、`UNRESOLVED`として返します。APIはlocalhostのread-only入口であり、不可逆Toolや外部公開用認証基盤は対象外です。
 
 ### 1. 5大シナリオ有限条件下検証シミュレーションの実行
 
