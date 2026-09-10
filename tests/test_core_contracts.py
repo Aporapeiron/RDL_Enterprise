@@ -73,6 +73,7 @@ from rdl_core import (
     ConditionalRevisionCandidate,
     RelearningEvidenceAnalysis,
     ConditionalRevisionStatus,
+    ConditionRevisionOperation,
     accept_conditional_revision,
     analyze_conditional_relearning,
     build_conditional_vnext_from_revision,
@@ -555,7 +556,11 @@ class TestCoreContracts(unittest.TestCase):
         self.assertEqual(proposed_revision.supporting_ruptures, relearning.ruptures)
         self.assertGreaterEqual(len(proposed_revision.supporting_evidence), 2)
         self.assertEqual(proposed_revision.reconsidered_condition_ids, ("condition-1",))
-        self.assertEqual(proposed_revision.proposed_condition_removals, ("condition-1",))
+        self.assertEqual(proposed_revision.proposed_condition_removals, ())
+        self.assertEqual(
+            proposed_revision.analysis.condition_proposals,
+            (("condition-1", ConditionRevisionOperation.RECONSIDER),),
+        )
         self.assertEqual(proposed_revision.status, ConditionalRevisionStatus.PROPOSED)
         with self.assertRaises(ValueError):
             build_conditional_vnext_from_revision(proposed_revision, pattern)

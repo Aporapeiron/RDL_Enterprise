@@ -99,6 +99,14 @@ class ConditionalRevisionStatus(str, Enum):
     UNRESOLVED = "UNRESOLVED"
 
 
+class ConditionRevisionOperation(str, Enum):
+    KEEP = "KEEP"
+    RECONSIDER = "RECONSIDER"
+    ADD = "ADD"
+    REMOVE = "REMOVE"
+    REPLACE = "REPLACE"
+
+
 @dataclass(frozen=True)
 class ConditionalRuntimeObservation:
     """One finite runtime observation of a ConditionalCompiledMB."""
@@ -299,6 +307,7 @@ class RelearningEvidenceAnalysis:
     not_match_condition_ids: Tuple[str, ...] = ()
     unresolved_condition_ids: Tuple[str, ...] = ()
     rupture_statuses: Tuple[ConditionalRuptureStatus, ...] = ()
+    condition_proposals: Tuple[Tuple[str, ConditionRevisionOperation], ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.request, ConditionalRelearningRequest):
@@ -314,6 +323,15 @@ class RelearningEvidenceAnalysis:
         if any(not isinstance(item, ConditionalRuptureStatus) for item in statuses):
             raise TypeError("rupture_statusesはConditionalRuptureStatusの列である必要があります")
         object.__setattr__(self, "rupture_statuses", statuses)
+        proposals = tuple(self.condition_proposals)
+        if any(
+            not isinstance(item, tuple) or len(item) != 2
+            or not isinstance(item[0], str) or not item[0].strip()
+            or not isinstance(item[1], ConditionRevisionOperation)
+            for item in proposals
+        ):
+            raise TypeError("condition_proposalsは(condition_id, ConditionRevisionOperation)の列である必要があります")
+        object.__setattr__(self, "condition_proposals", proposals)
 
 
 @dataclass(frozen=True)
@@ -428,7 +446,6 @@ def analyze_conditional_relearning(
         condition = getattr(evidence, "condition", None)
         if status == ConditionObservationStatus.NOT_MATCH and condition is not None:
             reconsidered.append(condition.condition_id)
-            removals.append(condition.condition_id)
         elif status in (ConditionObservationStatus.UNRESOLVED, ConditionObservationStatus.NOT_EVALUATED):
             unresolved = unresolved + ("condition-observation-unresolved",)
             if condition is not None:
@@ -441,6 +458,10 @@ def analyze_conditional_relearning(
         not_match_condition_ids=tuple(dict.fromkeys(reconsidered)),
         unresolved_condition_ids=tuple(dict.fromkeys(unresolved_condition_ids)),
         rupture_statuses=tuple(record.status for record in request.ruptures),
+        condition_proposals=tuple(
+            (condition_id, ConditionRevisionOperation.RECONSIDER)
+            for condition_id in dict.fromkeys(reconsidered)
+        ),
     )
     return ConditionalRevisionCandidate(
         request=request,
