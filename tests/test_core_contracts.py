@@ -1400,6 +1400,8 @@ class TestCoreContracts(unittest.TestCase):
                 "cancellation-settlement": True,
                 "regulated-exception": True,
             },
+            context=boundary_b2,
+            provenance=Provenance("omega-b2-requirements"),
         )
         authority_exception = inspect_joint_action_feasibility(
             {
@@ -1420,6 +1422,8 @@ class TestCoreContracts(unittest.TestCase):
         self.assertEqual(b1.status, ActionFeasibilityStatus.FEASIBLE)
         self.assertEqual(b2.status, ActionFeasibilityStatus.UNRESOLVED)
         self.assertEqual(authority_exception.status, ActionFeasibilityStatus.FEASIBLE)
+        self.assertEqual(b2.context, boundary_b2)
+        self.assertEqual(b2.provenance.source, "omega-b2-requirements")
 
     def test_joint_action_missing_effect_remains_unresolved(self):
         inspection = inspect_joint_action_feasibility(

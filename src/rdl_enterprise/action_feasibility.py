@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Mapping, Tuple
 
+from rdl_core import BoundaryContext, Provenance
+
 
 class ActionFeasibilityStatus(str, Enum):
     FEASIBLE = "feasible"
@@ -27,11 +29,16 @@ class ActionFeasibility:
 class JointActionInspection:
     actions: Tuple[ActionFeasibility, ...]
     status: ActionFeasibilityStatus
+    context: BoundaryContext | None = None
+    provenance: Provenance | None = None
 
 
 def inspect_joint_action_feasibility(
     actions: Mapping[str, Mapping[str, bool]],
     requirements: Mapping[str, bool],
+    *,
+    context: BoundaryContext | None = None,
+    provenance: Provenance | None = None,
 ) -> JointActionInspection:
     """Inspect whether any finite action satisfies all requirements.
 
@@ -68,4 +75,4 @@ def inspect_joint_action_feasibility(
         overall = ActionFeasibilityStatus.UNRESOLVED
     else:
         overall = ActionFeasibilityStatus.INFEASIBLE
-    return JointActionInspection(inspections, overall)
+    return JointActionInspection(inspections, overall, context, provenance)
