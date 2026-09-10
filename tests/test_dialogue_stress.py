@@ -82,13 +82,20 @@ class TestDialogueStress(unittest.TestCase):
             (profile("t12-workload", "workload", "causes-distress", 0.35, EvidencePolarity.SUPPORT),),
             b3, source, question=reflection,
         )
+        t13 = record_human_response(
+            "t13", "来週は、期待される役割を先に確認してから判断したいです。",
+            (profile("t13-role-clarification", "role-clarification", "reduces-risk", 0.85, EvidencePolarity.SUPPORT),),
+            b3, source,
+        )
 
-        observations = (initial, t2, t4, t6, t7, t9, t12)
+        observations = (initial, t2, t4, t6, t7, t9, t12, t13)
         self.assertEqual(initial.utterance.startswith("会社"), True)
         self.assertEqual(t4.utterance != t6.utterance, True)
         self.assertEqual(t4.provenance, t6.provenance)
         self.assertEqual(t9.profiles[0].strength.support, EvidencePolarity.UNRESOLVED)
         self.assertEqual(reflection.context, b3)
+        self.assertEqual(t13.context.purpose, "planning")
+        self.assertEqual(t13.profiles[0].identity.semantic_key.relation, "role-clarification")
 
         candidate = reconstruct_dialogue_structure(observations, b3, provenance=source)
         self.assertEqual(candidate.context, b3)
@@ -103,6 +110,8 @@ class TestDialogueStress(unittest.TestCase):
         self.assertEqual(observations[3].turn_id, "t6")
         self.assertEqual(observations[5].context, b2)
         self.assertEqual(observations[-1].context, b3)
+        self.assertEqual(observations[0].turn_id, "t1")
+        self.assertEqual(len(observations), 8)
 
 
 if __name__ == "__main__":
