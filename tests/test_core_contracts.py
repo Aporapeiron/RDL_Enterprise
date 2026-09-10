@@ -1028,6 +1028,29 @@ class TestCoreContracts(unittest.TestCase):
         )
         self.assertEqual(approved.status, PromotionDecisionStatus.APPROVED)
 
+    def test_scenario_03_unresolved_probe_re_evaluates_without_failure_collapse(self):
+        context = BoundaryContext("scenario-03")
+        function = FunctionDescription("rdl_core.partner_condition", "1")
+        condition = ConditionDescription(
+            "partner-confirmed",
+            function,
+            FunctionInvocation(function, context, purpose="scenario-03 condition"),
+            operands=(("partner", "confirmed"),),
+            variable_slots=("partner",),
+        )
+
+        unresolved = evaluate_condition(condition, {}, context)
+        self.assertEqual(unresolved.status, ConditionObservationStatus.UNRESOLVED)
+        self.assertNotEqual(unresolved.status, ConditionObservationStatus.NOT_MATCH)
+
+        # A Probe supplies a finite observation; it does not commit a proposition.
+        probed = evaluate_condition(
+            condition, {"partner": "confirmed"}, context,
+        )
+        self.assertEqual(probed.status, ConditionObservationStatus.MATCH)
+        self.assertEqual(probed.condition, condition)
+        self.assertEqual(probed.context, context)
+
     def test_core_source_has_no_runtime_package_imports(self):
         from pathlib import Path
 
