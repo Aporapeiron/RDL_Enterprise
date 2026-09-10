@@ -150,6 +150,10 @@ from rdl_core import (
     SupersessionRecord,
     record_supersession,
 )
+from rdl_enterprise.action_feasibility import (
+    ActionFeasibilityStatus,
+    inspect_joint_action_feasibility,
+)
 
 
 class TestCoreContracts(unittest.TestCase):
@@ -1314,6 +1318,50 @@ class TestCoreContracts(unittest.TestCase):
             required_checks=("joint-action-feasibility",),
         )
         self.assertEqual(decision.status, PromotionDecisionStatus.UNRESOLVED)
+
+    def test_stress_scenario_z_plus_derives_joint_infeasibility_from_actions(self):
+        requirements = {
+            "full-refund": True,
+            "active-service": True,
+            "cancellation-settlement": True,
+            "active-contract": True,
+        }
+        inspection = inspect_joint_action_feasibility(
+            {
+                "refund-and-cancel": {
+                    "full-refund": True,
+                    "cancellation-settlement": True,
+                    "active-service": False,
+                    "active-contract": False,
+                },
+                "continue-without-refund": {
+                    "full-refund": False,
+                    "cancellation-settlement": False,
+                    "active-service": True,
+                    "active-contract": True,
+                },
+                "refund-and-continue": {
+                    "full-refund": True,
+                    "active-service": True,
+                    "cancellation-settlement": False,
+                    "active-contract": True,
+                },
+            },
+            requirements,
+        )
+
+        self.assertEqual(inspection.status, ActionFeasibilityStatus.INFEASIBLE)
+        self.assertEqual(
+            {item.status for item in inspection.actions},
+            {ActionFeasibilityStatus.INFEASIBLE},
+        )
+
+    def test_joint_action_missing_effect_remains_unresolved(self):
+        inspection = inspect_joint_action_feasibility(
+            {"deferred-exception": {"full-refund": True}},
+            {"full-refund": True, "active-contract": True},
+        )
+        self.assertEqual(inspection.status, ActionFeasibilityStatus.UNRESOLVED)
 
     def test_scenario_02_similarity_is_t1_inspection_material(self):
         context = BoundaryContext("scenario-02-inspection")
