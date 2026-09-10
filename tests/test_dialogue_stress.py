@@ -175,6 +175,11 @@ class TestDialogueStress(unittest.TestCase):
             reconstruct_selected_dialogue_structure(
                 observations, b3, selected_turn_ids=("t2",),
             )
+        with self.assertRaises(ValueError):
+            reconstruct_selected_dialogue_structure(
+                observations + (t14,), b3,
+                selected_turn_ids=("t14",),
+            )
 
 
 if __name__ == "__main__":

@@ -135,6 +135,9 @@ def reconstruct_selected_dialogue_structure(
     requested = tuple(selected_turn_ids)
     if len(set(requested)) != len(requested):
         raise ValueError("selected_turn_idsに重複があります")
+    observation_ids = tuple(observation.turn_id for observation in observations)
+    if len(set(observation_ids)) != len(observation_ids):
+        raise ValueError("observations内のturn_idが重複しています")
     available = {observation.turn_id: observation for observation in observations}
     missing = tuple(turn_id for turn_id in requested if turn_id not in available)
     if missing:
@@ -145,10 +148,7 @@ def reconstruct_selected_dialogue_structure(
     )
     if wrong_boundary:
         raise ValueError(f"現在Boundary外のturn_idがSelectionされています: {wrong_boundary}")
-    selected = tuple(
-        observation for observation in observations
-        if observation.turn_id in requested
-    )
+    selected = tuple(available[turn_id] for turn_id in requested)
     if not selected:
         raise ValueError("selected_turn_idsは現在BoundaryのObservationを少なくとも1件含む必要があります")
     source = provenance or selected[-1].provenance
