@@ -70,6 +70,8 @@ def execute_tool(service: EnterpriseService, registry: ToolRegistry, tool_id: st
                 raise ValueError("operation_id is bound to another tool operation")
             if existing.status == "planned":
                 raise ExecutionUncertain(f"tool operation outcome is uncertain: {operation_id}")
+            if existing.status == "not_executed":
+                break
             if existing.status == "failed":
                 raise RuntimeError(f"tool operation previously failed: {operation_id}")
             return ToolExecutionResult(tool_id, existing.action_id, existing.compensation_result.get("output") if existing.compensation_result else None)
@@ -111,6 +113,8 @@ def reconcile_tool_execution(service: EnterpriseService, registry: ToolRegistry,
                    and item.action_type == f"tool:{tool_id}"), None)
     if record is None:
         raise KeyError(f"unknown tool operation: {operation_id}")
+    if record.status not in ("planned", "not_executed"):
+        raise ValueError(f"tool operation is not reconcilable from status: {record.status}")
     provider_status = spec.query_handler(operation_id)
     if provider_status == "executed":
         record.status = "succeeded"
@@ -118,7 +122,7 @@ def reconcile_tool_execution(service: EnterpriseService, registry: ToolRegistry,
             service.runtime._persist_runtime_state()
         return ReconciliationResult(operation_id, "succeeded", record.compensation_result)
     if provider_status == "not_executed":
-        record.status = "failed"
+        record.status = "not_executed"
         record.compensation_result = {"reason": "provider confirmed no external effect"}
         if service.runtime.case_store:
             service.runtime._persist_runtime_state()

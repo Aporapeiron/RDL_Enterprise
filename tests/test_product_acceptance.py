@@ -221,6 +221,16 @@ class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
         self.assertEqual(result.status, "succeeded")
         self.assertEqual(record.status, "succeeded")
 
+    def test_reconciliation_does_not_overwrite_final_state(self):
+        runtime = EnterpriseRuntime(mb_graph=self.prod_graph)
+        service = EnterpriseService(runtime)
+        registry = ToolRegistry()
+        registry.register(ToolSpec("workflow.lookup", "workflow", ActionCapability.REVERSIBLE, lambda p: p, lambda op: "not_executed"))
+        actor = AuthorityContext("manager", "manager", "workflow", "human", "idp_sso")
+        execute_tool(service, registry, "workflow.lookup", {}, actor, "T-RECON-FINAL", "op-final")
+        with self.assertRaises(ValueError):
+            reconcile_tool_execution(service, registry, "workflow.lookup", "op-final", actor)
+
     def test_metabolic_closed_loop_tier1_to_tier0(self):
         """
         受入条件 1: Tier 1 ルール適合 -> 成功確認 -> Tier 0 キャッシュ沈澱 -> 次回同一クエリが Tier 0 解決
