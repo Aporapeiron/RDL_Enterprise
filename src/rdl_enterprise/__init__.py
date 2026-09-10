@@ -72,6 +72,7 @@ from .atlassian_jira_provider import (
 )
 from .tool_routing import ToolCandidate, ToolRoutingResult, ToolRoutingStatus, route_business_text
 from .business_query import handle_business_query
+from .presentation import format_business_query_result
 
 __all__ = [
     "MBNode",
@@ -144,4 +145,5 @@ __all__ = [
     "ToolRoutingStatus",
     "route_business_text",
     "handle_business_query",
+    "format_business_query_result",
 ]

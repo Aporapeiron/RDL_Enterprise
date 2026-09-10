@@ -12,6 +12,7 @@ from rdl_enterprise import (
     EnterpriseRuntime,
     EnterpriseService,
     ToolRegistry,
+    format_business_query_result,
     handle_business_query,
 )
 
@@ -22,6 +23,7 @@ def main(argv=None) -> int:
     parser.add_argument("--actor-id", required=True, help="認証済み業務actorのID")
     parser.add_argument("--scope", default="workflow", help="業務domain scope")
     parser.add_argument("--ticket-id", default="cli-business-query", help="監査用の問い合わせID")
+    parser.add_argument("--json", action="store_true", help="structured JSONで出力")
     args = parser.parse_args(argv)
 
     connector = AtlassianJiraConnector.from_environment()
@@ -36,7 +38,10 @@ def main(argv=None) -> int:
         authenticated_by="console",
     )
     result = handle_business_query(service, registry, args.text, actor, ticket_id=args.ticket_id)
-    print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+    if args.json:
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+    else:
+        print(format_business_query_result(result))
     return 0
 
 

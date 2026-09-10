@@ -26,7 +26,7 @@ class TestReadOnlyQueryCLI(unittest.TestCase):
                 "routing_status": "RESOLVED", "case_id": "IT-3", "status": "Open",
                 "owner": None, "summary": "VPN issue", "source": "atlassian_jira",
             }), patch("sys.stdout", new_callable=StringIO) as stdout:
-                self.assertEqual(main(["IT-3って今どうなってる？", "--actor-id", "cli-user"]), 0)
+                self.assertEqual(main(["IT-3って今どうなってる？", "--actor-id", "cli-user", "--json"]), 0)
         result = json.loads(stdout.getvalue())
         self.assertEqual(result["case_id"], "IT-3")
         self.assertNotIn("token", stdout.getvalue().lower())
