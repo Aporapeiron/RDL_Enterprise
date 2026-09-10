@@ -63,6 +63,13 @@ from .workflow_provider import (
     WorkflowProviderUnavailableError,
     WorkflowProviderRateLimitError,
 )
+from .atlassian_jira_provider import (
+    AtlassianJiraConnector,
+    AtlassianProviderError,
+    AtlassianProviderAuthError,
+    AtlassianProviderNotFoundError,
+    AtlassianProviderUnavailableError,
+)
 
 __all__ = [
     "MBNode",
@@ -125,4 +132,9 @@ __all__ = [
     "WorkflowProviderNotFoundError",
     "WorkflowProviderUnavailableError",
     "WorkflowProviderRateLimitError",
+    "AtlassianJiraConnector",
+    "AtlassianProviderError",
+    "AtlassianProviderAuthError",
+    "AtlassianProviderNotFoundError",
+    "AtlassianProviderUnavailableError",
 ]

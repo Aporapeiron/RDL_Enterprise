@@ -23,6 +23,7 @@ from rdl_enterprise.workflow_provider import (
     WorkflowProviderUnavailableError,
     WorkflowProviderRateLimitError,
 )
+from rdl_enterprise.atlassian_jira_provider import AtlassianJiraConnector, AtlassianProviderError
 
 
 class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
@@ -308,6 +309,61 @@ class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
             connector.lookup({"case_id": "WF-205"})
         self.assertEqual(caught.exception.retry_after, "30")
         self.assertNotIn("secret-token", str(caught.exception))
+
+    def test_atlassian_jira_read_only_projection_preserves_null_assignee(self):
+        class Response:
+            def read(self):
+                return b'{"key":"IT-3","fields":{"summary":"VPN issue","status":{"name":"Open"},"assignee":null}}'
+
+        seen = []
+        connector = AtlassianJiraConnector(
+            "https://jira.example.test", "agent@example.test", "jira-secret",
+            opener=lambda request, timeout: (seen.append(request), Response())[1],
+        )
+        result = connector.lookup({"case_id": "IT-3"})
+        self.assertEqual(result, {"case_id": "IT-3", "summary": "VPN issue", "status": "Open", "owner": None})
+        self.assertIn("/rest/api/3/issue/IT-3?fields=summary,status,assignee", seen[0].full_url)
+        self.assertNotIn("jira-secret", repr(result))
+        self.assertEqual(connector.tool_spec().capability, ActionCapability.DRY_RUN_ONLY)
+
+    def test_atlassian_jira_credentials_and_identity_are_bounded(self):
+        class Response:
+            def read(self):
+                return b'{"key":"IT-3","fields":{"summary":"VPN issue","status":{"name":"Open"},"assignee":null}}'
+
+        seen = []
+        connector = AtlassianJiraConnector(
+            "https://jira.example.test", "agent@example.test", "jira-secret",
+            opener=lambda request, timeout: (seen.append(request), Response())[1],
+        )
+        connector.lookup({"case_id": "IT-3"})
+        self.assertTrue(seen[0].headers["Authorization"].startswith("Basic "))
+        self.assertNotIn("jira-secret", str(AtlassianProviderError("bounded provider error")))
+
+        class WrongResponse:
+            def read(self):
+                return b'{"key":"IT-4","fields":{"summary":"wrong","status":{"name":"Open"},"assignee":null}}'
+
+        wrong = AtlassianJiraConnector(
+            "https://jira.example.test", "agent@example.test", "jira-secret",
+            opener=lambda request, timeout: WrongResponse(),
+        )
+        with self.assertRaises(AtlassianProviderError):
+            wrong.lookup({"case_id": "IT-3"})
+
+    @unittest.skipUnless(
+        all(os.environ.get(name) for name in (
+            "RDL_ATLASSIAN_BASE_URL", "RDL_ATLASSIAN_EMAIL", "RDL_ATLASSIAN_TOKEN",
+        )),
+        "live Atlassian credentials are not configured",
+    )
+    def test_live_atlassian_jira_it3_read_only_lookup(self):
+        connector = AtlassianJiraConnector.from_environment()
+        result = connector.lookup({"case_id": "IT-3"})
+        self.assertEqual(result["case_id"], "IT-3")
+        self.assertIsInstance(result["summary"], str)
+        self.assertIsInstance(result["status"], str)
+        self.assertTrue(result["owner"] is None or isinstance(result["owner"], str))
 
     def test_http_workflow_provider_can_load_deployment_configuration_without_leaking_token(self):
         class Response:
