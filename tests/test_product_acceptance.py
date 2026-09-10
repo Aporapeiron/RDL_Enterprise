@@ -426,6 +426,32 @@ class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
         self.assertEqual(runtime.canary_manager.action_ledger.records[-1].action_type,
                          "tool:atlassian.jira.issue.lookup")
 
+    @unittest.skipUnless(
+        all(os.environ.get(name) for name in (
+            "RDL_ATLASSIAN_BASE_URL", "RDL_ATLASSIAN_EMAIL", "RDL_ATLASSIAN_TOKEN",
+        )),
+        "live Atlassian credentials are not configured",
+    )
+    def test_live_natural_language_it3_routes_to_jira_tool(self):
+        routed = route_business_text(
+            f"{os.environ.get('RDL_ATLASSIAN_TEST_ISSUE', 'IT-3')}って今どうなってる？"
+        )
+        self.assertEqual(routed.status, ToolRoutingStatus.RESOLVED)
+        self.assertTrue(routed.candidate.read_only)
+
+        runtime = EnterpriseRuntime(mb_graph=self.prod_graph)
+        service = EnterpriseService(runtime)
+        registry = ToolRegistry()
+        registry.register(AtlassianJiraConnector.from_environment().tool_spec())
+        actor = AuthorityContext("live-router-operator", "operator", "workflow", "human", "idp_sso")
+        result = execute_tool(
+            service, registry, routed.candidate.tool_id, routed.candidate.payload,
+            actor, "T_LIVE_ROUTED_JIRA",
+        )
+        self.assertEqual(result.output["case_id"], routed.candidate.payload["case_id"])
+        self.assertIsInstance(result.output["status"], str)
+        self.assertTrue(result.output["owner"] is None or isinstance(result.output["owner"], str))
+
     def test_business_text_routes_to_unexecuted_read_only_candidate(self):
         routed = route_business_text("IT-3って今どうなってる？")
         self.assertEqual(routed.status, ToolRoutingStatus.RESOLVED)
