@@ -1092,6 +1092,43 @@ class TestCoreContracts(unittest.TestCase):
         self.assertEqual(rupture.status, RuptureObservationStatus.DETECTED)
         self.assertEqual(similarity.status, SimilarityObservationStatus.SIMILAR)
 
+    def test_scenario_02_rupture_then_similarity_inspection_material(self):
+        context = BoundaryContext("scenario-02-orchestration")
+        current = RelationConstraintProfile(
+            ConstraintIdentity("current-case", "partner-a", "approves", "invoice"),
+            ConstraintStrength(0.8, EvidencePolarity.SUPPORT),
+        )
+        profile = AdaptiveMBProfile((current,), context)
+        initial_structure = extract_structure_candidate(profile, context)
+        function = FunctionDescription("enterprise.approval.runtime", "1")
+        candidate = FunctionCandidate(
+            function,
+            FunctionInvocation(function, context, purpose="scenario-02 runtime"),
+            initial_structure,
+        )
+        rupture = record_rupture_observation(
+            candidate, RuptureObservationStatus.DETECTED, context,
+            check_id="scenario-02-runtime-counterexample",
+        )
+        self.assertEqual(rupture.status, RuptureObservationStatus.DETECTED)
+
+        prior = RelationConstraintProfile(
+            ConstraintIdentity("prior-case", "partner-a", "approves", "invoice"),
+            ConstraintStrength(0.7, EvidencePolarity.SUPPORT),
+        )
+        similarity = compare_relation_constraint_profiles(
+            current, prior, context,
+            provenance=Provenance("scenario-02-prior-case"),
+        )
+        inspected = induce_structure_candidate(
+            AdaptiveMBProfile((current, prior), context),
+            context,
+            (similarity,),
+        )
+        self.assertEqual(similarity.status, SimilarityObservationStatus.SIMILAR)
+        self.assertIn(current.identity.semantic_key, inspected.common_relations)
+        self.assertEqual(rupture.status, RuptureObservationStatus.DETECTED)
+
     def test_core_source_has_no_runtime_package_imports(self):
         from pathlib import Path
 
