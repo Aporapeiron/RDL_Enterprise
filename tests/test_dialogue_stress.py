@@ -87,8 +87,32 @@ class TestDialogueStress(unittest.TestCase):
             (profile("t13-role-clarification", "role-clarification", "reduces-risk", 0.85, EvidencePolarity.SUPPORT),),
             b3, source,
         )
+        t10 = record_human_response(
+            "t10", "長期的に辞めたいかどうかは、まだ分かりません。",
+            (profile("t10-long-term", "long-term-exit", "preferred", 0.5, EvidencePolarity.UNRESOLVED),),
+            b3, source,
+        )
+        t11_intent = ProbeIntent(
+            "structure_reflection",
+            ("unclear-expectations", "after-the-fact-correction", "workload"),
+            "reflection",
+            b3,
+            avoid=("diagnosis", "forced_choice"),
+            provenance=source,
+        )
+        t11_question = generate_question(t11_intent)
+        t11 = record_human_response(
+            "t11", "役割の曖昧さと後から基準が変わることは合っています。仕事量だけではありません。",
+            (profile("t11-workload-correction", "workload", "primary-cause", 0.2, EvidencePolarity.OPPOSE),),
+            b3, source, question=t11_question,
+        )
+        t14 = record_human_response(
+            "t14", "まず来週は役割と判断基準を確認し、二週間だけ様子を見ます。",
+            (profile("t14-limited-plan", "clarify-and-observe", "case-action", 0.9, EvidencePolarity.SUPPORT),),
+            b3, source,
+        )
 
-        observations = (initial, t2, t4, t6, t7, t9, t12, t13)
+        observations = (initial, t2, t4, t6, t7, t9, t10, t11, t12, t13, t14)
         self.assertEqual(initial.utterance.startswith("会社"), True)
         self.assertEqual(t4.utterance != t6.utterance, True)
         self.assertEqual(t4.provenance, t6.provenance)
@@ -96,6 +120,9 @@ class TestDialogueStress(unittest.TestCase):
         self.assertEqual(reflection.context, b3)
         self.assertEqual(t13.context.purpose, "planning")
         self.assertEqual(t13.profiles[0].identity.semantic_key.relation, "role-clarification")
+        self.assertEqual(t10.profiles[0].strength.support, EvidencePolarity.UNRESOLVED)
+        self.assertEqual(t11_question.context, b3)
+        self.assertEqual(t14.profiles[0].identity.semantic_key.relation, "clarify-and-observe")
 
         candidate = reconstruct_dialogue_structure(observations, b3, provenance=source)
         self.assertEqual(candidate.context, b3)
@@ -111,7 +138,8 @@ class TestDialogueStress(unittest.TestCase):
         self.assertEqual(observations[5].context, b2)
         self.assertEqual(observations[-1].context, b3)
         self.assertEqual(observations[0].turn_id, "t1")
-        self.assertEqual(len(observations), 8)
+        self.assertEqual(len(observations), 11)
+        self.assertEqual(observations[-1].context.purpose, "planning")
 
 
 if __name__ == "__main__":
