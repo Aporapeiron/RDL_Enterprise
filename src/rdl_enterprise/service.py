@@ -54,6 +54,16 @@ class EnterpriseService:
         if not ticket_id.strip():
             raise ValueError("ticket_id is required")
         snapshot = self.runtime.pending_snapshots.get(ticket_id)
+        if snapshot is None and self.runtime.case_store:
+            snapshot = self.runtime.case_store.load_case(ticket_id)
         if snapshot is not None:
             self._require_scope(actor, snapshot.efp.category)
-        return self.runtime.resolve_ticket_feedback(ticket_id, feedback, operation_id=operation_id)
+        return self.runtime.resolve_ticket_feedback(
+            ticket_id, feedback, operation_id=operation_id,
+            actor_provenance={
+                "actor_id": actor.actor_id,
+                "role": actor.role,
+                "scope": actor.scope,
+                "authenticated_by": actor.authenticated_by,
+            },
+        )

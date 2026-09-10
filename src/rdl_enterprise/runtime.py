@@ -355,6 +355,7 @@ class EnterpriseRuntime:
         feedback: FeedbackResult,
         at: Optional[Any] = None,
         operation_id: Optional[str] = None,
+        actor_provenance: Optional[Dict[str, Any]] = None,
     ) -> TicketResolutionResult:
         """
         フェーズ2：後続結果 EFP' の回収と代謝反映
@@ -481,6 +482,7 @@ class EnterpriseRuntime:
             is_timeout=False,
             at=at or getattr(snapshot, "resolved_at", None),
             operation_id=operation_id,
+            actor_provenance=actor_provenance,
         )
 
     def _persist_runtime_state(self) -> None:
@@ -507,6 +509,7 @@ class EnterpriseRuntime:
         is_timeout: bool = False,
         at: Optional[Any] = None,
         operation_id: Optional[str] = None,
+        actor_provenance: Optional[Dict[str, Any]] = None,
     ) -> TicketResolutionResult:
         """
         全案件（通常フィードバック解決／タイムアウト）に共通する代謝終端処理 (BASE v2.0 代謝閉ループ)
@@ -671,7 +674,10 @@ class EnterpriseRuntime:
                 "canary_deployment_history": self.canary_manager.deployment_history,
                 "action_ledger_records": self.canary_manager.action_ledger.records,
             }
-            self.case_store.commit_transition(ticket_id, snapshot, state, {"status": snapshot.status.value}, operation_id, result)
+            self.case_store.commit_transition(ticket_id, snapshot, state, {
+                "status": snapshot.status.value,
+                "actor": actor_provenance,
+            }, operation_id, result)
         return result
 
     def _trigger_m_delta_proposal(

@@ -131,6 +131,20 @@ class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
         with self.assertRaises(AuthorizationError):
             service.submit(request, AuthorityContext("u2", "operator", "finance", "human", "idp_sso"))
 
+    def test_idempotent_replay_still_checks_scope_after_restart(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "service.sqlite3")
+            runtime = EnterpriseRuntime(mb_graph=self.prod_graph, store_path=path)
+            service = EnterpriseService(runtime)
+            workflow = AuthorityContext("workflow-user", "operator", "workflow", "human", "idp_sso")
+            finance = AuthorityContext("finance-user", "operator", "finance", "human", "idp_sso")
+            ticket = BusinessInput("T_SERVICE_REPLAY", "U_SERVICE", "workflow", "稟議申請の方法")
+            service.submit(ticket, workflow)
+            service.record_feedback(ticket.ticket_id, FeedbackResult(user_resolved=True), workflow, "op-service-replay")
+            restarted = EnterpriseService(EnterpriseRuntime(mb_graph=MBGraph(), store_path=path))
+            with self.assertRaises(AuthorizationError):
+                restarted.record_feedback(ticket.ticket_id, FeedbackResult(user_resolved=True), finance, "op-service-replay")
+
     def test_metabolic_closed_loop_tier1_to_tier0(self):
         """
         受入条件 1: Tier 1 ルール適合 -> 成功確認 -> Tier 0 キャッシュ沈澱 -> 次回同一クエリが Tier 0 解決

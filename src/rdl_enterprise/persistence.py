@@ -98,6 +98,11 @@ class SQLiteCaseStore:
             ).fetchall()
         return [(ticket_id, pickle.loads(snapshot)) for ticket_id, snapshot in rows]
 
+    def load_case(self, ticket_id: str) -> Optional[object]:
+        with self._connect() as db:
+            row = db.execute("SELECT snapshot FROM case_records WHERE ticket_id = ?", (ticket_id,)).fetchone()
+        return pickle.loads(row[0]) if row else None
+
     def load_resolved(self) -> List[object]:
         with self._connect() as db:
             rows = db.execute(
