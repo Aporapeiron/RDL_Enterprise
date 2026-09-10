@@ -183,6 +183,30 @@ class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
         with self.assertRaises(ExecutionUncertain):
             execute_tool(service, registry, "workflow.write", {}, manager, "T-UNCERTAIN", "op-uncertain", True)
 
+    def test_planned_effect_survives_restart_as_uncertain(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "tool-restart.sqlite3")
+            runtime = EnterpriseRuntime(mb_graph=self.prod_graph, store_path=path)
+            service = EnterpriseService(runtime)
+            registry = ToolRegistry()
+            registry.register(ToolSpec("workflow.write", "workflow", ActionCapability.REVERSIBLE, lambda p: p))
+            actor = AuthorityContext("manager", "manager", "workflow", "human", "idp_sso")
+            execute_tool(service, registry, "workflow.write", {}, actor, "T-RESTART-TOOL", "op-restart-tool")
+            record = runtime.canary_manager.action_ledger.records[-1]
+            record.status = "planned"
+            runtime._persist_runtime_state()
+            restarted = EnterpriseService(EnterpriseRuntime(mb_graph=MBGraph(), store_path=path))
+            with self.assertRaises(ExecutionUncertain):
+                execute_tool(restarted, registry, "workflow.write", {}, actor, "T-RESTART-TOOL", "op-restart-tool")
+
+    def test_effectful_tool_requires_operation_id(self):
+        service = EnterpriseService(EnterpriseRuntime(mb_graph=self.prod_graph))
+        registry = ToolRegistry()
+        registry.register(ToolSpec("workflow.write", "workflow", ActionCapability.REVERSIBLE, lambda p: p))
+        actor = AuthorityContext("manager", "manager", "workflow", "human", "idp_sso")
+        with self.assertRaises(ValueError):
+            execute_tool(service, registry, "workflow.write", {}, actor, "T-REQUIRED-ID")
+
     def test_metabolic_closed_loop_tier1_to_tier0(self):
         """
         受入条件 1: Tier 1 ルール適合 -> 成功確認 -> Tier 0 キャッシュ沈澱 -> 次回同一クエリが Tier 0 解決

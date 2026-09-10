@@ -51,6 +51,8 @@ def execute_tool(service: EnterpriseService, registry: ToolRegistry, tool_id: st
     service._require_authenticated(actor)
     spec = registry.get(tool_id)
     service._require_scope(actor, spec.domain)
+    if spec.capability != ActionCapability.DRY_RUN_ONLY and not operation_id.strip():
+        raise ValueError("operation_id is required for effectful tools")
     if spec.capability == ActionCapability.IRREVERSIBLE:
         if not allow_irreversible or not actor.is_human_authenticated() or actor.role not in ("admin", "manager"):
             raise AuthorizationError("irreversible tool execution requires authenticated manager approval")
