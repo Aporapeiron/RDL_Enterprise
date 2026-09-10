@@ -11,7 +11,7 @@ from rdl_enterprise.authority import AuthorityContext
 from rdl_enterprise.promotion_gate import ProposalState, PromotionPolicy
 from rdl_enterprise.runtime import EnterpriseRuntime, ReorganizationProposal
 from rdl_enterprise.service import EnterpriseService, AuthenticationError, AuthorizationError
-from rdl_enterprise.tool_execution import ToolSpec, ToolRegistry, ExecutionUncertain, execute_tool
+from rdl_enterprise.tool_execution import ToolSpec, ToolRegistry, ExecutionUncertain, execute_tool, reconcile_tool_execution
 from rdl_enterprise.canary import ActionCapability
 
 
@@ -206,6 +206,20 @@ class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
         actor = AuthorityContext("manager", "manager", "workflow", "human", "idp_sso")
         with self.assertRaises(ValueError):
             execute_tool(service, registry, "workflow.write", {}, actor, "T-REQUIRED-ID")
+
+    def test_uncertain_tool_can_be_reconciled_by_provider(self):
+        runtime = EnterpriseRuntime(mb_graph=self.prod_graph)
+        service = EnterpriseService(runtime)
+        registry = ToolRegistry()
+        registry.register(ToolSpec("workflow.write", "workflow", ActionCapability.REVERSIBLE,
+                                   lambda p: p, lambda operation_id: "executed"))
+        actor = AuthorityContext("manager", "manager", "workflow", "human", "idp_sso")
+        execute_tool(service, registry, "workflow.write", {}, actor, "T-RECON", "op-recon")
+        record = runtime.canary_manager.action_ledger.records[-1]
+        record.status = "planned"
+        result = reconcile_tool_execution(service, registry, "workflow.write", "op-recon", actor)
+        self.assertEqual(result.status, "succeeded")
+        self.assertEqual(record.status, "succeeded")
 
     def test_metabolic_closed_loop_tier1_to_tier0(self):
         """

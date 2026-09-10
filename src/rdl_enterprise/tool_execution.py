@@ -18,6 +18,7 @@ class ToolSpec:
     domain: str
     capability: ActionCapability = ActionCapability.DRY_RUN_ONLY
     handler: Callable[[Dict[str, Any]], Any] = lambda payload: payload
+    query_handler: Callable[[str], Any] = lambda operation_id: "unknown"
 
 
 @dataclass(frozen=True)
@@ -25,6 +26,13 @@ class ToolExecutionResult:
     tool_id: str
     action_id: str
     output: Any
+
+
+@dataclass(frozen=True)
+class ReconciliationResult:
+    operation_id: str
+    status: str
+    output: Any = None
 
 
 class ToolRegistry:
@@ -91,3 +99,30 @@ def execute_tool(service: EnterpriseService, registry: ToolRegistry, tool_id: st
     if service.runtime.case_store:
         service.runtime._persist_runtime_state()
     return ToolExecutionResult(tool_id, record.action_id, output)
+
+
+def reconcile_tool_execution(service: EnterpriseService, registry: ToolRegistry, tool_id: str,
+                             operation_id: str, actor: AuthorityContext) -> ReconciliationResult:
+    service._require_authenticated(actor)
+    spec = registry.get(tool_id)
+    service._require_scope(actor, spec.domain)
+    record = next((item for item in service.runtime.canary_manager.action_ledger.records
+                   if getattr(item, "operation_id", None) == operation_id
+                   and item.action_type == f"tool:{tool_id}"), None)
+    if record is None:
+        raise KeyError(f"unknown tool operation: {operation_id}")
+    provider_status = spec.query_handler(operation_id)
+    if provider_status == "executed":
+        record.status = "succeeded"
+        if service.runtime.case_store:
+            service.runtime._persist_runtime_state()
+        return ReconciliationResult(operation_id, "succeeded", record.compensation_result)
+    if provider_status == "not_executed":
+        record.status = "failed"
+        record.compensation_result = {"reason": "provider confirmed no external effect"}
+        if service.runtime.case_store:
+            service.runtime._persist_runtime_state()
+        return ReconciliationResult(operation_id, "not_executed")
+    if provider_status == "unknown":
+        return ReconciliationResult(operation_id, "unknown")
+    raise ValueError(f"unsupported provider status: {provider_status}")

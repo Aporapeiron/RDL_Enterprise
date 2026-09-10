@@ -53,7 +53,7 @@ from .runtime import (
 )
 from .persistence import SQLiteCaseStore
 from .service import EnterpriseService, AuthenticationError, AuthorizationError
-from .tool_execution import ToolSpec, ToolRegistry, ToolExecutionResult, ExecutionUncertain, execute_tool
+from .tool_execution import ToolSpec, ToolRegistry, ToolExecutionResult, ReconciliationResult, ExecutionUncertain, execute_tool, reconcile_tool_execution
 
 __all__ = [
     "MBNode",
@@ -106,4 +106,6 @@ __all__ = [
     "ToolExecutionResult",
     "execute_tool",
     "ExecutionUncertain",
+    "ReconciliationResult",
+    "reconcile_tool_execution",
 ]
