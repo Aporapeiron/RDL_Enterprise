@@ -10,6 +10,7 @@ from rdl_enterprise.snapshot import BusinessInput, FeedbackResult, CaseStatus
 from rdl_enterprise.authority import AuthorityContext
 from rdl_enterprise.promotion_gate import ProposalState, PromotionPolicy
 from rdl_enterprise.runtime import EnterpriseRuntime, ReorganizationProposal
+from rdl_enterprise.service import EnterpriseService, AuthenticationError
 
 
 class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
@@ -107,6 +108,20 @@ class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
                 runtime.resolve_ticket_feedback("T_OP_B", FeedbackResult(user_resolved=True), operation_id="op-collision")
             self.assertIn("T_OP_B", runtime.pending_snapshots)
             self.assertEqual(runtime.h_state.global_heat.total(), heat)
+
+    def test_authenticated_service_completes_business_ticket(self):
+        service = EnterpriseService(EnterpriseRuntime(mb_graph=self.prod_graph))
+        actor = AuthorityContext("operator-1", "operator", "workflow", "human", "idp_sso")
+        ticket = BusinessInput("T_SERVICE_01", "U_SERVICE", "workflow", "稟議申請の方法")
+        dispatched = service.submit(ticket, actor)
+        resolved = service.record_feedback(ticket.ticket_id, FeedbackResult(user_resolved=True), actor, "service-op-1")
+        self.assertEqual(dispatched.ticket_id, resolved.ticket_id)
+
+    def test_service_rejects_unauthenticated_actor(self):
+        service = EnterpriseService(EnterpriseRuntime(mb_graph=self.prod_graph))
+        actor = AuthorityContext("operator-1", "operator", "workflow", "human", None)
+        with self.assertRaises(AuthenticationError):
+            service.submit(BusinessInput("T_SERVICE_02", "U_SERVICE", "workflow", "稟議申請の方法"), actor)
 
     def test_metabolic_closed_loop_tier1_to_tier0(self):
         """
