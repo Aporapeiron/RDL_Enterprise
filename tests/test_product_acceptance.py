@@ -393,11 +393,37 @@ class TestProductAcceptanceMetabolicLoop(unittest.TestCase):
     )
     def test_live_atlassian_jira_it3_read_only_lookup(self):
         connector = AtlassianJiraConnector.from_environment()
-        result = connector.lookup({"case_id": "IT-3"})
-        self.assertEqual(result["case_id"], "IT-3")
+        issue_key = os.environ.get("RDL_ATLASSIAN_TEST_ISSUE", "IT-3")
+        result = connector.lookup({"case_id": issue_key})
+        self.assertEqual(result["case_id"], issue_key)
         self.assertIsInstance(result["summary"], str)
         self.assertIsInstance(result["status"], str)
         self.assertTrue(result["owner"] is None or isinstance(result["owner"], str))
+
+    @unittest.skipUnless(
+        all(os.environ.get(name) for name in (
+            "RDL_ATLASSIAN_BASE_URL", "RDL_ATLASSIAN_EMAIL", "RDL_ATLASSIAN_TOKEN",
+        )),
+        "live Atlassian credentials are not configured",
+    )
+    def test_live_atlassian_it3_runs_through_execute_tool_and_ledger(self):
+        connector = AtlassianJiraConnector.from_environment()
+        issue_key = os.environ.get("RDL_ATLASSIAN_TEST_ISSUE", "IT-3")
+        runtime = EnterpriseRuntime(mb_graph=self.prod_graph)
+        service = EnterpriseService(runtime)
+        registry = ToolRegistry()
+        registry.register(connector.tool_spec())
+        actor = AuthorityContext("live-jira-operator", "operator", "workflow", "human", "idp_sso")
+        result = execute_tool(
+            service, registry, "atlassian.jira.issue.lookup", {"case_id": issue_key},
+            actor, "T_LIVE_JIRA_IT3",
+        )
+        self.assertEqual(result.output["case_id"], issue_key)
+        self.assertIsInstance(result.output["summary"], str)
+        self.assertIsInstance(result.output["status"], str)
+        self.assertTrue(result.output["owner"] is None or isinstance(result.output["owner"], str))
+        self.assertEqual(runtime.canary_manager.action_ledger.records[-1].action_type,
+                         "tool:atlassian.jira.issue.lookup")
 
     def test_http_workflow_provider_can_load_deployment_configuration_without_leaking_token(self):
         class Response:
