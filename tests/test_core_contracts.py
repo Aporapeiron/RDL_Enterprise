@@ -1160,6 +1160,78 @@ class TestCoreContracts(unittest.TestCase):
         )
         self.assertEqual(decision.status, PromotionDecisionStatus.UNRESOLVED)
 
+    def test_stress_scenario_y_inconsistent_complainant_preserves_conflicting_demands(self):
+        t1 = BoundaryContext("complaint-t1", question="refund", purpose="customer-resolution")
+        t2 = BoundaryContext("complaint-t2", question="retain-service", purpose="customer-retention")
+        customer = "customer-17"
+        demands = (
+            RelationConstraintProfile(
+                ConstraintIdentity(
+                    "d-refund", customer, "demands", "refund",
+                    Provenance("customer-statement", lineage="t1"),
+                ),
+                ConstraintStrength(0.8, EvidencePolarity.SUPPORT),
+            ),
+            RelationConstraintProfile(
+                ConstraintIdentity(
+                    "d-no-cancel", customer, "demands", "no-cancellation",
+                    Provenance("customer-statement", lineage="t1"),
+                ),
+                ConstraintStrength(0.8, EvidencePolarity.SUPPORT),
+            ),
+            RelationConstraintProfile(
+                ConstraintIdentity(
+                    "d-keep-use", customer, "demands", "continued-use",
+                    Provenance("customer-statement", lineage="t2"),
+                ),
+                ConstraintStrength(0.7, EvidencePolarity.SUPPORT),
+            ),
+            RelationConstraintProfile(
+                ConstraintIdentity(
+                    "d-exception", customer, "demands", "policy-exception",
+                    Provenance("customer-statement", lineage="t2"),
+                ),
+                ConstraintStrength(0.6, EvidencePolarity.SUPPORT),
+            ),
+            RelationConstraintProfile(
+                ConstraintIdentity(
+                    "p-no-exception", "policy", "requires", "no-policy-exception",
+                    Provenance("enterprise-policy", lineage="policy-v1"),
+                ),
+                ConstraintStrength(0.95, EvidencePolarity.SUPPORT, authority=0.95),
+            ),
+            RelationConstraintProfile(
+                ConstraintIdentity(
+                    "p-exception", "policy", "permits", "policy-exception",
+                    Provenance("enterprise-policy", lineage="policy-v1"),
+                ),
+                ConstraintStrength(0.4, EvidencePolarity.OPPOSE, authority=0.95),
+            ),
+        )
+        profile = AdaptiveMBProfile(demands, t2, provenance=Provenance("complaint-case"))
+        structure = extract_structure_candidate(profile, t2)
+
+        self.assertEqual(len(structure.relations), len(demands))
+        self.assertEqual(len(structure.supporting_profiles), 5)
+        self.assertEqual(len(structure.conflicting_profiles), 1)
+        self.assertIsNotNone(structure.provenance)
+        self.assertEqual(structure.provenance.source, "complaint-case")
+
+        # A changed customer purpose is a different invocation boundary, not an overwrite.
+        function = FunctionDescription("enterprise.complaint.selection", "1")
+        refund_invocation = FunctionInvocation(function, t1, purpose="refund-resolution")
+        retention_invocation = FunctionInvocation(function, t2, purpose="service-retention")
+        comparison = FunctionComparison(refund_invocation, retention_invocation)
+        self.assertFalse(comparison.same_boundary)
+        self.assertFalse(comparison.same_purpose)
+        self.assertFalse(comparison.comparable)
+
+        # Conflicting demands remain evidence; no arbitrary resolution is produced.
+        self.assertNotEqual(
+            structure.supporting_profiles[0].identity.semantic_key,
+            structure.conflicting_profiles[0].identity.semantic_key,
+        )
+
     def test_scenario_02_similarity_is_t1_inspection_material(self):
         context = BoundaryContext("scenario-02-inspection")
         current = RelationConstraintProfile(
