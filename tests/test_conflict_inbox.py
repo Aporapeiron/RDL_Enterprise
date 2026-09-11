@@ -162,6 +162,31 @@ class StructuralConflictInboxTests(unittest.TestCase):
         self.assertEqual(runtime.conflict_inbox.get_case("IT-31").conflicts[0].observation_status,
                          "STRUCTURAL_CONFLICT")
 
+    def test_runtime_uses_cumulative_inbox_summary_once_for_multiple_conflicts(self):
+        key = ("customer", "requires", "refund")
+        profiles = {
+            "support-a": RelationConstraintProfile(
+                ConstraintIdentity("r1", *key, Provenance("a")),
+                ConstraintStrength(1.0, EvidencePolarity.SUPPORT)),
+            "oppose": RelationConstraintProfile(
+                ConstraintIdentity("r2", *key, Provenance("b")),
+                ConstraintStrength(0.8, EvidencePolarity.OPPOSE)),
+            "support-c": RelationConstraintProfile(
+                ConstraintIdentity("r3", *key, Provenance("c")),
+                ConstraintStrength(0.2, EvidencePolarity.SUPPORT)),
+        }
+        runtime = EnterpriseRuntime(
+            mb_graph=MBGraph(),
+            relation_profile_provider=lambda efp, prediction, active_graph: profiles,
+        )
+
+        result = runtime.handle_ticket(BusinessInput("IT-34", "customer", "workflow", "refund"))
+
+        self.assertEqual(result.structural_conflict_status, "STRUCTURAL_CONFLICT")
+        self.assertEqual(result.structural_conflict_count, 2)
+        self.assertAlmostEqual(result.predicted_conflict_heat, 2.0)
+        self.assertEqual(len(runtime.conflict_inbox.get_case("IT-34").conflicts), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

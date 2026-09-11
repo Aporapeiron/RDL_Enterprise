@@ -297,8 +297,11 @@ class EnterpriseRuntime:
                     provenance=f"runtime-dispatch:{efp.ticket_id}",
                 )
         conflict_status = "STRUCTURAL_CONFLICT" if conflict_items else "NO_CONFLICT"
-        conflict_count = sum(len(item.conflicts) for item in conflict_items)
-        conflict_heat = sum(item.total_predicted_heat for item in conflict_items)
+        # Each inbox insertion returns the case's cumulative read model. Use
+        # the final snapshot once instead of summing cumulative snapshots.
+        conflict_summary = conflict_items[-1] if conflict_items else None
+        conflict_count = len(conflict_summary.conflicts) if conflict_summary else 0
+        conflict_heat = conflict_summary.total_predicted_heat if conflict_summary else 0.0
 
         trace = pred.metadata.get("interpretation_trace")
         snapshot = CaseSnapshot(
