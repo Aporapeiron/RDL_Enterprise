@@ -8,6 +8,7 @@ import json
 import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "src"))
@@ -18,6 +19,7 @@ from rdl_enterprise.authority import AuthorityContext
 from rdl_enterprise.runtime import EnterpriseRuntime
 from rdl_enterprise.snapshot import BusinessInput, CaseStatus, FeedbackResult
 from rdl_core import CommitmentOrigin
+import rdl_enterprise.constraint as constraint_module
 
 MANUAL = ROOT / "data" / "manual_sedimentation" / "manual.md"
 CASES = ROOT / "data" / "manual_sedimentation" / "cases.json"
@@ -48,27 +50,43 @@ def graph_for_depth(seed: MBGraph, depth: str) -> MBGraph:
 def run_depth(seed: MBGraph, cases: list[dict], depth: str) -> dict:
     runtime = EnterpriseRuntime(mb_graph=graph_for_depth(seed, depth))
     observations = []
-    for case in cases:
-        input_data = BusinessInput(ticket_id=case["case_id"], user_id="synthetic", category=case["category"], query_text=case["input"])
-        if case["expected_behavior"] == "NOT_EVALUATED":
-            result = runtime.handle_ticket(input_data)
-            observed_status = CaseStatus.PENDING
-        elif case["expected_behavior"] == "UNKNOWN":
-            result = runtime.handle_ticket(input_data)
-            runtime.expire_pending_tickets([case["case_id"]])
-            observed_status = CaseStatus.UNKNOWN
-        else:
-            result = runtime.handle_ticket(input_data, feedback=FeedbackResult(user_resolved=True))
-            observed_status = result.status
-        if observed_status in (CaseStatus.PENDING, CaseStatus.UNKNOWN):
-            actual = "HOLD_UNRESOLVED"
-        elif result.status == CaseStatus.SUCCESS and not result.hitl_required:
-            actual = "APPLY"
-        elif result.hitl_required:
-            actual = "ASK_HUMAN"
-        else:
-            actual = "HOLD_UNRESOLVED"
-        observations.append((case, result, actual, observed_status))
+    trace = {"calls": 0, "edges": set(), "case_ids": set()}
+    original_check = constraint_module._check_node_relation
+
+    def traced_check(node, candidate):
+        trace["calls"] += 1
+        node_id = getattr(node, "id", None)
+        candidate_id = getattr(candidate, "id", None)
+        relation = getattr(node, "node_relations", {}).get(candidate_id)
+        reverse = getattr(candidate, "node_relations", {}).get(node_id)
+        if relation is not None or reverse is not None:
+            trace["edges"].add((node_id, candidate_id, relation or reverse))
+            trace["case_ids"].add(trace["current_case_id"])
+        return original_check(node, candidate)
+
+    with patch.object(constraint_module, "_check_node_relation", side_effect=traced_check):
+        for case in cases:
+            trace["current_case_id"] = case["case_id"]
+            input_data = BusinessInput(ticket_id=case["case_id"], user_id="synthetic", category=case["category"], query_text=case["input"])
+            if case["expected_behavior"] == "NOT_EVALUATED":
+                result = runtime.handle_ticket(input_data)
+                observed_status = CaseStatus.PENDING
+            elif case["expected_behavior"] == "UNKNOWN":
+                result = runtime.handle_ticket(input_data)
+                runtime.expire_pending_tickets([case["case_id"]])
+                observed_status = CaseStatus.UNKNOWN
+            else:
+                result = runtime.handle_ticket(input_data, feedback=FeedbackResult(user_resolved=True))
+                observed_status = result.status
+            if observed_status in (CaseStatus.PENDING, CaseStatus.UNKNOWN):
+                actual = "HOLD_UNRESOLVED"
+            elif result.status == CaseStatus.SUCCESS and not result.hitl_required:
+                actual = "APPLY"
+            elif result.hitl_required:
+                actual = "ASK_HUMAN"
+            else:
+                actual = "HOLD_UNRESOLVED"
+            observations.append((case, result, actual, observed_status))
     behavior_cases = [item for item in observations if item[0]["expected_behavior"] in {"APPLY", "ASK_HUMAN", "HOLD_UNRESOLVED"}]
     status_cases = [item for item in observations if item[0]["expected_behavior"] in {"UNKNOWN", "NOT_EVALUATED"}]
     behavior_match_rate = sum(item[2] == item[0]["expected_behavior"] for item in behavior_cases) / max(1, len(behavior_cases))
@@ -128,6 +146,11 @@ def run_depth(seed: MBGraph, cases: list[dict], depth: str) -> dict:
     return {
         "depth": depth,
         "case_ids": [case["case_id"] for case in cases],
+        "trace_case_ids": sorted(trace["case_ids"]),
+        "relation_consumed_count": len(trace["edges"]),
+        "relation_traversal_count": trace["calls"],
+        "relation_effect_count": 0,
+        "relation_effect_status": "NOT_EVALUATED: no relation-sensitive counterfactual case established",
         "education_proxy": len(runtime.mb_graph.nodes) + relation_count,
         "node_count": len(runtime.mb_graph.nodes),
         "relation_count": relation_count,
