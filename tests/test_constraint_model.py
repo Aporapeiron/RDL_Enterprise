@@ -2969,6 +2969,56 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
         self.assertEqual([node.id for node in selected], ["rank-seed", "rank-child-2"])
         self.assertEqual(len(cascade.select_active_constraint_subgraph(graph.list_nodes(), efp, limit=1)), 2)
 
+    def test_relation_breadth_reaches_interpretation_trace_without_mutating_mb(self):
+        """The active-view difference is visible in the existing Level 3 trace."""
+        from copy import deepcopy
+        from rdl_enterprise.cascade import InterpCascade, CascadeConfig
+        from rdl_enterprise.mb_graph import MBGraph, MBNode, CommitmentOrigin
+        from rdl_enterprise.snapshot import BusinessInput
+
+        class TraceBridge:
+            def resolve(self, efp, mb_view=None):
+                return {"type": "direct_reply", "payload": "bounded-result"}
+
+        graph = MBGraph()
+        seed = MBNode(
+            id="trace-seed",
+            domain="support",
+            trigger_pattern={"exact_keys": ["abcde"]},
+            action_template={"type": "direct_reply", "payload": "seed"},
+            confidence=0.7,
+            approval_count=5,
+        )
+        child = MBNode(
+            id="trace-child",
+            domain="support",
+            trigger_pattern={"exact_keys": ["bcdef"]},
+            action_template={"type": "direct_reply", "payload": "child"},
+            confidence=0.6,
+            approval_count=4,
+        )
+        seed.node_relations = {child.id: "support"}
+        graph.commit_node(seed, origin=CommitmentOrigin.TEST_FIXTURE)
+        graph.commit_node(child, origin=CommitmentOrigin.TEST_FIXTURE)
+        before = deepcopy(graph)
+        efp = BusinessInput("T_BREADTH_TRACE", "U1", "support", "abcdf")
+
+        narrow = InterpCascade(
+            graph,
+            llm_bridge=TraceBridge(),
+            config=CascadeConfig(level2_threshold=1.1, relation_breadth_limit=1),
+        ).interpret(efp)
+        wide = InterpCascade(
+            graph,
+            llm_bridge=TraceBridge(),
+            config=CascadeConfig(level2_threshold=1.1, relation_breadth_limit=2),
+        ).interpret(efp)
+
+        self.assertEqual(narrow.selected_locus_ids, ["trace-seed"])
+        self.assertEqual(wide.selected_locus_ids, ["trace-seed", "trace-child"])
+        self.assertEqual(graph.get("trace-seed").node_relations, before.get("trace-seed").node_relations)
+        self.assertEqual(graph.content_hash(), before.content_hash())
+
     def test_bundle_level_vs_node_level_ablation(self):
         """P4/P5 契約: 複数ノード束 L において、束全体の切断で ΔF > 0 が生じた場合でも、単一ノード個別切断 (Leave-One-Out) により effect_verified_node_ids を分離・限定すること (BASE v2.0 §4.2)"""
         from rdl_enterprise.mb_graph import MBGraph, MBNode, CommitmentOrigin
