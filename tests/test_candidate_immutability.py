@@ -1,6 +1,7 @@
 import unittest
 import sys
 import os
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
@@ -545,6 +546,36 @@ class TestCandidateImmutabilityAndBinding(unittest.TestCase):
         result = runtime.expire_pending_tickets(["T_DIFF_UNKNOWN"])[0]
         self.assertEqual(result.status, CaseStatus.UNKNOWN)
         self.assertEqual(result.difference_reaction_status, "NOT_EVALUATED")
+
+    def test_difference_gate_does_not_reduce_canary_safety_signal(self):
+        """Basic差異閾値はdeployment safety用のraw差異を鈍らせない。"""
+        runtime = EnterpriseRuntime(
+            mb_graph=self.prod_graph,
+            theta_0=5.0,
+            difference_response_threshold=9.0,
+        )
+        proposal = ReorganizationProposal(
+            proposal_id="prop_diff_canary",
+            hot_node_id="node_wf",
+            candidate_mb=self.candidate_graph,
+            durability_test_result={"all_passed": True},
+            policy=PromotionPolicy(require_durability=True, require_shadow=False, require_human_approval=True),
+            status=ProposalState.APPROVAL_READY,
+        )
+        runtime.pending_reorganizations["prop_diff_canary"] = proposal
+        authority = AuthorityContext(
+            actor_id="mgr_diff",
+            role="manager",
+            scope="workflow",
+            actor_type="human",
+            authenticated_by="idp_sso",
+        )
+        runtime.promote_candidate_mb("prop_diff_canary", authority=authority, use_canary=True, canary_ratio=1.0, theta_canary=100.0)
+        runtime.dispatch_ticket(BusinessInput("T_DIFF_CANARY", "U1", "workflow", "稟議申請の実行"))
+        with patch.object(runtime.canary_manager, "record_feedback", wraps=runtime.canary_manager.record_feedback) as record_feedback:
+            result = runtime.resolve_ticket_feedback("T_DIFF_CANARY", FeedbackResult(user_resolved=False, human_rejected=True))
+        self.assertEqual(result.difference_reaction_status, "BELOW_CURRENT_THRESHOLD")
+        self.assertGreater(record_feedback.call_args.kwargs["e_pred"], 0.0)
 
     def test_runtime_wires_action_capability_from_mbnode_definition(self):
         """ActionCapability 作用定義貫通: MBNode の action_template 定義が Runtime を経て Ledger に正確に伝播すること"""

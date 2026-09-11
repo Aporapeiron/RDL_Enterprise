@@ -612,7 +612,7 @@ class EnterpriseRuntime:
                 is_rb, rb_reason = self.canary_manager.record_feedback(
                     ticket_id=ticket_id,
                     is_canary=True,
-                    e_pred=reaction_e_pred,
+                    e_pred=e_pred,
                     e_input=e_input,
                     rejected=rejected,
                     current_heat=current_canary_h,
