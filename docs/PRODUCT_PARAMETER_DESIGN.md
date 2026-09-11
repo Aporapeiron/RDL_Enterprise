@@ -30,6 +30,37 @@ F と F' は同一の更新前 M_Bから形成する
 
 ## 2. 内部候補
 
+### v0.1調査結果: 差異反応経路
+
+現在の実装では、`CaseSnapshot.record_feedback()` がdispatch時に凍結した
+同一 `M_B` / `FrozenInterpretationContext` から `F'` を再解釈する。
+`F` と `F'` の差は、次の成分から `e_pred` として合算される。
+
+```text
+matched nodeの変化       0.5
+action typeの変化         0.4
+expected outcomeの変化    0.4
+confidenceの差             0.4 * gap
+回答contentの変化          0.2
+```
+
+入力境界の差は `e_input` として別に計算され、短い入力、category欠落、
+新規知識提供などを含む。最終的に `e_pred` / `e_input` は
+`EnterpriseRuntime._finalize_case_metabolism()` の `HState.add_heat()` と
+`record_observation()` へ渡される。
+
+この経路から、現時点では次を確認できる。
+
+- `F` と `F'` は同一更新前Contextから形成される。
+- prediction error と input error は別フィールドで保持される。
+- `e_pred` はscalarだが、差異理由は説明文字列としても保存される。
+- 現在のRuntimeには、`e_pred < tau_diff` を反応抑制するBasic gateはまだない。
+- したがって `difference_response_threshold` は設計候補であり、現行挙動を
+  説明する既存parameterではない。
+
+thresholdを実装する場合も、Observationや `e_pred` の記録を削除せず、
+`observed_difference` と `reaction_status=below_current_threshold` を分離する。
+
 ### 違いへの感度 / DifferenceSensitivity
 
 候補: `w_pred`, `w_input`, `gamma`, ξ_obs各重み、freshness sensitivity、opposing-signal thresholds、一部のconfidence/rupture閾値。`theta`は下流の維持・再編境界であり、単純に感度と同一視しない。
