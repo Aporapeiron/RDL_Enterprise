@@ -116,6 +116,7 @@ class EnterpriseRuntime:
         store_path: Optional[str] = None,
         difference_response_threshold: Optional[float] = None,
         human_confirmation_threshold: Optional[float] = None,
+        revision_threshold: Optional[float] = None,
     ):
         self.mb_graph = mb_graph or MBGraph()
         self.h_state = HState(theta_0=theta_0, gamma=gamma)
@@ -129,6 +130,9 @@ class EnterpriseRuntime:
         if difference_response_threshold is not None and difference_response_threshold < 0:
             raise ValueError("difference_response_threshold must be non-negative")
         self.difference_response_threshold = difference_response_threshold
+        if revision_threshold is not None and revision_threshold < 0:
+            raise ValueError("revision_threshold must be non-negative")
+        self.revision_threshold = revision_threshold
         self.case_store = SQLiteCaseStore(store_path) if store_path else None
         if self.case_store:
             persisted = self.case_store.load_runtime_state()
@@ -636,7 +640,11 @@ class EnterpriseRuntime:
             self.h_state.dissipate(node_inertias)
 
             current_prod_h = self.h_state.version_total_heat(mb_ver)
-            current_theta = self.h_state.theta_eff(mb_ver)
+            current_theta = (
+                self.revision_threshold
+                if self.revision_threshold is not None
+                else self.h_state.theta_eff(mb_ver)
+            )
             current_h = current_prod_h
 
             if current_prod_h >= current_theta:

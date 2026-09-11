@@ -43,7 +43,7 @@ inspection and the existing tests:
 
 | parameter | current value | location | consumer / runtime path | semantic role | definition | state | tunability / axis | T0-sensitive notes |
 |---|---:|---|---|---|---|---|---|---|
-| `theta_0` | 2.0 | `runtime.py:EnterpriseRuntime` | `HState.theta_eff`, leap/reorganization gate | base heat threshold | NAMED_DEFAULT | EFFECTIVE | ADVANCED_TUNABLE / update aggressiveness | Do not confuse with rupture truth |
+| `theta_0` | 2.0 | `runtime.py:EnterpriseRuntime` | `HState.theta_eff`, leap/reorganization gate | base heat threshold | NAMED_DEFAULT | EFFECTIVE | ADVANCED_TUNABLE / update aggressiveness | internal base; Basic uses separate `revision_threshold` |
 | `gamma` | 0.05 | `runtime.py`, `h_state.py` | `HState.dissipate` | heat cooling | NAMED_DEFAULT | EFFECTIVE | ADVANCED_TUNABLE / error sensitivity | Does not erase unresolved evidence |
 | `w_pred` | 1.0 | `h_state.py:HState` | `HeatVector.total`, version/global heat | prediction-error weight | NAMED_DEFAULT | CONSUMED | ADVANCED_TUNABLE / error sensitivity | weighting is not truth |
 | `w_input` | 0.4 | `h_state.py:HState` | `HeatVector.total` | input-error weight | NAMED_DEFAULT | EFFECTIVE | ADVANCED_TUNABLE / error sensitivity | keep distinct from prediction error |
@@ -77,6 +77,7 @@ inspection and the existing tests:
 | `kappa_threshold` | 0.2 | `human.py:HumanQuery` | HITL evaluation | inertia warning | NAMED_DEFAULT | EFFECTIVE | BASIC_DERIVED / human sensitivity | warning is not rejection |
 | `min_confidence` | 0.4 | `human.py:HumanQuery` | HITL evaluation | confidence gate | NAMED_DEFAULT | EFFECTIVE | BASIC_DERIVED / human sensitivity | low confidence is not false |
 | `human_confirmation_threshold` | `None` | `runtime.py:EnterpriseRuntime` → `human.py:HumanQuery` | confidence gate | Basic confirmation boundary override | NAMED_DEFAULT | EFFECTIVE when explicit | BASIC_DERIVED / human sensitivity | does not bypass mandatory authority or structural escalation; unknown states remain distinct |
+| `revision_threshold` | `None` | `runtime.py:EnterpriseRuntime` | H/revision gate | Basic reinspection boundary override | NAMED_DEFAULT | EFFECTIVE when explicit | BASIC_DERIVED / update aggressiveness | changes only H-to-reinspection timing; does not change H, safety, promotion, or authority |
 | `minimum_cases` | 1 | `promotion_gate.py:PromotionPolicy` | promotion verification | minimum resolved cases | NAMED_CONFIG | CONSUMED | BASIC_DERIVED / sedimentation caution |
 | `minimum_unique_patterns` | 1 | `promotion_gate.py:PromotionPolicy` | promotion verification | diversity minimum | NAMED_CONFIG | CONSUMED | BASIC_DERIVED / sedimentation caution |
 | `max_allowed_regression_rate` | 0.05 | `promotion_gate.py:PromotionPolicy` | promotion/shadow gate | tolerated regression | NAMED_CONFIG | EFFECTIVE | ADVANCED_TUNABLE / update aggressiveness |
@@ -96,6 +97,7 @@ inspection and the existing tests:
 | `timeout_interval_ticks` | 16 | `simulation_adapter.py` | simulation timeout scan | simulation scheduling | NAMED_DEFAULT | INACTIVE for production API | SYSTEM_INTERNAL |
 | `case_id_path_escape` | safe="" | provider adapters | URL construction | path boundary | STRUCTURAL_FIXED | CONSUMED | CURRENT_BOUNDARY_GUARD / security | identifier must not alter path |
 | `difference_response_threshold` | `None` | `runtime.py:EnterpriseRuntime` | `_finalize_case_metabolism` | difference reaction deadband | NAMED_DEFAULT | EFFECTIVE when explicit | BASIC_DERIVED / error sensitivity | raw difference remains observable; UNKNOWN bypasses gate |
+| `revision_threshold` | `None` | `runtime.py:EnterpriseRuntime` | H/reorganization gate | Basic reinspection boundary override | NAMED_DEFAULT | EFFECTIVE when explicit | BASIC_DERIVED / update aggressiveness | changes only H-to-reinspection timing; does not change H, safety, promotion, or authority |
 | `xi_obs.unclassified_weight` | 0.3 | `h_state.py:theta_eff` | ξ observation score | unclassified-input share | EMBEDDED_MAGIC | CONSUMED | ADVANCED_TUNABLE / error sensitivity | status categories remain distinct |
 | `xi_obs.missing_weight` | 0.2 | `h_state.py:theta_eff` | ξ observation score | missing-information share | EMBEDDED_MAGIC | CONSUMED | ADVANCED_TUNABLE / error sensitivity | missing is not false |
 | `xi_obs.unknown_weight` | 0.3 | `h_state.py:theta_eff` | ξ observation score | unknown-input share | EMBEDDED_MAGIC | CONSUMED | ADVANCED_TUNABLE / error sensitivity | unknown is not failure |
@@ -210,7 +212,7 @@ implemented five-axis profile.
 | Error sensitivity | `w_pred`, `w_input`, `gamma`, freshness and opposing-signal thresholds | provisional |
 | Relation reference depth | `relation_hop`, `active_subgraph_limit`, `relevance_floor`, propagation weights, `constraint_boost_cap` | provisional; hop is structural |
 | Human confirmation sensitivity | `min_confidence`, `kappa_threshold`, `require_human_approval` | provisional; approval is also a safety invariant |
-| Update aggressiveness | `theta_0`, rupture thresholds, canary heat/failure thresholds | provisional |
+| Update aggressiveness | `revision_threshold` (Basic), `theta_0`, rupture thresholds, canary heat/failure thresholds | provisional; Basic boundary only |
 | Knowledge sedimentation caution | `min_survive_approvals`, `min_survive_relevance`, durability/shadow/promotion requirements | provisional |
 
 Important parameters outside this draft include transport timeouts, URL

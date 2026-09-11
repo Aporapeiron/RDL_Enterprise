@@ -345,6 +345,46 @@ class TestRDLCore(unittest.TestCase):
         self.assertEqual(runtime.mb_graph.get("node_wf").action_template["payload"], "http://new-saas.corp")
         self.assertEqual(len(runtime.pending_reorganizations), 0)
 
+    def test_revision_threshold_changes_only_reinspection_boundary(self):
+        """同じ更新前M_B・入力・Hで、見直し境界だけが再編開始を変える。"""
+        graph = MBGraph()
+        graph.commit_node(MBNode(
+            id="node_revision_threshold",
+            domain="workflow",
+            trigger_pattern={"exact_keys": ["稟議申請"]},
+            action_template={"type": "direct_reply", "payload": "old"},
+        ), origin=CommitmentOrigin.TEST_FIXTURE)
+        efp = BusinessInput("T_REVISION_THRESHOLD", "U1", "workflow", "稟議申請")
+        feedback = FeedbackResult(user_resolved=False, human_rejected=True)
+
+        maintain = EnterpriseRuntime(
+            mb_graph=MBGraph.from_dict(graph.to_dict()),
+            theta_0=2.0,
+            revision_threshold=2.0,
+        )
+        early = EnterpriseRuntime(
+            mb_graph=MBGraph.from_dict(graph.to_dict()),
+            theta_0=2.0,
+            revision_threshold=0.1,
+        )
+        maintain_result = maintain.handle_ticket(efp, feedback=feedback)
+        early_result = early.handle_ticket(efp, feedback=feedback)
+
+        self.assertEqual(maintain_result.e_prediction, early_result.e_prediction)
+        self.assertEqual(maintain_result.e_input, early_result.e_input)
+        self.assertAlmostEqual(maintain_result.current_h, early_result.current_h, places=6)
+        self.assertFalse(maintain_result.transition_to_m_delta)
+        self.assertTrue(early_result.transition_to_m_delta)
+        self.assertEqual(len(maintain.pending_reorganizations), 0)
+        self.assertEqual(len(early.pending_reorganizations), 1)
+
+    def test_revision_threshold_does_not_change_raw_heat_or_canary_threshold(self):
+        """Basic見直し境界はH生成とCanary安全閾値を変更しない。"""
+        runtime = EnterpriseRuntime(theta_0=2.0, revision_threshold=0.1)
+        self.assertEqual(runtime.h_state.theta_0, 2.0)
+        self.assertIsNone(runtime.canary_manager.active_deployment)
+        self.assertEqual(runtime.canary_manager.action_ledger.records, [])
+
     def test_delegated_authority_and_scope_limitation(self):
         """自己例外化禁止：委任権限なしでの自動昇格拒絶とスコープ限定の検証"""
         from rdl_enterprise.authority import AuthorityContext
