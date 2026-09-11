@@ -385,6 +385,14 @@ class TestRDLCore(unittest.TestCase):
         self.assertIsNone(runtime.canary_manager.active_deployment)
         self.assertEqual(runtime.canary_manager.action_ledger.records, [])
 
+    def test_revision_threshold_keeps_xi_contextual_adjustment(self):
+        """明示した基底境界でもξ_obs補正と安全下限を迂回しない。"""
+        h = HState(theta_0=2.0)
+        self.assertAlmostEqual(h.theta_eff_for_base(2.0), 2.0)
+        h.record_observation(missing_info=True)
+        self.assertAlmostEqual(h.theta_eff_for_base(2.0), 1.84)
+        self.assertEqual(h.theta_eff_for_base(0.1), 0.5)
+
     def test_delegated_authority_and_scope_limitation(self):
         """自己例外化禁止：委任権限なしでの自動昇格拒絶とスコープ限定の検証"""
         from rdl_enterprise.authority import AuthorityContext

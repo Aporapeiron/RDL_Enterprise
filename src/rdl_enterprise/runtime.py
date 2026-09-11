@@ -641,7 +641,7 @@ class EnterpriseRuntime:
 
             current_prod_h = self.h_state.version_total_heat(mb_ver)
             current_theta = (
-                self.revision_threshold
+                self.h_state.theta_eff_for_base(self.revision_threshold, mb_ver)
                 if self.revision_threshold is not None
                 else self.h_state.theta_eff(mb_ver)
             )

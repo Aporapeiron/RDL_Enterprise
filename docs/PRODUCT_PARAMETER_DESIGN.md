@@ -86,8 +86,8 @@ relation traversal bound、`relevance_floor`、伝播重み、`constraint_boost_
 ### 見直しの早さ / RevisionAggressiveness
 
 現在の最小実装は `EnterpriseRuntime.revision_threshold` で、明示時だけ
-`H` と再編開始境界の関係を上書きする。未指定なら既存の
-`HState.theta_eff()` を使う。これは再検査・M_Δ候補へ進むタイミングだけを
+`H` と再編開始境界の基底値を上書きする。既存の `ξ_obs` による文脈補正と
+安全下限は維持し、未指定なら既存の `HState.theta_eff()` を使う。これは再検査・M_Δ候補へ進むタイミングだけを
 調整し、Hの生成、raw Observation、Canary安全、Promotion、Authorityを変更しない。
 `H >= threshold` は再編開始であり、Truth・Commitment・Active化ではない。
 

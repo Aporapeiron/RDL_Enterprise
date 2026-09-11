@@ -169,6 +169,11 @@ class HState:
         g_xi = 0.8 * xi
         return max(0.5, self.theta_0 - g_xi)
 
+    def theta_eff_for_base(self, base_threshold: float, mb_version: str = "prod") -> float:
+        """Apply the existing observation-context adjustment to a revision base."""
+        xi = self.xi_obs(mb_version=mb_version)
+        return max(0.5, base_threshold - 0.8 * xi)
+
     def dissipate(self, node_inertias: Dict[str, float]):
         """
         熱の受動的自然散逸（冷却）
@@ -302,5 +307,4 @@ class HState:
                     max_nid = nid
 
         return max_nid
-
 
