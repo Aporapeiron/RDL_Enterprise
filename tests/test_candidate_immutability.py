@@ -513,6 +513,39 @@ class TestCandidateImmutabilityAndBinding(unittest.TestCase):
         self.assertEqual(snapshot.e_prediction, snapshot.f_prime.e_prediction_delta)
         self.assertGreater(r_res.e_prediction, 0.0)
 
+    def test_difference_response_threshold_is_single_basic_gate(self):
+        """同一更新前 M_B の差異だけを、明示した閾値で反応対象化する。"""
+        efp = BusinessInput("T_DIFF_GATE", "U1", "workflow", "稟議申請の承認")
+        feedback = FeedbackResult(user_resolved=False, human_rejected=True)
+        active_runtime = EnterpriseRuntime(
+            mb_graph=MBGraph.from_dict(self.prod_graph.to_dict()),
+            difference_response_threshold=0.0,
+        )
+        quiet_runtime = EnterpriseRuntime(
+            mb_graph=MBGraph.from_dict(self.prod_graph.to_dict()),
+            difference_response_threshold=9.0,
+        )
+
+        active = active_runtime.handle_ticket(efp, feedback=feedback)
+        quiet = quiet_runtime.handle_ticket(efp, feedback=feedback)
+
+        self.assertGreater(active.e_prediction, 0.0)
+        self.assertEqual(active.e_prediction, quiet.e_prediction)
+        self.assertEqual(active.difference_reaction_status, "ACTIVE")
+        self.assertEqual(quiet.difference_reaction_status, "BELOW_CURRENT_THRESHOLD")
+        self.assertGreater(active.current_h, quiet.current_h)
+
+    def test_difference_gate_does_not_reclassify_unknown(self):
+        """UNKNOWNは小さな差異として抑制せず、閾値gateを適用しない。"""
+        runtime = EnterpriseRuntime(
+            mb_graph=MBGraph.from_dict(self.prod_graph.to_dict()),
+            difference_response_threshold=9.0,
+        )
+        runtime.dispatch_ticket(BusinessInput("T_DIFF_UNKNOWN", "U1", "workflow", "稟議申請の承認"))
+        result = runtime.expire_pending_tickets(["T_DIFF_UNKNOWN"])[0]
+        self.assertEqual(result.status, CaseStatus.UNKNOWN)
+        self.assertEqual(result.difference_reaction_status, "NOT_EVALUATED")
+
     def test_runtime_wires_action_capability_from_mbnode_definition(self):
         """ActionCapability 作用定義貫通: MBNode の action_template 定義が Runtime を経て Ledger に正確に伝播すること"""
         graph = MBGraph(version="v1.0")

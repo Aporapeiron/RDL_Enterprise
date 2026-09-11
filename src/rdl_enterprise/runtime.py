@@ -57,6 +57,7 @@ class TicketResolutionResult:
     reorganization_proposal_id: Optional[str] = None
     canary_rolled_back: bool = False
     canary_rollback_reason: Optional[str] = None
+    difference_reaction_status: str = "NOT_EVALUATED"
 
 
 @dataclass
@@ -77,6 +78,7 @@ class TicketExecutionResult:
     cost_tier: int
     promoted_to_mb: bool = False
     reorganization_proposal_id: Optional[str] = None
+    difference_reaction_status: str = "NOT_EVALUATED"
 
 
 @dataclass
@@ -112,6 +114,7 @@ class EnterpriseRuntime:
         default_promotion_policy: Optional[PromotionPolicy] = None,  # カスタム昇格ポリシー (未指定時はドメイン標準)
         external_compensation_client: Optional[Any] = None,  # 外部補償API/メッセージングクライアント (fail-closed防止)
         store_path: Optional[str] = None,
+        difference_response_threshold: Optional[float] = None,
     ):
         self.mb_graph = mb_graph or MBGraph()
         self.h_state = HState(theta_0=theta_0, gamma=gamma)
@@ -122,6 +125,9 @@ class EnterpriseRuntime:
         self.auto_promote_authority = auto_promote_authority
         self.default_promotion_policy = default_promotion_policy
         self.external_compensation_client = external_compensation_client
+        if difference_response_threshold is not None and difference_response_threshold < 0:
+            raise ValueError("difference_response_threshold must be non-negative")
+        self.difference_response_threshold = difference_response_threshold
         self.case_store = SQLiteCaseStore(store_path) if store_path else None
         if self.case_store:
             persisted = self.case_store.load_runtime_state()
@@ -535,10 +541,25 @@ class EnterpriseRuntime:
             eval_graph = getattr(frozen_ctx, "frozen_mb", None) if frozen_ctx else self.mb_graph
             mb_ver = getattr(eval_graph, "version", getattr(self.mb_graph, "version", "prod"))
 
+        # Raw difference remains observable; the optional Basic gate only controls
+        # whether an ordinary resolved difference contributes reaction heat.
+        if is_timeout or status in (CaseStatus.UNKNOWN, CaseStatus.PENDING):
+            difference_reaction_status = "NOT_EVALUATED"
+            reaction_e_pred = e_pred
+        elif self.difference_response_threshold is None:
+            difference_reaction_status = "NOT_EVALUATED"
+            reaction_e_pred = e_pred
+        elif e_pred < self.difference_response_threshold:
+            difference_reaction_status = "BELOW_CURRENT_THRESHOLD"
+            reaction_e_pred = 0.0
+        else:
+            difference_reaction_status = "ACTIVE"
+            reaction_e_pred = e_pred
+
         # 熱 H の蓄積 (Version-aware: カナリアの熱は本番熱状態を汚染させない)
         self.h_state.add_heat(
             target_nid,
-            pred_err=e_pred,
+            pred_err=reaction_e_pred,
             input_err=e_input,
             mb_version=mb_ver,
             is_canary=snapshot.is_canary,
@@ -591,7 +612,7 @@ class EnterpriseRuntime:
                 is_rb, rb_reason = self.canary_manager.record_feedback(
                     ticket_id=ticket_id,
                     is_canary=True,
-                    e_pred=e_pred,
+                    e_pred=reaction_e_pred,
                     e_input=e_input,
                     rejected=rejected,
                     current_heat=current_canary_h,
@@ -662,6 +683,7 @@ class EnterpriseRuntime:
             reorganization_proposal_id=proposal_id,
             canary_rolled_back=canary_rolled_back,
             canary_rollback_reason=canary_rollback_reason,
+            difference_reaction_status=difference_reaction_status,
         )
         if self.case_store:
             # Persist only after H/cache/M_B metabolism has completed.
@@ -1008,6 +1030,7 @@ class EnterpriseRuntime:
                 cost_tier=dispatch_res.cost_tier,
                 promoted_to_mb=resol_res.promoted_to_mb,
                 reorganization_proposal_id=resol_res.reorganization_proposal_id,
+                difference_reaction_status=resol_res.difference_reaction_status,
             )
         else:
             current_h = self.h_state.global_heat.total()
@@ -1027,6 +1050,7 @@ class EnterpriseRuntime:
                 transition_to_m_delta=False,
                 cost_tier=dispatch_res.cost_tier,
                 promoted_to_mb=False,
+                difference_reaction_status="NOT_EVALUATED",
             )
 
     def get_metrics(self) -> Dict[str, Any]:
