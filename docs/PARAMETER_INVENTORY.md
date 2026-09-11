@@ -93,7 +93,7 @@ inspection and the existing tests:
 | `compensation_timeout` | 3.0 | `canary.py` | external compensation | transport timeout | NAMED_DEFAULT | CONSUMED | SYSTEM_INTERNAL / durability |
 | `max_allowed_regression_rate` | 0.05 | `shadow.py` | shadow gate | candidate regression limit | NAMED_DEFAULT | CONSUMED | ADVANCED_TUNABLE / update aggressiveness |
 | `timeout_interval_ticks` | 16 | `simulation_adapter.py` | simulation timeout scan | simulation scheduling | NAMED_DEFAULT | INACTIVE for production API | SYSTEM_INTERNAL |
-| `case_id_path_escape` | safe="" | provider adapters | URL construction | path boundary | STRUCTURAL_FIXED | CONSUMED | INVARIANT / security | identifier must not alter path |
+| `case_id_path_escape` | safe="" | provider adapters | URL construction | path boundary | STRUCTURAL_FIXED | CONSUMED | CURRENT_BOUNDARY_GUARD / security | identifier must not alter path |
 | `xi_obs.unclassified_weight` | 0.3 | `h_state.py:theta_eff` | ξ observation score | unclassified-input share | EMBEDDED_MAGIC | CONSUMED | ADVANCED_TUNABLE / error sensitivity | status categories remain distinct |
 | `xi_obs.missing_weight` | 0.2 | `h_state.py:theta_eff` | ξ observation score | missing-information share | EMBEDDED_MAGIC | CONSUMED | ADVANCED_TUNABLE / error sensitivity | missing is not false |
 | `xi_obs.unknown_weight` | 0.3 | `h_state.py:theta_eff` | ξ observation score | unknown-input share | EMBEDDED_MAGIC | CONSUMED | ADVANCED_TUNABLE / error sensitivity | unknown is not failure |
