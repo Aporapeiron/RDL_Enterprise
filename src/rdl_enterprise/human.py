@@ -7,9 +7,17 @@ class HumanQuery:
     人間問い合わせ（HITL: Human-in-the-Loop）制御ゲート
     κゲート判定、権限境界チェック、エスカレーション判定を司る
     """
-    def __init__(self, kappa_threshold: float = 0.2, min_confidence: float = 0.4):
+    def __init__(
+        self,
+        kappa_threshold: float = 0.2,
+        min_confidence: float = 0.4,
+        human_confirmation_threshold: Optional[float] = None,
+    ):
         self.kappa_threshold = kappa_threshold
         self.min_confidence = min_confidence
+        if human_confirmation_threshold is not None and not 0.0 <= human_confirmation_threshold <= 1.0:
+            raise ValueError("human_confirmation_threshold must be between 0.0 and 1.0")
+        self.human_confirmation_threshold = human_confirmation_threshold
 
     def evaluate(self, efp: BusinessInput, pred: InterpretationPrediction, node: Optional[MBNode]) -> Dict[str, Any]:
         """
@@ -44,10 +52,15 @@ class HumanQuery:
                 }
 
         # 3. 確信度チェック
-        if pred.confidence < self.min_confidence:
+        confidence_threshold = (
+            self.human_confirmation_threshold
+            if self.human_confirmation_threshold is not None
+            else self.min_confidence
+        )
+        if pred.confidence < confidence_threshold:
             return {
                 "must_ask": True,
-                "reason": f"確信度不足 ({pred.confidence:.2f} < {self.min_confidence})",
+                "reason": f"確信度不足 ({pred.confidence:.2f} < {confidence_threshold})",
                 "query_type": "ask_guidance",
             }
 

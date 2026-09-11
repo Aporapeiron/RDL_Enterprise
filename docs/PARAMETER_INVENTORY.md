@@ -76,6 +76,7 @@ inspection and the existing tests:
 | `min_survive_relevance` | 0.4 | `constraint.py:ConstraintConfig` | survival evaluation | minimum relevance | NAMED_CONFIG | CONSUMED | BASIC_DERIVED / sedimentation caution |
 | `kappa_threshold` | 0.2 | `human.py:HumanQuery` | HITL evaluation | inertia warning | NAMED_DEFAULT | EFFECTIVE | BASIC_DERIVED / human sensitivity | warning is not rejection |
 | `min_confidence` | 0.4 | `human.py:HumanQuery` | HITL evaluation | confidence gate | NAMED_DEFAULT | EFFECTIVE | BASIC_DERIVED / human sensitivity | low confidence is not false |
+| `human_confirmation_threshold` | `None` | `runtime.py:EnterpriseRuntime` → `human.py:HumanQuery` | confidence gate | Basic confirmation boundary override | NAMED_DEFAULT | EFFECTIVE when explicit | BASIC_DERIVED / human sensitivity | does not bypass mandatory authority or structural escalation; unknown states remain distinct |
 | `minimum_cases` | 1 | `promotion_gate.py:PromotionPolicy` | promotion verification | minimum resolved cases | NAMED_CONFIG | CONSUMED | BASIC_DERIVED / sedimentation caution |
 | `minimum_unique_patterns` | 1 | `promotion_gate.py:PromotionPolicy` | promotion verification | diversity minimum | NAMED_CONFIG | CONSUMED | BASIC_DERIVED / sedimentation caution |
 | `max_allowed_regression_rate` | 0.05 | `promotion_gate.py:PromotionPolicy` | promotion/shadow gate | tolerated regression | NAMED_CONFIG | EFFECTIVE | ADVANCED_TUNABLE / update aggressiveness |

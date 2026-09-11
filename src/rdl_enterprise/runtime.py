@@ -115,11 +115,12 @@ class EnterpriseRuntime:
         external_compensation_client: Optional[Any] = None,  # 外部補償API/メッセージングクライアント (fail-closed防止)
         store_path: Optional[str] = None,
         difference_response_threshold: Optional[float] = None,
+        human_confirmation_threshold: Optional[float] = None,
     ):
         self.mb_graph = mb_graph or MBGraph()
         self.h_state = HState(theta_0=theta_0, gamma=gamma)
         self.cascade = InterpCascade(self.mb_graph, llm_bridge=llm_bridge)
-        self.human = HumanQuery()
+        self.human = HumanQuery(human_confirmation_threshold=human_confirmation_threshold)
         self.durability_harness = durability_harness or DurabilityHarness()
         self.auto_promote_reorganizations = auto_promote_reorganizations
         self.auto_promote_authority = auto_promote_authority

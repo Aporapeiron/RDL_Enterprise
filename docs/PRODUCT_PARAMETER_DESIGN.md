@@ -78,7 +78,10 @@ relation traversal bound、`relevance_floor`、伝播重み、`constraint_boost_
 
 ### 人への確認 / HumanConfirmationSensitivity
 
-候補: `min_confidence`、`kappa_threshold`、HITL条件、escalation policy。人間承認が安全上必須の操作をこの軸で解除してはならない。
+現在の最小実装は `EnterpriseRuntime.human_confirmation_threshold` で、confidence不足による
+確認境界だけを上書きする。未指定なら既存の `min_confidence` を使う。`ask_human`、
+`human_only`、`require_approval`、構造衝突、不可逆操作などのmandatory escalationは
+この値で解除しない。`kappa_threshold`も別の警告経路として維持する。
 
 ### 見直しの早さ / RevisionAggressiveness
 

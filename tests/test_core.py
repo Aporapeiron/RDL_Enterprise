@@ -93,6 +93,52 @@ class TestRDLCore(unittest.TestCase):
         self.assertTrue(res["must_ask"])
         self.assertEqual(res["query_type"], "permission_request")
 
+    def test_human_confirmation_threshold_is_single_confidence_gate(self):
+        """Basic threshold changes only confidence-based confirmation for the same prediction."""
+        from rdl_enterprise.snapshot import InterpretationPrediction
+
+        efp = BusinessInput("T_HUMAN_THRESHOLD", "U002", "security", "通常の照会")
+        pred = InterpretationPrediction("direct_reply", "回答", 0.55, None, 1)
+        self_proceed = HumanQuery(human_confirmation_threshold=0.4).evaluate(efp, pred, None)
+        confirm = HumanQuery(human_confirmation_threshold=0.7).evaluate(efp, pred, None)
+
+        self.assertFalse(self_proceed["must_ask"])
+        self.assertTrue(confirm["must_ask"])
+        self.assertEqual(self_proceed["query_type"], "none")
+        self.assertEqual(confirm["query_type"], "ask_guidance")
+
+    def test_human_confirmation_threshold_does_not_bypass_mandatory_authority(self):
+        """A self-proceeding confidence setting cannot disable required approval."""
+        from rdl_enterprise.snapshot import InterpretationPrediction
+
+        efp = BusinessInput("T_HUMAN_AUTHORITY", "U002", "security", "管理者権限をください")
+        node = MBNode(
+            id="approval_node",
+            domain="security",
+            trigger_pattern={},
+            action_template={},
+            authority_level="require_approval",
+        )
+        pred = InterpretationPrediction("direct_reply", "OK", 0.99, "approval_node", 1)
+
+        result = HumanQuery(human_confirmation_threshold=0.0).evaluate(efp, pred, node)
+
+        self.assertTrue(result["must_ask"])
+        self.assertEqual(result["query_type"], "confirm_auto")
+
+    def test_human_confirmation_threshold_preserves_unresolved_fallback(self):
+        """An unresolved ask-human prediction remains a guidance request, not low confidence."""
+        from rdl_enterprise.snapshot import InterpretationPrediction
+
+        efp = BusinessInput("T_HUMAN_UNKNOWN", "U002", "security", "未知の照会")
+        pred = InterpretationPrediction("ask_human", "追加情報が必要です", 0.99, None, 3)
+
+        result = HumanQuery(human_confirmation_threshold=0.0).evaluate(efp, pred, None)
+
+        self.assertTrue(result["must_ask"])
+        self.assertEqual(result["query_type"], "ask_guidance")
+        self.assertIn("未知", result["reason"])
+
     def test_inconsistent_complaint_escalates_for_clarification_without_auto_resolution(self):
         hq = HumanQuery()
         efp = BusinessInput(
