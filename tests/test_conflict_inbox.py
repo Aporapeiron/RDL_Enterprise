@@ -5,6 +5,21 @@ from rdl_enterprise import AuthorityContext, BusinessInput, EnterpriseRuntime, M
 
 
 class StructuralConflictInboxTests(unittest.TestCase):
+    REALISTIC_CONFLICT_CASES = (
+        ("IT-101", ("user", "may_reset_mfa", "without_manager_approval"),
+         "incident-recovery", "security-policy"),
+        ("IT-102", ("contractor", "may_access", "production"),
+         "incident-runbook", "access-policy"),
+        ("IT-103", ("device", "must_preserve", "user_data"),
+         "legal-hold", "offboarding-policy"),
+        ("IT-104", ("server", "must_restart", "now"),
+         "security-advisory", "availability-rule"),
+        ("IT-105", ("support", "may_disclose", "account_information"),
+         "recovery-procedure", "privacy-policy"),
+        ("IT-106", ("service", "may_disable", "user_account"),
+         "security-response", "business-continuity"),
+    )
+
     def test_lists_cases_by_bounded_sum_and_preserves_evidence(self):
         inbox = StructuralConflictInbox()
         inbox.add_conflict(StructuralConflict(
@@ -101,6 +116,33 @@ class StructuralConflictInboxTests(unittest.TestCase):
         items = inbox.detect_relation_profile_conflicts(case_id="IT-31", active_profiles=profiles)
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0].conflicts[0].left_structure_id, "customer-rule")
+
+    def test_realistic_enterprise_conflicts_enter_inbox_without_priority_override(self):
+        for case_id, key, support_id, oppose_id in self.REALISTIC_CONFLICT_CASES:
+            with self.subTest(case_id=case_id):
+                profiles = {
+                    support_id: RelationConstraintProfile(
+                        ConstraintIdentity(f"{case_id}-support", *key,
+                                           Provenance(support_id)),
+                        ConstraintStrength(0.95, EvidencePolarity.SUPPORT)),
+                    oppose_id: RelationConstraintProfile(
+                        ConstraintIdentity(f"{case_id}-oppose", *key,
+                                           Provenance(oppose_id)),
+                        ConstraintStrength(0.90, EvidencePolarity.OPPOSE)),
+                }
+                inbox = StructuralConflictInbox()
+
+                items = inbox.detect_relation_profile_conflicts(
+                    case_id=case_id, active_profiles=profiles,
+                    provenance=f"realistic-fixture:{case_id}")
+
+                self.assertEqual(len(items), 1)
+                conflict = items[0].conflicts[0]
+                self.assertEqual(conflict.observation_status, "STRUCTURAL_CONFLICT")
+                self.assertEqual(conflict.left_structure_id, support_id)
+                self.assertEqual(conflict.right_structure_id, oppose_id)
+                self.assertEqual(conflict.predicted_heat, 1.0)
+                self.assertEqual(conflict.provenance, f"realistic-fixture:{case_id}")
 
     def test_unresolved_relation_polarity_is_not_promoted_to_conflict(self):
         key = ("customer", "requires", "refund")
