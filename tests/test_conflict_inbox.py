@@ -102,6 +102,44 @@ class StructuralConflictInboxTests(unittest.TestCase):
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0].conflicts[0].left_structure_id, "customer-rule")
 
+    def test_unresolved_relation_polarity_is_not_promoted_to_conflict(self):
+        key = ("customer", "requires", "refund")
+        profiles = {
+            "known": RelationConstraintProfile(
+                ConstraintIdentity("r1", *key, Provenance("known")),
+                ConstraintStrength(0.9, EvidencePolarity.SUPPORT)),
+            "unknown": RelationConstraintProfile(
+                ConstraintIdentity("r2", *key, Provenance("unknown")),
+                ConstraintStrength(1.0, EvidencePolarity.UNRESOLVED)),
+        }
+        inbox = StructuralConflictInbox()
+
+        items = inbox.detect_relation_profile_conflicts(
+            case_id="IT-32", active_profiles=profiles)
+
+        self.assertEqual(items, ())
+        self.assertEqual(inbox.list_cases(), ())
+
+    def test_profile_support_strength_does_not_resolve_opposite_polarity(self):
+        key = ("customer", "requires", "refund")
+        profiles = {
+            "strong-support": RelationConstraintProfile(
+                ConstraintIdentity("r1", *key, Provenance("strong")),
+                ConstraintStrength(1.0, EvidencePolarity.SUPPORT)),
+            "weak-opposition": RelationConstraintProfile(
+                ConstraintIdentity("r2", *key, Provenance("weak")),
+                ConstraintStrength(0.1, EvidencePolarity.OPPOSE)),
+        }
+        inbox = StructuralConflictInbox()
+
+        items = inbox.detect_relation_profile_conflicts(
+            case_id="IT-33", active_profiles=profiles)
+
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].review_status, "STRUCTURAL_CONFLICT")
+        self.assertEqual(items[0].conflicts[0].observation_status,
+                         "STRUCTURAL_CONFLICT")
+
     def test_runtime_dispatch_exposes_conflict_scalar_without_mutating_mb(self):
         key = ("customer", "requires", "refund")
         profiles = {
