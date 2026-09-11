@@ -4,7 +4,7 @@ This module records inspection output only.  It does not resolve conflicts,
 change M_B, or infer risk/urgency from predicted heat.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, Optional, Tuple
 
@@ -66,6 +66,7 @@ class ConflictInboxEvent:
     conflict_count: int
     total_predicted_heat: float
     actor_id: Optional[str] = None
+    decision: Optional[str] = None
 
 
 class StructuralConflictInbox:
@@ -90,6 +91,30 @@ class StructuralConflictInbox:
             )
         )
         return item
+
+    def observe_conflict(
+        self,
+        *,
+        conflict_id: str,
+        case_id: str,
+        left_structure_id: str,
+        right_structure_id: str,
+        incompatible: bool,
+        heat_components: Tuple[Tuple[str, float], ...] = (),
+        authority_requirements: Tuple[str, ...] = (),
+        support_by_structure: Tuple[Tuple[str, float], ...] = (),
+        provenance: Optional[str] = None,
+    ) -> ConflictInboxItem:
+        """Register an explicit inspection result, never infer incompatibility."""
+        if not incompatible:
+            raise ValueError("only explicitly incompatible structures enter this inbox")
+        components = tuple((name, _bounded_heat(value)) for name, value in heat_components)
+        return self.add_conflict(StructuralConflict(
+            conflict_id, case_id, left_structure_id, right_structure_id,
+            min(1.0, sum(value for _, value in components)), components,
+            authority_requirements, support_by_structure,
+            "STRUCTURAL_CONFLICT", provenance,
+        ))
 
     def get_case(self, case_id: str) -> ConflictInboxItem:
         conflicts = tuple(c for c in self._conflicts.values() if c.case_id == case_id)
@@ -132,10 +157,32 @@ class StructuralConflictInbox:
         return ConflictInboxItem(item.case_id, item.conflicts, item.total_predicted_heat,
                                  item.aggregation_method, item.review_status, True, authority.actor_id)
 
+    def record_decision(self, case_id: str, decision: str, authority: Any) -> ConflictInboxItem:
+        """Record a human disposition without changing the conflict observation."""
+        item = self.get_case(case_id)
+        if not authority.is_human_authenticated():
+            raise PermissionError("human authentication is required")
+        self._history.append(ConflictInboxEvent(
+            case_id, "human_decision_recorded", datetime.utcnow().isoformat(),
+            len(item.conflicts), item.total_predicted_heat, authority.actor_id, decision,
+        ))
+        return item
+
     def history(self, case_id: Optional[str] = None) -> Tuple[ConflictInboxEvent, ...]:
         if case_id is None:
             return tuple(self._history)
         return tuple(event for event in self._history if event.case_id == case_id)
+
+    def counterfactual_case(self, case_id: str, structure_ids: Tuple[str, ...]) -> ConflictInboxItem:
+        """Return the conflicts involving a hypothetical structure composition."""
+        allowed = set(structure_ids)
+        conflicts = tuple(
+            conflict for conflict in self.get_case(case_id).conflicts
+            if conflict.left_structure_id in allowed and conflict.right_structure_id in allowed
+        )
+        if not conflicts:
+            raise ValueError("counterfactual structure composition has no observed conflicts")
+        return self._item(case_id, conflicts)
 
     @staticmethod
     def _item(case_id: str, conflicts: Tuple[StructuralConflict, ...]) -> ConflictInboxItem:

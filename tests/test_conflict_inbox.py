@@ -40,6 +40,37 @@ class StructuralConflictInboxTests(unittest.TestCase):
             StructuralConflict("c1", "IT-3", "a", "b", 1.1)
         self.assertEqual(inbox.history(), ())
 
+    def test_explicit_observation_calculates_heat_and_preserves_decision_history(self):
+        inbox = StructuralConflictInbox()
+        item = inbox.observe_conflict(
+            conflict_id="c1", case_id="IT-31", left_structure_id="security",
+            right_structure_id="recovery", incompatible=True,
+            heat_components=(("authority", 0.4), ("support_gap", 0.22)),
+            authority_requirements=("security-manager",), provenance="inspection-31",
+        )
+        self.assertAlmostEqual(item.total_predicted_heat, 0.62)
+        actor = AuthorityContext("mgr", "manager", "workflow", "human", "idp_sso")
+        inbox.record_decision("IT-31", "defer", actor)
+        events = inbox.history("IT-31")
+        self.assertEqual(events[-1].decision, "defer")
+        self.assertEqual(inbox.get_case("IT-31").review_status, "STRUCTURAL_CONFLICT")
+        with self.assertRaises(ValueError):
+            inbox.observe_conflict(conflict_id="c2", case_id="IT-31",
+                                   left_structure_id="a", right_structure_id="b",
+                                   incompatible=False, heat_components=(("x", 0.1),))
+
+    def test_counterfactual_changes_conflict_count_without_mutating_inbox(self):
+        inbox = StructuralConflictInbox()
+        inbox.observe_conflict(conflict_id="c1", case_id="IT-31", left_structure_id="a",
+                               right_structure_id="b", incompatible=True,
+                               heat_components=(("x", 0.6),))
+        inbox.observe_conflict(conflict_id="c2", case_id="IT-31", left_structure_id="a",
+                               right_structure_id="c", incompatible=True,
+                               heat_components=(("x", 0.2),))
+        counterfactual = inbox.counterfactual_case("IT-31", ("a", "b"))
+        self.assertEqual(len(counterfactual.conflicts), 1)
+        self.assertEqual(len(inbox.get_case("IT-31").conflicts), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

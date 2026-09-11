@@ -24,6 +24,13 @@ finite sum. Interaction and overlap correction are not evaluated yet.
 or resolve a structural conflict. Observation, candidate, commitment, and
 active state remain separate.
 
+The `observe_conflict` entry point requires the upstream inspection to mark
+the pair as explicitly incompatible. It calculates `predicted_heat` from the
+finite component values and does not infer a conflict from support, authority,
+or similarity alone. Human decisions are appended to history; they do not
+rewrite the original conflict observation. A counterfactual can select a
+different structure composition for comparison without mutating the inbox.
+
 Unknown, unresolved, and not-evaluated inputs are not converted into a
 structural conflict by this inbox. A conflict must be explicitly observed by
 an upstream inspection.
