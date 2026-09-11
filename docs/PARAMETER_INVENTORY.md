@@ -94,6 +94,29 @@ inspection and the existing tests:
 | `max_allowed_regression_rate` | 0.05 | `shadow.py` | shadow gate | candidate regression limit | NAMED_DEFAULT | CONSUMED | ADVANCED_TUNABLE / update aggressiveness |
 | `timeout_interval_ticks` | 16 | `simulation_adapter.py` | simulation timeout scan | simulation scheduling | NAMED_DEFAULT | INACTIVE for production API | SYSTEM_INTERNAL |
 | `case_id_path_escape` | safe="" | provider adapters | URL construction | path boundary | STRUCTURAL_FIXED | CONSUMED | INVARIANT / security | identifier must not alter path |
+| `xi_obs.unclassified_weight` | 0.3 | `h_state.py:theta_eff` | ξ observation score | unclassified-input share | EMBEDDED_MAGIC | CONSUMED | ADVANCED_TUNABLE / error sensitivity | status categories remain distinct |
+| `xi_obs.missing_weight` | 0.2 | `h_state.py:theta_eff` | ξ observation score | missing-information share | EMBEDDED_MAGIC | CONSUMED | ADVANCED_TUNABLE / error sensitivity | missing is not false |
+| `xi_obs.unknown_weight` | 0.3 | `h_state.py:theta_eff` | ξ observation score | unknown-input share | EMBEDDED_MAGIC | CONSUMED | ADVANCED_TUNABLE / error sensitivity | unknown is not failure |
+| `xi_obs.rejection_weight` | 0.2 | `h_state.py:theta_eff` | ξ observation score | rejection share | EMBEDDED_MAGIC | CONSUMED | ADVANCED_TUNABLE / error sensitivity |
+| `theta_eff_reduction_cap` | 0.8 | `h_state.py:theta_eff` | effective heat threshold | maximum ξ reduction | EMBEDDED_MAGIC | CONSUMED | ADVANCED_TUNABLE / update aggressiveness | derived guard, not semantic status |
+| `theta_eff_floor` | 0.5 | `h_state.py:theta_eff` | effective heat threshold | minimum threshold | EMBEDDED_MAGIC | CONSUMED | SYSTEM_INTERNAL / safety | prevents threshold collapse |
+| `cooling_rate_cap` | 0.3 | `h_state.py:dissipate` | heat cooling | maximum local cooling rate | EMBEDDED_MAGIC | CONSUMED | SYSTEM_INTERNAL / error dynamics |
+| `default_node_inertia` | 0.5 | `h_state.py:dissipate` | heat cooling | fallback inertia | EMBEDDED_MAGIC | CONSUMED | SYSTEM_INTERNAL / error dynamics | absent inertia is not zero inertia |
+| `canary_heat_inheritance_ratio` | 0.5 | `h_state.py:inherit_canary_state_to_prod` | canary completion | heat transferred to production | NAMED_DEFAULT | CONSUMED | ADVANCED_TUNABLE / deployment |
+| `canary_case_input_weight` | 0.4 | `canary.py:record_case` | canary heat | input error contribution | EMBEDDED_MAGIC | CONSUMED | ADVANCED_TUNABLE / error sensitivity |
+| `canary_failure_confidence_cutoff` | 0.5 | `canary.py:record_case` | canary failure classification | prediction error cutoff | EMBEDDED_MAGIC | CONSUMED | ADVANCED_TUNABLE / update aggressiveness |
+| `relevance_match_score` | 0.8 | `constraint.py:_compute_relevance` | relevance calculation | exact-key match score | LOCAL_CONSTANT | CONSUMED | SYSTEM_INTERNAL / relation depth |
+| `authority_policy_score` | 0.9 | `constraint.py:_compute_authority_weight` | authority score | policy authority weight | LOCAL_CONSTANT | CONSUMED | SYSTEM_INTERNAL / authority |
+| `authority_approval_score` | 0.8 | `constraint.py:_compute_authority_weight` | authority score | approval authority weight | LOCAL_CONSTANT | CONSUMED | SYSTEM_INTERNAL / authority |
+| `authority_auto_score` | 0.4 | `constraint.py:_compute_authority_weight` | authority score | automatic authority weight | LOCAL_CONSTANT | CONSUMED | SYSTEM_INTERNAL / authority |
+| `low_relevance_exclusion` | 0.3 | `constraint.py:locator` | bundle selection | relevance exclusion floor | EMBEDDED_MAGIC | CONSUMED | BASIC_DERIVED / relation depth |
+| `neutral_convergence` | 0.5 | `constraint.py:locator` | local convergence | fallback convergence | LOCAL_CONSTANT | CONSUMED | SYSTEM_INTERNAL / evidence |
+| `lineage_match_factor` | 0.2 | `constraint.py:locator` | synergy scoring | matching-lineage factor | EMBEDDED_MAGIC | CONSUMED | SYSTEM_INTERNAL / evidence |
+| `core_synergy_cap` | 0.20 | `constraint.py:locator` | bundle scoring | core synergy ceiling | EMBEDDED_MAGIC | CONSUMED | ADVANCED_TUNABLE / sedimentation caution |
+| `auxiliary_signal_cap` | 0.50 | `constraint.py:locator` | auxiliary scoring | unresolved signal ceiling | EMBEDDED_MAGIC | CONSUMED | SYSTEM_INTERNAL / evidence |
+| `strong_locus_floor` | 0.6 | `constraint.py:locator` | locus classification | strong/subgraph split | EMBEDDED_MAGIC | CONSUMED | BASIC_DERIVED / relation depth |
+| `authority_full_scope_factor` | 1.0 | `constraint.py` | authority score | full-scope condition | EMBEDDED_MAGIC | CONSUMED | STRUCTURAL_FIXED / authority |
+| `freshness_full_factor` | 0.99 | `constraint.py` | authority score | fresh-enough condition | EMBEDDED_MAGIC | CONSUMED | SYSTEM_INTERNAL / time |
 
 The table intentionally retains duplicated values when they belong to distinct
 policy objects or runtime paths. They are not automatically one shared
@@ -140,13 +163,24 @@ an observation into a commitment or an active model by themselves.
 
 ## 6. Fixed, Internal, and Tunable Classification
 
-### INVARIANT
+### T0_INVARIANT
 
 - `UNKNOWN`, `UNRESOLVED`, and `NOT_EVALUATED` remain distinct.
 - Observation, Candidate, Commitment, and Active remain distinct.
 - Authority is not Truth; ActionLedger is not Truth.
-- `relation_hop = 1` is currently a structural finite bound.
+- semantic status distinctions are not tunable values.
 - URL path escaping and read-only provider capability checks are boundary rules.
+
+### CURRENT_BOUNDARY_GUARD
+
+These are safe guards in the current implementation, but are not universal T0
+invariants:
+
+- `relation_hop = 1`: current structural bound; future relation-depth candidate.
+- `require_durability = true` and `require_shadow = true`: current promotion
+  safety policy, not a claim that every deployment must use the same mechanism.
+- canary traffic and heat limits: current single-runtime deployment policy.
+- `theta_eff_floor` and other numeric floors/caps: implementation safeguards.
 
 ### SYSTEM_INTERNAL
 
