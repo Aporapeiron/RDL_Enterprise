@@ -27,6 +27,7 @@ from .constraint import (
     ConstraintConfig, ConstraintContext, RelationConstraintLocator, RuptureProbe,
     compute_efp_prime_constraint, compute_opposing_conflict_strength,
 )
+from .conflict_inbox import StructuralConflictInbox
 
 @dataclass
 class TicketDispatchResult:
@@ -41,6 +42,9 @@ class TicketDispatchResult:
     status: CaseStatus = CaseStatus.PENDING
     has_candidate_knowledge: bool = False
     is_canary: bool = False
+    structural_conflict_status: str = "NO_CONFLICT"
+    structural_conflict_count: int = 0
+    predicted_conflict_heat: float = 0.0
 
 
 @dataclass
@@ -81,6 +85,9 @@ class TicketExecutionResult:
     reorganization_proposal_id: Optional[str] = None
     difference_reaction_status: str = "NOT_EVALUATED"
     reinforced_support_gain: float = 0.0
+    structural_conflict_status: str = "NO_CONFLICT"
+    structural_conflict_count: int = 0
+    predicted_conflict_heat: float = 0.0
 
 
 @dataclass
@@ -121,6 +128,8 @@ class EnterpriseRuntime:
         revision_threshold: Optional[float] = None,
         knowledge_update_threshold: Optional[float] = None,
         success_reinforcement_gain: Optional[float] = None,
+        conflict_inbox: Optional[StructuralConflictInbox] = None,
+        relation_profile_provider: Optional[Any] = None,
     ):
         self.mb_graph = mb_graph or MBGraph()
         self.h_state = HState(theta_0=theta_0, gamma=gamma)
@@ -143,6 +152,8 @@ class EnterpriseRuntime:
         if success_reinforcement_gain is not None and success_reinforcement_gain < 0:
             raise ValueError("success_reinforcement_gain must be non-negative")
         self.success_reinforcement_gain = success_reinforcement_gain
+        self.conflict_inbox = conflict_inbox or StructuralConflictInbox()
+        self.relation_profile_provider = relation_profile_provider
         self.case_store = SQLiteCaseStore(store_path) if store_path else None
         if self.case_store:
             persisted = self.case_store.load_runtime_state()
@@ -276,6 +287,19 @@ class EnterpriseRuntime:
         matched_node = active_graph.get(pred.matched_node_id) if pred.matched_node_id else None
         frozen_node = copy.deepcopy(matched_node) if matched_node else None
 
+        conflict_items = ()
+        if self.relation_profile_provider is not None:
+            active_profiles = self.relation_profile_provider(efp, pred, active_graph)
+            if active_profiles:
+                conflict_items = self.conflict_inbox.detect_relation_profile_conflicts(
+                    case_id=efp.ticket_id,
+                    active_profiles=copy.deepcopy(active_profiles),
+                    provenance=f"runtime-dispatch:{efp.ticket_id}",
+                )
+        conflict_status = "STRUCTURAL_CONFLICT" if conflict_items else "NO_CONFLICT"
+        conflict_count = sum(len(item.conflicts) for item in conflict_items)
+        conflict_heat = sum(item.total_predicted_heat for item in conflict_items)
+
         trace = pred.metadata.get("interpretation_trace")
         snapshot = CaseSnapshot(
             efp=efp,
@@ -368,6 +392,9 @@ class EnterpriseRuntime:
             status=CaseStatus.PENDING,
             has_candidate_knowledge=bool(human_override_answer and not is_authoritative),
             is_canary=is_canary,
+            structural_conflict_status=conflict_status,
+            structural_conflict_count=conflict_count,
+            predicted_conflict_heat=conflict_heat,
         )
 
     def resolve_ticket_feedback(
@@ -1072,6 +1099,9 @@ class EnterpriseRuntime:
                 reorganization_proposal_id=resol_res.reorganization_proposal_id,
                 difference_reaction_status=resol_res.difference_reaction_status,
                 reinforced_support_gain=resol_res.reinforced_support_gain,
+                structural_conflict_status=dispatch_res.structural_conflict_status,
+                structural_conflict_count=dispatch_res.structural_conflict_count,
+                predicted_conflict_heat=dispatch_res.predicted_conflict_heat,
             )
         else:
             current_h = self.h_state.global_heat.total()
@@ -1092,6 +1122,9 @@ class EnterpriseRuntime:
                 cost_tier=dispatch_res.cost_tier,
                 promoted_to_mb=False,
                 difference_reaction_status="NOT_EVALUATED",
+                structural_conflict_status=dispatch_res.structural_conflict_status,
+                structural_conflict_count=dispatch_res.structural_conflict_count,
+                predicted_conflict_heat=dispatch_res.predicted_conflict_heat,
             )
 
     def get_metrics(self) -> Dict[str, Any]:

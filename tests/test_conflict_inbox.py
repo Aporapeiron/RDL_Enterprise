@@ -1,7 +1,7 @@
 import unittest
 from rdl_core import ConstraintIdentity, ConstraintStrength, EvidencePolarity, Provenance, RelationConstraintProfile
 
-from rdl_enterprise import AuthorityContext, StructuralConflict, StructuralConflictInbox
+from rdl_enterprise import AuthorityContext, BusinessInput, EnterpriseRuntime, MBGraph, StructuralConflict, StructuralConflictInbox
 
 
 class StructuralConflictInboxTests(unittest.TestCase):
@@ -101,6 +101,28 @@ class StructuralConflictInboxTests(unittest.TestCase):
         items = inbox.detect_relation_profile_conflicts(case_id="IT-31", active_profiles=profiles)
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0].conflicts[0].left_structure_id, "customer-rule")
+
+    def test_runtime_dispatch_exposes_conflict_scalar_without_mutating_mb(self):
+        key = ("customer", "requires", "refund")
+        profiles = {
+            "a": RelationConstraintProfile(ConstraintIdentity("a", *key, Provenance("a")),
+                                            ConstraintStrength(0.9, EvidencePolarity.SUPPORT)),
+            "b": RelationConstraintProfile(ConstraintIdentity("b", *key, Provenance("b")),
+                                            ConstraintStrength(0.8, EvidencePolarity.OPPOSE)),
+        }
+        graph = MBGraph()
+        before = graph.content_hash()
+        runtime = EnterpriseRuntime(
+            mb_graph=graph,
+            relation_profile_provider=lambda efp, prediction, active_graph: profiles,
+        )
+        result = runtime.handle_ticket(BusinessInput("IT-31", "customer", "workflow", "refund"))
+        self.assertEqual(result.structural_conflict_status, "STRUCTURAL_CONFLICT")
+        self.assertEqual(result.structural_conflict_count, 1)
+        self.assertGreater(result.predicted_conflict_heat, 0.0)
+        self.assertEqual(graph.content_hash(), before)
+        self.assertEqual(runtime.conflict_inbox.get_case("IT-31").conflicts[0].observation_status,
+                         "STRUCTURAL_CONFLICT")
 
 
 if __name__ == "__main__":
