@@ -73,6 +73,7 @@ from .atlassian_jira_provider import (
 from .tool_routing import ToolCandidate, ToolRoutingResult, ToolRoutingStatus, route_business_text
 from .business_query import handle_business_query
 from .presentation import format_business_query_result
+from .conflict_inbox import StructuralConflict, ConflictInboxItem, ConflictInboxEvent, StructuralConflictInbox
 
 __all__ = [
     "MBNode",
@@ -146,4 +147,8 @@ __all__ = [
     "route_business_text",
     "handle_business_query",
     "format_business_query_result",
+    "StructuralConflict",
+    "ConflictInboxItem",
+    "ConflictInboxEvent",
+    "StructuralConflictInbox",
 ]
