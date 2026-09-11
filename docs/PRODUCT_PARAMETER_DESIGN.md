@@ -94,9 +94,16 @@ relation traversal bound、`relevance_floor`、伝播重み、`constraint_boost_
 `theta_0`、rupture thresholds、remaining heat ratio、candidate regression limits、
 canary heat/failure limitsは内部または別の安全機構として保持する。
 
-### 知識の定着 / KnowledgeSedimentationCaution
+### 知識更新の慎重度 / KnowledgeUpdateCaution
 
-候補: `min_survive_approvals`、`min_survive_relevance`、minimum cases/unique patterns、promotion/shadow/durability policyの一部。
+現在の最小実装は `EnterpriseRuntime.knowledge_update_threshold` で、
+`DurabilityHarness` の破壊検査scoreに対する採用前の下限を指定する。未指定なら
+従来挙動を維持する。これは検査要求の深さを一つのBasic境界へ束ねるための
+最小実装であり、成功・Truth・自動Active化・重み増加を意味しない。
+
+`min_survive_approvals`、`min_survive_relevance`、minimum cases/unique patterns、
+shadow/canary条件、Promotionの必須durability・Authorityは個別の内部または
+mandatory safety gateとして保持し、このBasic値では解除しない。
 
 ```text
 一度うまくいった ≠ Truth ≠ 自動的に M_Bへ定着

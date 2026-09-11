@@ -117,6 +117,7 @@ class EnterpriseRuntime:
         difference_response_threshold: Optional[float] = None,
         human_confirmation_threshold: Optional[float] = None,
         revision_threshold: Optional[float] = None,
+        knowledge_update_threshold: Optional[float] = None,
     ):
         self.mb_graph = mb_graph or MBGraph()
         self.h_state = HState(theta_0=theta_0, gamma=gamma)
@@ -133,6 +134,9 @@ class EnterpriseRuntime:
         if revision_threshold is not None and revision_threshold < 0:
             raise ValueError("revision_threshold must be non-negative")
         self.revision_threshold = revision_threshold
+        if knowledge_update_threshold is not None and not 0.0 <= knowledge_update_threshold <= 1.0:
+            raise ValueError("knowledge_update_threshold must be between 0.0 and 1.0")
+        self.knowledge_update_threshold = knowledge_update_threshold
         self.case_store = SQLiteCaseStore(store_path) if store_path else None
         if self.case_store:
             persisted = self.case_store.load_runtime_state()
@@ -816,6 +820,13 @@ class EnterpriseRuntime:
         proposal.status = gate_res.next_state
         proposal.reasons = gate_res.reasons
 
+        if gate_res.can_promote and not self._passes_knowledge_update_gate(proposal):
+            proposal.status = ProposalState.DURABILITY_PASSED
+            proposal.reasons.append(
+                "知識更新の慎重度ゲート: 破壊検査scoreが採用基準に未達です"
+            )
+            return False
+
         if not gate_res.can_promote:
             # 準備未達のため昇格拒絶
             return False
@@ -881,6 +892,14 @@ class EnterpriseRuntime:
 
         self._persist_runtime_state()
         return True
+
+    def _passes_knowledge_update_gate(self, proposal: ReorganizationProposal) -> bool:
+        """Check the Basic admission threshold without changing mandatory gates."""
+        if self.knowledge_update_threshold is None:
+            return True
+        report = proposal.durability_test_result or {}
+        score = report.get("score")
+        return score is not None and score >= self.knowledge_update_threshold
 
     def step_up_canary(self, new_ratio: float) -> bool:
         """カナリア配分比率を拡大 (例: 0.1 -> 0.5 -> 1.0)"""

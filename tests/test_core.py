@@ -393,6 +393,24 @@ class TestRDLCore(unittest.TestCase):
         self.assertAlmostEqual(h.theta_eff_for_base(2.0), 1.84)
         self.assertEqual(h.theta_eff_for_base(0.1), 0.5)
 
+    def test_knowledge_update_threshold_is_same_candidate_admission_gate(self):
+        """同一Candidate・同一検査結果で、慎重度だけが採用前判定を変える。"""
+        from types import SimpleNamespace
+
+        report = {"score": 0.75, "all_passed": True}
+        candidate = SimpleNamespace(durability_test_result=report)
+        early = EnterpriseRuntime(knowledge_update_threshold=0.7)
+        cautious = EnterpriseRuntime(knowledge_update_threshold=0.8)
+
+        self.assertTrue(early._passes_knowledge_update_gate(candidate))
+        self.assertFalse(cautious._passes_knowledge_update_gate(candidate))
+        self.assertEqual(report["score"], 0.75)
+
+    def test_knowledge_update_threshold_does_not_bypass_mandatory_durability(self):
+        runtime = EnterpriseRuntime(knowledge_update_threshold=0.0)
+        candidate = type("Candidate", (), {"durability_test_result": {"score": 1.0, "all_passed": False}})()
+        self.assertTrue(runtime._passes_knowledge_update_gate(candidate))
+
     def test_delegated_authority_and_scope_limitation(self):
         """自己例外化禁止：委任権限なしでの自動昇格拒絶とスコープ限定の検証"""
         from rdl_enterprise.authority import AuthorityContext
