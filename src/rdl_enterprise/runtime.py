@@ -58,6 +58,7 @@ class TicketResolutionResult:
     canary_rolled_back: bool = False
     canary_rollback_reason: Optional[str] = None
     difference_reaction_status: str = "NOT_EVALUATED"
+    reinforced_support_gain: float = 0.0
 
 
 @dataclass
@@ -79,6 +80,7 @@ class TicketExecutionResult:
     promoted_to_mb: bool = False
     reorganization_proposal_id: Optional[str] = None
     difference_reaction_status: str = "NOT_EVALUATED"
+    reinforced_support_gain: float = 0.0
 
 
 @dataclass
@@ -118,6 +120,7 @@ class EnterpriseRuntime:
         human_confirmation_threshold: Optional[float] = None,
         revision_threshold: Optional[float] = None,
         knowledge_update_threshold: Optional[float] = None,
+        success_reinforcement_gain: Optional[float] = None,
     ):
         self.mb_graph = mb_graph or MBGraph()
         self.h_state = HState(theta_0=theta_0, gamma=gamma)
@@ -137,6 +140,9 @@ class EnterpriseRuntime:
         if knowledge_update_threshold is not None and not 0.0 <= knowledge_update_threshold <= 1.0:
             raise ValueError("knowledge_update_threshold must be between 0.0 and 1.0")
         self.knowledge_update_threshold = knowledge_update_threshold
+        if success_reinforcement_gain is not None and success_reinforcement_gain < 0:
+            raise ValueError("success_reinforcement_gain must be non-negative")
+        self.success_reinforcement_gain = success_reinforcement_gain
         self.case_store = SQLiteCaseStore(store_path) if store_path else None
         if self.case_store:
             persisted = self.case_store.load_runtime_state()
@@ -610,6 +616,7 @@ class EnterpriseRuntime:
         canary_rollback_reason = None
         transition_m_delta = False
         proposal_id = None
+        reinforced_support_gain = 0.0
 
         if snapshot.is_canary:
             # カナリア案件：本番散逸・本番M_Δ判定を完全遮断
@@ -674,6 +681,10 @@ class EnterpriseRuntime:
                 if matched_node:
                     if not is_timeout and status == CaseStatus.SUCCESS and feedback and feedback.user_resolved and not feedback.human_rejected:
                         matched_node.record_success(approved=feedback.human_approved, at=evidence_at)
+                        if self.success_reinforcement_gain is not None:
+                            reinforced_support_gain = matched_node.record_success_reinforcement(
+                                self.success_reinforcement_gain, case_id=ticket_id, at=evidence_at
+                            )
                     elif not is_timeout and status in (CaseStatus.FAILURE, CaseStatus.REJECTED):
                         matched_node.record_failure(rejected=rejected, at=evidence_at)
                     elif is_timeout or status == CaseStatus.UNKNOWN:
@@ -697,6 +708,7 @@ class EnterpriseRuntime:
             canary_rolled_back=canary_rolled_back,
             canary_rollback_reason=canary_rollback_reason,
             difference_reaction_status=difference_reaction_status,
+            reinforced_support_gain=reinforced_support_gain,
         )
         if self.case_store:
             # Persist only after H/cache/M_B metabolism has completed.
@@ -1059,6 +1071,7 @@ class EnterpriseRuntime:
                 promoted_to_mb=resol_res.promoted_to_mb,
                 reorganization_proposal_id=resol_res.reorganization_proposal_id,
                 difference_reaction_status=resol_res.difference_reaction_status,
+                reinforced_support_gain=resol_res.reinforced_support_gain,
             )
         else:
             current_h = self.h_state.global_heat.total()

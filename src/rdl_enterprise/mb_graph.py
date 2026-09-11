@@ -166,6 +166,8 @@ class MBNode:
     approval_count: int = 0
     rejection_count: int = 0
     unresolved_count: int = 0
+    support_strength: float = 0.0
+    reinforcement_events: List[Dict[str, Any]] = field(default_factory=list)
     is_frozen: bool = False
     source_id: Optional[str] = None       # 固有の発行元・作成元ID (BASE v2.0 §4.2: ソース独立性)
     source_lineage: Optional[str] = None  # 上流系譜 (例: "manual_hr_v1", "policy_sec_2026")
@@ -189,6 +191,8 @@ class MBNode:
         approval_count: int = 0,
         rejection_count: int = 0,
         unresolved_count: int = 0,
+        support_strength: float = 0.0,
+        reinforcement_events: Optional[List[Dict[str, Any]]] = None,
         is_frozen: bool = False,
         source_id: Optional[str] = None,
         source_lineage: Optional[str] = None,
@@ -216,6 +220,8 @@ class MBNode:
         self.approval_count = approval_count
         self.rejection_count = rejection_count
         self.unresolved_count = unresolved_count
+        self.support_strength = max(0.0, min(1.0, float(support_strength)))
+        self.reinforcement_events = list(reinforcement_events or [])
         self.source_id = source_id
         self.source_lineage = source_lineage
         self.node_relations = node_relations if node_relations is not None else {}
@@ -399,6 +405,19 @@ class MBNode:
             self.last_support_at = at.isoformat() if isinstance(at, datetime) else str(at)
         else:
             self.last_support_at = datetime.utcnow().isoformat()
+
+    def record_success_reinforcement(self, gain: float, case_id: Optional[str] = None, at: Optional[Any] = None) -> float:
+        """Add bounded support for an already-successful existing structure."""
+        if self.is_frozen:
+            raise RuntimeError(f"MBNode(id={self.id}) は凍結(frozen)されています。支持更新は禁止されています。")
+        if gain < 0.0:
+            raise ValueError("success reinforcement gain must be non-negative")
+        before = self.support_strength
+        self.support_strength = min(1.0, before + gain)
+        applied = self.support_strength - before
+        timestamp = at.isoformat() if isinstance(at, datetime) else str(at) if at is not None else datetime.utcnow().isoformat()
+        self.reinforcement_events.append({"case_id": case_id, "gain": applied, "timestamp": timestamp})
+        return applied
 
     def record_failure(self, rejected: bool = False, at: Optional[Any] = None):
         if self.is_frozen:

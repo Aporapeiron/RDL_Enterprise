@@ -7,7 +7,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 
 from rdl_enterprise.mb_graph import MBNode, MBGraph, CommitmentOrigin
 from rdl_enterprise.h_state import HState
-from rdl_enterprise.snapshot import BusinessInput, FeedbackResult
+from rdl_enterprise.snapshot import BusinessInput, FeedbackResult, CaseStatus
 from rdl_enterprise.cascade import InterpCascade
 from rdl_enterprise.human import HumanQuery
 from rdl_enterprise.runtime import EnterpriseRuntime
@@ -410,6 +410,33 @@ class TestRDLCore(unittest.TestCase):
         runtime = EnterpriseRuntime(knowledge_update_threshold=0.0)
         candidate = type("Candidate", (), {"durability_test_result": {"score": 1.0, "all_passed": False}})()
         self.assertTrue(runtime._passes_knowledge_update_gate(candidate))
+
+    def test_success_reinforcement_changes_only_bounded_support(self):
+        node = MBNode("reward_node", "workflow", {"exact_keys": ["reward"]}, {"type": "direct_reply", "payload": "ok"}, confidence=0.6)
+        before_confidence = node.confidence
+        node.record_success_reinforcement(0.2, case_id="T-REWARD")
+        self.assertEqual(node.support_strength, 0.2)
+        self.assertEqual(node.confidence, before_confidence)
+        self.assertEqual(node.reinforcement_events[0]["case_id"], "T-REWARD")
+        node.record_success_reinforcement(2.0, case_id="T-REWARD-2")
+        self.assertEqual(node.support_strength, 1.0)
+
+    def test_success_reinforcement_requires_existing_success_path(self):
+        graph = MBGraph()
+        graph.commit_node(MBNode(
+            "reward_node_2", "workflow", {"exact_keys": ["reward"]},
+            {"type": "direct_reply", "payload": "ok"},
+        ), origin=CommitmentOrigin.TEST_FIXTURE)
+        runtime = EnterpriseRuntime(mb_graph=graph, success_reinforcement_gain=0.2)
+        result = runtime.handle_ticket(
+            BusinessInput("T-REWARD-OK", "U1", "workflow", "reward"),
+            feedback=FeedbackResult(user_resolved=True),
+        )
+        node = runtime.mb_graph.get("reward_node_2")
+        self.assertEqual(result.status, CaseStatus.SUCCESS)
+        self.assertEqual(result.reinforced_support_gain, 0.2)
+        self.assertEqual(node.support_strength, 0.2)
+        self.assertEqual(len(node.reinforcement_events), 1)
 
     def test_delegated_authority_and_scope_limitation(self):
         """自己例外化禁止：委任権限なしでの自動昇格拒絶とスコープ限定の検証"""

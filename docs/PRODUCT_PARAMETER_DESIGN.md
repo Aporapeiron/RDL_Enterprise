@@ -105,6 +105,14 @@ canary heat/failure limitsは内部または別の安全機構として保持す
 shadow/canary条件、Promotionの必須durability・Authorityは個別の内部または
 mandatory safety gateとして保持し、このBasic値では解除しない。
 
+### 補助Advanced / 成功報酬
+
+`EnterpriseRuntime.success_reinforcement_gain` は5つのBasic軸には含めない。
+既存構造が成功判定を通過した場合に限り、対応ノードのboundedな
+`support_strength` を増やす量を指定する。confidence、成功判定、失敗処理、
+Candidate生成、Commitment、Active化、Durability、Authorityを変更しない。
+対象案件と適用量は `reinforcement_events` に残る。未指定なら従来挙動を維持する。
+
 ```text
 一度うまくいった ≠ Truth ≠ 自動的に M_Bへ定着
 Observation → Candidate → Commitment → Active
