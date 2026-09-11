@@ -54,9 +54,12 @@ confidenceの差             0.4 * gap
 - `F` と `F'` は同一更新前Contextから形成される。
 - prediction error と input error は別フィールドで保持される。
 - `e_pred` はscalarだが、差異理由は説明文字列としても保存される。
-- 現在のRuntimeには、`e_pred < tau_diff` を反応抑制するBasic gateはまだない。
-- したがって `difference_response_threshold` は設計候補であり、現行挙動を
-  説明する既存parameterではない。
+- Runtimeには `difference_response_threshold` が追加されている。既定値は
+  `None`（gate無効）で、既存の挙動を保持する。
+- 明示値を指定した場合だけ `e_pred < threshold` を
+  `BELOW_CURRENT_THRESHOLD` としてHへのprediction reactionを抑制する。
+- raw `e_pred` と差異説明は保持され、threshold未評価・UNKNOWNはこのgateで
+  成功やFailureへ再分類されない。
 
 thresholdを実装する場合も、Observationや `e_pred` の記録を削除せず、
 `observed_difference` と `reaction_status=below_current_threshold` を分離する。
