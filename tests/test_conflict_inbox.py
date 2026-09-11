@@ -1,4 +1,5 @@
 import unittest
+from rdl_core import ConstraintIdentity, ConstraintStrength, EvidencePolarity, Provenance, RelationConstraintProfile
 
 from rdl_enterprise import AuthorityContext, StructuralConflict, StructuralConflictInbox
 
@@ -82,6 +83,24 @@ class StructuralConflictInboxTests(unittest.TestCase):
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0].conflicts[0].observation_status, "STRUCTURAL_CONFLICT")
         self.assertEqual(inbox.get_case("IT-31").conflicts[0].left_structure_id, "security")
+
+    def test_existing_rdl_profiles_feed_real_structural_conflict_detection(self):
+        key = ("customer", "requires", "refund")
+        profiles = {
+            "customer-rule": RelationConstraintProfile(
+                ConstraintIdentity("r1", *key, Provenance("customer")),
+                ConstraintStrength(0.9, EvidencePolarity.SUPPORT)),
+            "policy-rule": RelationConstraintProfile(
+                ConstraintIdentity("r2", *key, Provenance("policy")),
+                ConstraintStrength(0.8, EvidencePolarity.OPPOSE)),
+            "other-rule": RelationConstraintProfile(
+                ConstraintIdentity("r3", "customer", "owns", "account", Provenance("other")),
+                ConstraintStrength(0.7, EvidencePolarity.SUPPORT)),
+        }
+        inbox = StructuralConflictInbox()
+        items = inbox.detect_relation_profile_conflicts(case_id="IT-31", active_profiles=profiles)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].conflicts[0].left_structure_id, "customer-rule")
 
 
 if __name__ == "__main__":

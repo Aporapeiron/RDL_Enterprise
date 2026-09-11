@@ -145,6 +145,42 @@ class StructuralConflictInbox:
                 ))
         return tuple(items)
 
+    def detect_relation_profile_conflicts(
+        self,
+        *,
+        case_id: str,
+        active_profiles: Dict[str, Any],
+        provenance: Optional[str] = None,
+    ) -> Tuple[ConflictInboxItem, ...]:
+        """Bridge existing RDL relation profiles into the inbox.
+
+        Only equal semantic keys with opposite evidence polarity are structural
+        conflicts.  Similarity, support strength, and authority are retained
+        as evidence and never used as an automatic resolution.
+        """
+        from rdl_core import EvidencePolarity
+
+        ids = tuple(active_profiles)
+        def compatible(left: str, right: str) -> Optional[bool]:
+            a, b = active_profiles[left], active_profiles[right]
+            if a.identity.semantic_key != b.identity.semantic_key:
+                return True
+            pa, pb = a.strength.support, b.strength.support
+            if pa is EvidencePolarity.UNRESOLVED or pb is EvidencePolarity.UNRESOLVED:
+                return None
+            return pa == pb
+
+        def components(left: str, right: str) -> Tuple[Tuple[str, float], ...]:
+            a, b = active_profiles[left], active_profiles[right]
+            support_gap = abs(a.strength.support.value != b.strength.support.value)
+            return (("polarity_conflict", 1.0), ("support_gap", float(support_gap)))
+
+        return self.detect_active_conflicts(
+            case_id=case_id, active_structure_ids=ids,
+            compatibility_check=compatible, heat_components=components,
+            provenance=provenance,
+        )
+
     def get_case(self, case_id: str) -> ConflictInboxItem:
         conflicts = tuple(c for c in self._conflicts.values() if c.case_id == case_id)
         if not conflicts:
