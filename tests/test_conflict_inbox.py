@@ -71,6 +71,18 @@ class StructuralConflictInboxTests(unittest.TestCase):
         self.assertEqual(len(counterfactual.conflicts), 1)
         self.assertEqual(len(inbox.get_case("IT-31").conflicts), 2)
 
+    def test_active_structure_detector_routes_only_explicit_incompatibility(self):
+        inbox = StructuralConflictInbox()
+        items = inbox.detect_active_conflicts(
+            case_id="IT-31", active_structure_ids=("security", "recovery", "cost"),
+            compatibility_check=lambda left, right: False if {left, right} == {"security", "recovery"} else True,
+            heat_components=lambda left, right: (("pair", 0.62),),
+            provenance="active-inspection-31",
+        )
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].conflicts[0].observation_status, "STRUCTURAL_CONFLICT")
+        self.assertEqual(inbox.get_case("IT-31").conflicts[0].left_structure_id, "security")
+
 
 if __name__ == "__main__":
     unittest.main()

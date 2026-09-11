@@ -116,6 +116,35 @@ class StructuralConflictInbox:
             "STRUCTURAL_CONFLICT", provenance,
         ))
 
+    def detect_active_conflicts(
+        self,
+        *,
+        case_id: str,
+        active_structure_ids: Tuple[str, ...],
+        compatibility_check: Any,
+        heat_components: Optional[Any] = None,
+        provenance: Optional[str] = None,
+    ) -> Tuple[ConflictInboxItem, ...]:
+        """Inspect active pairs and inbox only explicitly incompatible pairs."""
+        if len(set(active_structure_ids)) != len(active_structure_ids):
+            raise ValueError("active structure ids must be unique")
+        items = []
+        for index, left in enumerate(active_structure_ids):
+            for right in active_structure_ids[index + 1:]:
+                compatible = compatibility_check(left, right)
+                if compatible is None:
+                    continue
+                if compatible is not False:
+                    continue
+                components = () if heat_components is None else tuple(heat_components(left, right))
+                items.append(self.observe_conflict(
+                    conflict_id=f"{case_id}:{left}:{right}", case_id=case_id,
+                    left_structure_id=left, right_structure_id=right,
+                    incompatible=True, heat_components=components,
+                    provenance=provenance,
+                ))
+        return tuple(items)
+
     def get_case(self, case_id: str) -> ConflictInboxItem:
         conflicts = tuple(c for c in self._conflicts.values() if c.case_id == case_id)
         if not conflicts:

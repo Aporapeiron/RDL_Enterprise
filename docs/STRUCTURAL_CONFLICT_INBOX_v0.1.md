@@ -31,6 +31,11 @@ or similarity alone. Human decisions are appended to history; they do not
 rewrite the original conflict observation. A counterfactual can select a
 different structure composition for comparison without mutating the inbox.
 
+`detect_active_conflicts` is the minimal upstream bridge: it enumerates pairs
+of active structures and accepts only an explicit incompatibility result from
+the compatibility inspection. An unknown result is skipped, not converted
+to a conflict or failure.
+
 Unknown, unresolved, and not-evaluated inputs are not converted into a
 structural conflict by this inbox. A conflict must be explicitly observed by
 an upstream inspection.
