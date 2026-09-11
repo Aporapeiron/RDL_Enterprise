@@ -16,6 +16,9 @@ class CascadeConfig:
     cost_tier0_confidence_boost: float = 0.1
     llm_default_confidence: float = 0.5
     level2_max_confidence: float = 0.85
+    # Basic product axis: cap same-hop relation candidates without changing
+    # ranking, propagation depth, or relation weights.
+    relation_breadth_limit: Optional[int] = None
     # ※ constraint_boost_cap は ConstraintConfig で一元管理（ここには持たない）
 
 class InterpCascade:
@@ -117,7 +120,7 @@ class InterpCascade:
         self,
         eligible_nodes: List[MBNode],
         efp: BusinessInput,
-        limit: int = 4,
+        limit: Optional[int] = None,
         relevance_floor: float = 0.05,
     ) -> List[MBNode]:
         r"""
@@ -134,6 +137,14 @@ class InterpCascade:
         """
         if not eligible_nodes:
             return []
+
+        effective_limit = (
+            self.config.relation_breadth_limit
+            if self.config.relation_breadth_limit is not None
+            else (limit if limit is not None else 4)
+        )
+        if effective_limit < 0:
+            raise ValueError("relation breadth limit must be non-negative")
 
         from .constraint import _compute_relevance, _compute_authority_weight
 
@@ -190,7 +201,7 @@ class InterpCascade:
                 ),
                 reverse=True,
             )
-            return candidates[:limit]
+            return candidates[:effective_limit]
 
         # 【P0: 関連性皆無の完全未知クエリにおける無関係権威ノード注入の厳格禁止】
         # 入力と関係する seed が存在しない場合、権威や承認数だけで無関係ノードをでっち上げず

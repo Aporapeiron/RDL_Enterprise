@@ -68,9 +68,13 @@ thresholdを実装する場合も、Observationや `e_pred` の記録を削除�
 
 候補: `w_pred`, `w_input`, `gamma`, ξ_obs各重み、freshness sensitivity、opposing-signal thresholds、一部のconfidence/rupture閾値。`theta`は下流の維持・再編境界であり、単純に感度と同一視しない。
 
-### 関係を見る広さ / RelationReferenceDepth
+### 関係を見る広さ / RelationReferenceBreadth
 
-候補: relation traversal bound、active subgraph limit、`relevance_floor`、伝播重み、`constraint_boost_cap`。現在の1-hopはT0不変条件ではなく、現行実装の有限境界である。
+現在の最小実装は `CascadeConfig.relation_breadth_limit` で、同一hopの
+active relation candidate数だけを上限化する。ranking、relevance、伝播重み、
+relation hop、M_Bそのものは変更しない。未指定 (`None`) なら従来の呼び出し側上限を使う。
+relation traversal bound、`relevance_floor`、伝播重み、`constraint_boost_cap`、
+複数hopはAdvancedまたは別問題であり、Basicへ混ぜない。
 
 ### 人への確認 / HumanConfirmationSensitivity
 

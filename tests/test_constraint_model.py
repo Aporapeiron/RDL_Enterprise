@@ -2886,6 +2886,89 @@ class TestPerturbationAndOpposingConstraint(unittest.TestCase):
         # 承認数がどれだけ高くても、関連性ゼロかつ孤立したノードは活性化サブグラフから除外される
         self.assertNotIn("node_high_approval_isolated", selected_ids)
 
+    def test_relation_breadth_changes_active_view_without_mutating_graph(self):
+        """Basic breadth caps same-hop selection; it does not alter depth, rank, or M_B relations."""
+        from copy import deepcopy
+        from rdl_enterprise.cascade import InterpCascade, CascadeConfig
+        from rdl_enterprise.mb_graph import MBGraph, MBNode, CommitmentOrigin
+        from rdl_enterprise.snapshot import BusinessInput
+
+        graph = MBGraph()
+        seed = MBNode(
+            id="breadth-seed",
+            domain="support",
+            trigger_pattern={"exact_keys": ["契約"]},
+            action_template={"type": "direct_reply", "payload": "seed"},
+            confidence=0.8,
+            approval_count=10,
+        )
+        related = []
+        for index in range(3):
+            node = MBNode(
+                id=f"breadth-related-{index}",
+                domain="support",
+                trigger_pattern={"exact_keys": [f"無関係-{index}"]},
+                action_template={"type": "direct_reply", "payload": str(index)},
+                confidence=0.6,
+                approval_count=3 - index,
+            )
+            related.append(node)
+        seed.node_relations = {node.id: "support" for node in related}
+        graph.commit_node(seed, origin=CommitmentOrigin.TEST_FIXTURE)
+        for node in related:
+            graph.commit_node(node, origin=CommitmentOrigin.TEST_FIXTURE)
+
+        before = deepcopy(graph)
+        efp = BusinessInput("T_BREADTH", "U1", "support", "契約について")
+        narrow = InterpCascade(graph, config=CascadeConfig(relation_breadth_limit=1))
+        wide = InterpCascade(graph, config=CascadeConfig(relation_breadth_limit=3))
+
+        narrow_ids = [node.id for node in narrow.select_active_constraint_subgraph(graph.list_nodes(), efp)]
+        wide_ids = [node.id for node in wide.select_active_constraint_subgraph(graph.list_nodes(), efp)]
+
+        self.assertEqual(narrow_ids, ["breadth-seed"])
+        self.assertEqual(wide_ids, ["breadth-seed", "breadth-related-0", "breadth-related-1"])
+        self.assertEqual(graph.get("breadth-seed").node_relations, before.get("breadth-seed").node_relations)
+        self.assertEqual(tuple(node.id for node in graph.list_nodes()), tuple(node.id for node in before.list_nodes()))
+        self.assertEqual(wide.config.relation_breadth_limit, 3)
+
+    def test_relation_breadth_does_not_change_hop_or_ranking(self):
+        """Changing breadth selects a prefix of the same ranked one-hop view."""
+        from rdl_enterprise.cascade import InterpCascade, CascadeConfig
+        from rdl_enterprise.mb_graph import MBGraph, MBNode, CommitmentOrigin
+        from rdl_enterprise.snapshot import BusinessInput
+
+        graph = MBGraph()
+        seed = MBNode(
+            id="rank-seed",
+            domain="support",
+            trigger_pattern={"exact_keys": ["障害"]},
+            action_template={"type": "direct_reply", "payload": "seed"},
+            confidence=0.8,
+            approval_count=10,
+        )
+        children = []
+        for index in range(3):
+            child = MBNode(
+                id=f"rank-child-{index}",
+                domain="support",
+                trigger_pattern={"exact_keys": [f"child-{index}"]},
+                action_template={"type": "direct_reply", "payload": str(index)},
+                confidence=0.5,
+                approval_count=index + 1,
+            )
+            children.append(child)
+        seed.node_relations = {child.id: "support" for child in children}
+        graph.commit_node(seed, origin=CommitmentOrigin.TEST_FIXTURE)
+        for child in children:
+            graph.commit_node(child, origin=CommitmentOrigin.TEST_FIXTURE)
+
+        efp = BusinessInput("T_BREADTH_RANK", "U1", "support", "障害について")
+        cascade = InterpCascade(graph, config=CascadeConfig(relation_breadth_limit=2))
+        selected = cascade.select_active_constraint_subgraph(graph.list_nodes(), efp)
+        self.assertEqual([node.id for node in selected], ["rank-seed", "rank-child-2"])
+        self.assertEqual(len(cascade.select_active_constraint_subgraph(graph.list_nodes(), efp, limit=1)), 2)
+
     def test_bundle_level_vs_node_level_ablation(self):
         """P4/P5 契約: 複数ノード束 L において、束全体の切断で ΔF > 0 が生じた場合でも、単一ノード個別切断 (Leave-One-Out) により effect_verified_node_ids を分離・限定すること (BASE v2.0 §4.2)"""
         from rdl_enterprise.mb_graph import MBGraph, MBNode, CommitmentOrigin
