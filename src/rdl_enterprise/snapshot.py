@@ -686,6 +686,9 @@ class CaseSnapshot:
         self.e_input: Optional[float] = None
         self.dispatched_at = datetime.utcnow().isoformat()
         self.resolved_at: Optional[str] = None
+        # Dispatch provenance accompanies subsequent EFP/F'/E on this case.
+        # It records an association, not a claim of causal attribution.
+        self.interaction_trace: Optional[Dict[str, Any]] = None
 
     @property
     def observed_outcome(self) -> Optional[OutcomeObservation]:

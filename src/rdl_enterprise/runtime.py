@@ -345,6 +345,23 @@ class EnterpriseRuntime:
             action_taken = pred.action_type
             final_output = pred.content
 
+        snapshot.interaction_trace = {
+            "case_id": efp.ticket_id,
+            "domain": efp.category,
+            "pre_update_mb_hash": frozen_graph.content_hash(),
+            "selected_structure_ids": tuple(dict.fromkeys(
+                ([pred.matched_node_id] if pred.matched_node_id else [])
+                + list(pred.constraint_locus_ids or ())
+            )),
+            "conflict_ids": tuple(
+                c.conflict_id for c in conflict_summary.conflicts
+            ) if conflict_summary else (),
+            "action_type": action_taken,
+            "response": final_output,
+            "dispatched_at": snapshot.dispatched_at,
+            "attribution": "POSSIBLE_ASSOCIATION",
+        }
+
         # 5. 外界作用台帳 (ActionLedger) への記録 (Model Rollback / World Rollback 追跡)
         mb_ver = getattr(active_graph, "version", "prod")
         compensating_action = None
@@ -382,6 +399,7 @@ class EnterpriseRuntime:
             compensating_action=compensating_action,
         )
         if self.case_store:
+            self.case_store.save_case(efp.ticket_id, snapshot, snapshot.status.value)
             self._persist_runtime_state()
 
         return TicketDispatchResult(
