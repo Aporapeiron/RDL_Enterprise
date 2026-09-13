@@ -60,7 +60,10 @@ def test_conflict_trace_links_feedback_without_adding_structural_heat():
 def test_attention_gate_uses_only_actionable_persistent_feedback_and_deduplicates():
     actor = AuthorityContext("manager-1", "manager", "workflow", "human", "mfa")
     runtime = EnterpriseRuntime()
-    request = BusinessInput("attention-1", "operator", "workflow", "restart review")
+    request = BusinessInput(
+        "attention-1", "operator", "workflow", "restart review",
+        metadata={"interaction_series_id": "restart-series-1"},
+    )
     runtime.dispatch_ticket(request, authority=actor)
     assert runtime.human_review_requests() == ()
 
@@ -72,11 +75,15 @@ def test_attention_gate_uses_only_actionable_persistent_feedback_and_deduplicate
     assert runtime.human_review_requests() == ()
 
     # A different case is not silently treated as persistence for this case.
-    second = BusinessInput("attention-2", "operator", "workflow", "restart review")
+    second = BusinessInput(
+        "attention-2", "operator", "workflow", "restart review",
+        metadata={"interaction_series_id": "restart-series-1"},
+    )
     runtime.dispatch_ticket(second, authority=actor)
     runtime.resolve_ticket_feedback(
         second.ticket_id,
         FeedbackResult(user_resolved=False, feedback_comment="still blocked"),
         authority=actor,
     )
-    assert runtime.human_review_requests() == ()
+    assert len(runtime.human_review_requests()) == 1
+    assert runtime.human_review_requests()[0].case_id == "restart-series-1"

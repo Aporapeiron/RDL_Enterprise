@@ -563,12 +563,15 @@ class EnterpriseRuntime:
         if (authority is not None and (e_pred > 0 or e_input > 0)
                 and result.status in (CaseStatus.FAILURE, CaseStatus.REJECTED, CaseStatus.UNKNOWN)):
             domain = snapshot.efp.category or "general"
+            series_id = snapshot.efp.metadata.get("interaction_series_id", ticket_id)
+            if not isinstance(series_id, str) or not series_id.strip():
+                series_id = ticket_id
             change_point = "post-response-unresolved-difference"
-            attention_key = (ticket_id, domain, change_point)
+            attention_key = (series_id, domain, change_point)
             count = self._attention_observation_counts.get(attention_key, 0) + 1
             self._attention_observation_counts[attention_key] = count
             self.human_attention_gate.consider(
-                case_id=ticket_id,
+                case_id=series_id,
                 domain=domain,
                 change_point=change_point,
                 actor=authority,
