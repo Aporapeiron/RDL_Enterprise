@@ -169,6 +169,9 @@ class EnterpriseRuntime:
                 self._attention_observation_counts.update(
                     persisted.get("attention_observation_counts", {})
                 )
+                self.human_attention_gate.restore_state(
+                    persisted.get("human_attention_requests", ())
+                )
 
         # 非同期案件スナップショット管理
         self.pending_snapshots: Dict[str, CaseSnapshot] = {}
@@ -601,6 +604,7 @@ class EnterpriseRuntime:
                 "canary_deployment_history": self.canary_manager.deployment_history,
                 "action_ledger_records": self.canary_manager.action_ledger.records,
                 "attention_observation_counts": self._attention_observation_counts,
+                "human_attention_requests": self.human_attention_gate.export_state(),
             })
 
     def _finalize_case_metabolism(
@@ -805,6 +809,7 @@ class EnterpriseRuntime:
                 "canary_deployment_history": self.canary_manager.deployment_history,
                 "action_ledger_records": self.canary_manager.action_ledger.records,
                 "attention_observation_counts": self._attention_observation_counts,
+                "human_attention_requests": self.human_attention_gate.export_state(),
             }
             self.case_store.commit_transition(ticket_id, snapshot, state, {
                 "status": snapshot.status.value,

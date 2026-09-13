@@ -24,6 +24,19 @@ class HumanAttentionGate:
     def requests(self) -> tuple[ReviewRequest, ...]:
         return tuple(self._requests.values())
 
+    def export_state(self) -> tuple[ReviewRequest, ...]:
+        return self.requests()
+
+    def restore_state(self, requests: tuple[ReviewRequest, ...] | list[ReviewRequest]) -> None:
+        for request in requests:
+            if not isinstance(request, ReviewRequest):
+                raise ValueError("invalid review request state")
+            key = (request.case_id, request.domain)
+            existing = self._requests.get(key)
+            if existing is not None and existing.actor_id != request.actor_id:
+                raise ValueError("review is already assigned to another actor")
+            self._requests[key] = request
+
     def consider(self, *, case_id: str, domain: str, change_point: str,
                  actor: AuthorityContext, actionable: bool,
                  persistent: bool, safety_required: bool = False) -> ReviewRequest | None:

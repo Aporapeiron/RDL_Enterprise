@@ -103,3 +103,18 @@ def test_attention_series_count_survives_restart():
         second.dispatch_ticket(BusinessInput("attention-4", "operator", "workflow", "blocked", metadata=series), authority=actor)
         second.resolve_ticket_feedback("attention-4", FeedbackResult(user_resolved=False), authority=actor)
         assert len(second.human_review_requests()) == 1
+
+
+def test_attention_review_queue_survives_restart():
+    actor = AuthorityContext("manager-1", "manager", "workflow", "human", "mfa")
+    with tempfile.TemporaryDirectory() as directory:
+        path = str(Path(directory) / "review.sqlite3")
+        runtime = EnterpriseRuntime(store_path=path)
+        runtime.human_attention_gate.consider(
+            case_id="restart-series-3", domain="workflow", change_point="blocked",
+            actor=actor, actionable=True, persistent=True,
+        )
+        runtime._persist_runtime_state()
+
+        restored = EnterpriseRuntime(store_path=path)
+        assert restored.human_review_requests() == runtime.human_review_requests()
