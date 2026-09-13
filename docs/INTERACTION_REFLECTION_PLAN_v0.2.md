@@ -32,8 +32,12 @@ evaluation rather than continuous tracking of every alternative.
 | P9 | Regression and scenario acceptance | Six realistic fixtures plus continuing interactions; no spurious H or notifications; CI green |
 | P10 | Operational observation | Real case provenance from conflict through response and subsequent EFP/E/H |
 
-P2-P10 remain unverified for this plan. Existing components and earlier green
-tests are prerequisites, not evidence of complete v0.2 acceptance.
+P2-P9 remain subject to the acceptance evidence above. P10 now has a live
+partial observation: a real Atlassian Jira lookup was followed by a second
+real lookup recorded as EFP', then evaluated with the same frozen pre-update
+M_B to produce F' and E/H. This does not yet establish a real structural
+conflict-to-response chain; no conflict is inferred or fabricated from the
+live Jira record.
 
 ## Human attention
 
