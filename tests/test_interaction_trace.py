@@ -118,3 +118,33 @@ def test_attention_review_queue_survives_restart():
 
         restored = EnterpriseRuntime(store_path=path)
         assert restored.human_review_requests() == runtime.human_review_requests()
+
+
+def test_static_conflict_alone_is_not_attention_but_repeated_residual_is():
+    profiles = {
+        name: RelationConstraintProfile(
+            ConstraintIdentity(name, "server", "must_restart", "now", Provenance(name)),
+            ConstraintStrength(0.9, polarity),
+        )
+        for name, polarity in (("security", EvidencePolarity.SUPPORT),
+                               ("availability", EvidencePolarity.OPPOSE))
+    }
+    actor = AuthorityContext("manager-1", "manager", "workflow", "human", "mfa")
+    runtime = EnterpriseRuntime(relation_profile_provider=lambda *_: profiles)
+    series = {"interaction_series_id": "conflict-series"}
+    for ticket_id in ("conflict-1", "conflict-2"):
+        runtime.dispatch_ticket(BusinessInput(ticket_id, "operator", "workflow", "restart", metadata=series), authority=actor)
+        if ticket_id == "conflict-1":
+            assert runtime.human_review_requests() == ()
+        runtime.resolve_ticket_feedback(ticket_id, FeedbackResult(user_resolved=False, feedback_comment="still blocked"), authority=actor)
+    assert len(runtime.human_review_requests()) == 1
+
+
+def test_safety_gate_can_request_attention_on_first_residual():
+    actor = AuthorityContext("manager-1", "manager", "workflow", "human", "mfa")
+    runtime = EnterpriseRuntime(theta_0=0.0)
+    request = BusinessInput("safety-1", "operator", "workflow", "unknown", metadata={"interaction_series_id": "safety-series"})
+    runtime.dispatch_ticket(request, authority=actor)
+    result = runtime.resolve_ticket_feedback(request.ticket_id, FeedbackResult(user_resolved=False), authority=actor)
+    assert result.transition_to_m_delta
+    assert len(runtime.human_review_requests()) == 1
