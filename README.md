@@ -4,6 +4,39 @@ RDL Enterpriseは、RDLの意味境界を業務AI Runtimeとして検証する�
 
 このリポジトリはRDLの完全実装や、世界の真理を決定するシステムを宣言しません。すべての一致、再現、十分性、安全性は、明示された有限Boundaryにおける性質です。
 
+## Project Status — 一旦停止
+
+**2026-09-13時点で、本プロジェクトは現在の有限Boundaryにおける内部設計フェーズを一旦停止します。**
+
+これは完成宣言でも放棄でもありません。現在までに、T0 BASE / SPEC v2.1に沿ったinteraction framing、static structural conflictのObservation化、same pre-update `M_B`による`F / F'`比較、既存の`E -> H`経路、Human Attentionの反復・Authority・dedupe・restart durabilityまでを、現在のlocalhost / single Runtime / single-writer SQLite Boundaryで operationally sufficient と判断しました。
+
+一方、実世界の完全なinteraction chainはまだ確立していません。
+
+```text
+real structural conflict
+  -> actual response
+  -> changed interaction conditions
+  -> subsequent real EFP'
+  -> same pre-update M_B
+  -> F / F'
+  -> E
+  -> unresolved residual -> H
+  -> Human Attention when necessary
+```
+
+この実運用縦断は **NOT_EVALUATED / DEFERRED** として残します。Selective shadow、C10に基づくEFP生成条件の再検査、review lifecycleの追加拡張も、実際の破断や必要性が観測された場合にのみ再開します。
+
+再開条件は、現在の地図をさらに細かく描けることではなく、**現在のBoundaryで説明・処理できない実案件、明確な運用要求、既存不変条件の破断、または新しいprovider / 外界作用の必要性が現れること**です。
+
+停止時点の意味は次の通りです。
+
+```text
+current finite Boundaryで operationally sufficient
+!= terminally complete
+!= universally valid
+!= real-world interaction fully evaluated
+```
+
 ## Concept
 
 RDL Enterpriseが目指すのは、常に正しい知識を持つAIではありません。
@@ -37,6 +70,8 @@ RDL Enterpriseが目指すのは、常に正しい知識を持つAIではあり�
 
 実証済みの製品経路は、自然文routing、Authority/domain scope検査、Jira応答の`case_id`・`summary`・`status`・`owner`へのbounded projection、`assignee=null`の`owner=None`保持、ActionLedger、SQLite永続化、別Pythonプロセスでの再起動復元です。実環境のJira issue `IT-3` / `IT-4`もread-only lookup確認済みです。
 
+Interaction Reflection側では、static structural conflictはそれ自体を`E`や`H`へ昇格させず、後続`EFP'`をsame pre-update `M_B`で再解釈して得た実残差だけを既存の`E -> H`経路へ通します。Human Attentionはsystem `H`とは分離され、単発差分ではなく同一interaction series上の反復またはsafety条件、かつ適切なAuthorityがある場合にのみbounded review requestを形成します。
+
 ## Operational Boundary
 
 ```text
@@ -60,6 +95,8 @@ ActionLedger              != Truth
 Authority                 != Truth
 UNKNOWN                   != UNRESOLVED != NOT_EVALUATED
 Similarity                != Rupture
+Structural Conflict       != E != H
+Human Attention load      != H
 ```
 
 Candidate生成は実行を意味しません。read-only queryは明示的なreplay指定がない限り毎回providerを再観測します。provider observationやLedgerは有限な証跡であり、無条件の真実として扱いません。
@@ -101,6 +138,8 @@ Windows + separate Python process + Bearer authentication
 
 これは現在のcredential、database、provider、localhost構成に対する有限な受入です。完全なsecret非漏洩や外部環境全般の安全性を証明するものではありません。
 
+Interaction Reflectionについては、real Jira observationからsubsequent real observationを`EFP'`として回収し、same pre-update `M_B`から`F'`および既存`E/H`経路へ接続する部分Observationまではあります。ただし、real structural conflictからactual responseを経て後続状態が変化する完全な実運用chainは未確立です。
+
 ## これは確立していないこと
 
 - internet-facing security、人間のidentityそのものの証明
@@ -108,6 +147,7 @@ Windows + separate Python process + Bearer authentication
 - universal secret non-leakage、Jira以外のprovider互換性
 - RDLの完全性や普遍的な真理性
 - 不可逆Toolのdurable Approval
+- real structural conflictからresponse、subsequent `EFP'`、`E/H`までの完全な実運用縦断
 
 ## Quick Start
 
@@ -172,20 +212,30 @@ src/rdl_enterprise/atlassian_jira_provider.py Jira read-only adapter
 src/rdl_enterprise/service.py       認証済みservice境界
 src/rdl_enterprise/persistence.py   SQLite persistence
 src/rdl_enterprise/runtime.py       業務Runtimeとrestart recovery
+src/rdl_enterprise/attention.py     bounded Human Attention aggregation
 src/rdl_enterprise/presentation.py  人間向け結果表示
+tests/test_interaction_trace.py     interaction / Human Attention受入テスト
 tests/test_product_acceptance.py    製品受入・永続化・縦断テスト
+docs/INTERACTION_REFLECTION_PLAN_v0.2.md interaction reflection設計境界
 docs/RDL_Product_Status_v0.1.md     製品Boundaryと残件
 ```
 
 詳細なRDL原則、Coreの役割分離、参照先、Compiled M_Bの契約は`docs/`以下を参照してください。
 
-## 次の評価境界
+## 再開時の次の評価境界
 
-次は基盤を無制限に拡張することではなく、複数の実Jira案件をread-onlyで観測します。
+現在、この評価は意図的に延期されています。再開する場合の最初の主対象は、基盤を無制限に拡張することではなく、real interaction chainを1本最後まで通すことです。
 
 ```text
-実務観測 -> 複数Jira案件 -> 人間が「今日見る案件」を選ぶ
-         -> RDL候補との差を記録 -> 時間、見落とし、手戻り、HITLコストを測る
+real structural conflict
+  -> actual response
+  -> changed interaction conditions
+  -> subsequent real EFP'
+  -> same pre-update M_B
+  -> F / F'
+  -> E
+  -> unresolved residual -> H
+  -> Human Attention when necessary
 ```
 
-実際の破断や情報不足が現れた境界だけを、次の設計対象にします。
+必要なら、その実縦断で初めて現れた破断に対してのみSelective shadowまたはC10の再検査を開きます。実際の破断や情報不足が現れた境界だけを、次の設計対象にします。
