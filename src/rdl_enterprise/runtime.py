@@ -157,6 +157,7 @@ class EnterpriseRuntime:
         self.conflict_inbox = conflict_inbox or StructuralConflictInbox()
         self.relation_profile_provider = relation_profile_provider
         self.human_attention_gate = human_attention_gate or HumanAttentionGate()
+        self._attention_observation_counts: Dict[tuple[str, str, str], int] = {}
         self.case_store = SQLiteCaseStore(store_path) if store_path else None
         if self.case_store:
             persisted = self.case_store.load_runtime_state()
@@ -561,14 +562,19 @@ class EnterpriseRuntime:
         # only when the subsequent EFP produced an actionable residual.
         if (authority is not None and (e_pred > 0 or e_input > 0)
                 and result.status in (CaseStatus.FAILURE, CaseStatus.REJECTED, CaseStatus.UNKNOWN)):
-            conflict_ids = getattr(snapshot, "interaction_trace", None) or {}
+            domain = snapshot.efp.category or "general"
+            change_point = "post-response-unresolved-difference"
+            attention_key = (ticket_id, domain, change_point)
+            count = self._attention_observation_counts.get(attention_key, 0) + 1
+            self._attention_observation_counts[attention_key] = count
             self.human_attention_gate.consider(
                 case_id=ticket_id,
-                domain=snapshot.efp.category or "general",
-                change_point="post-response-unresolved-difference",
+                domain=domain,
+                change_point=change_point,
                 actor=authority,
                 actionable=True,
-                persistent=True,
+                persistent=count >= 2,
+                safety_required=result.transition_to_m_delta or snapshot.is_canary,
             )
         return result
 

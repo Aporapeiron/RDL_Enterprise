@@ -69,9 +69,9 @@ def test_attention_gate_uses_only_actionable_persistent_feedback_and_deduplicate
         FeedbackResult(user_resolved=False, feedback_comment="still blocked"),
         authority=actor,
     )
-    assert len(runtime.human_review_requests()) == 1
+    assert runtime.human_review_requests() == ()
 
-    # A repeated observation is one review request, not one notification each.
+    # A different case is not silently treated as persistence for this case.
     second = BusinessInput("attention-2", "operator", "workflow", "restart review")
     runtime.dispatch_ticket(second, authority=actor)
     runtime.resolve_ticket_feedback(
@@ -79,4 +79,4 @@ def test_attention_gate_uses_only_actionable_persistent_feedback_and_deduplicate
         FeedbackResult(user_resolved=False, feedback_comment="still blocked"),
         authority=actor,
     )
-    assert len(runtime.human_review_requests()) == 2
+    assert runtime.human_review_requests() == ()
