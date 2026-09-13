@@ -2,7 +2,7 @@ import tempfile
 import copy
 from pathlib import Path
 
-from rdl_enterprise import BusinessInput, EnterpriseRuntime, FeedbackResult
+from rdl_enterprise import BusinessInput, EnterpriseRuntime, FeedbackResult, AuthorityContext
 from rdl_core import ConstraintIdentity, ConstraintStrength, EvidencePolarity, Provenance, RelationConstraintProfile
 
 
@@ -55,3 +55,28 @@ def test_conflict_trace_links_feedback_without_adding_structural_heat():
     assert snapshot.f_prime is not None
     assert snapshot.interaction_trace == trace
     assert snapshot.frozen_context.frozen_mb.content_hash() == trace["pre_update_mb_hash"]
+
+
+def test_attention_gate_uses_only_actionable_persistent_feedback_and_deduplicates():
+    actor = AuthorityContext("manager-1", "manager", "workflow", "human", "mfa")
+    runtime = EnterpriseRuntime()
+    request = BusinessInput("attention-1", "operator", "workflow", "restart review")
+    runtime.dispatch_ticket(request, authority=actor)
+    assert runtime.human_review_requests() == ()
+
+    runtime.resolve_ticket_feedback(
+        request.ticket_id,
+        FeedbackResult(user_resolved=False, feedback_comment="still blocked"),
+        authority=actor,
+    )
+    assert len(runtime.human_review_requests()) == 1
+
+    # A repeated observation is one review request, not one notification each.
+    second = BusinessInput("attention-2", "operator", "workflow", "restart review")
+    runtime.dispatch_ticket(second, authority=actor)
+    runtime.resolve_ticket_feedback(
+        second.ticket_id,
+        FeedbackResult(user_resolved=False, feedback_comment="still blocked"),
+        authority=actor,
+    )
+    assert len(runtime.human_review_requests()) == 2

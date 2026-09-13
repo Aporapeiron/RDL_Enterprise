@@ -28,6 +28,7 @@ from .constraint import (
     compute_efp_prime_constraint, compute_opposing_conflict_strength,
 )
 from .conflict_inbox import StructuralConflictInbox
+from .attention import HumanAttentionGate
 
 @dataclass
 class TicketDispatchResult:
@@ -130,6 +131,7 @@ class EnterpriseRuntime:
         success_reinforcement_gain: Optional[float] = None,
         conflict_inbox: Optional[StructuralConflictInbox] = None,
         relation_profile_provider: Optional[Any] = None,
+        human_attention_gate: Optional[HumanAttentionGate] = None,
     ):
         self.mb_graph = mb_graph or MBGraph()
         self.h_state = HState(theta_0=theta_0, gamma=gamma)
@@ -154,6 +156,7 @@ class EnterpriseRuntime:
         self.success_reinforcement_gain = success_reinforcement_gain
         self.conflict_inbox = conflict_inbox or StructuralConflictInbox()
         self.relation_profile_provider = relation_profile_provider
+        self.human_attention_gate = human_attention_gate or HumanAttentionGate()
         self.case_store = SQLiteCaseStore(store_path) if store_path else None
         if self.case_store:
             persisted = self.case_store.load_runtime_state()
@@ -425,6 +428,7 @@ class EnterpriseRuntime:
         at: Optional[Any] = None,
         operation_id: Optional[str] = None,
         actor_provenance: Optional[Dict[str, Any]] = None,
+        authority: Optional[AuthorityContext] = None,
     ) -> TicketResolutionResult:
         """
         フェーズ2：後続結果 EFP' の回収と代謝反映
@@ -541,7 +545,7 @@ class EnterpriseRuntime:
         opposing_strength = max(rupture_opposing, compute_opposing_conflict_strength(c_old, c_prime, has_conflict))
 
         # 共通代謝終端処理 (Metabolic Terminal)
-        return self._finalize_case_metabolism(
+        result = self._finalize_case_metabolism(
             snapshot=snapshot,
             status=snapshot.status,
             e_pred=e_pred,
@@ -553,6 +557,24 @@ class EnterpriseRuntime:
             operation_id=operation_id,
             actor_provenance=actor_provenance,
         )
+        # A static conflict is only an observation.  Request human attention
+        # only when the subsequent EFP produced an actionable residual.
+        if (authority is not None and (e_pred > 0 or e_input > 0)
+                and result.status in (CaseStatus.FAILURE, CaseStatus.REJECTED, CaseStatus.UNKNOWN)):
+            conflict_ids = getattr(snapshot, "interaction_trace", None) or {}
+            self.human_attention_gate.consider(
+                case_id=ticket_id,
+                domain=snapshot.efp.category or "general",
+                change_point="post-response-unresolved-difference",
+                actor=authority,
+                actionable=True,
+                persistent=True,
+            )
+        return result
+
+    def human_review_requests(self):
+        """Return the Enterprise-local deduplicated review queue."""
+        return self.human_attention_gate.requests()
 
     def _persist_runtime_state(self) -> None:
         if self.case_store:
@@ -1101,7 +1123,7 @@ class EnterpriseRuntime:
         )
 
         if feedback is not None:
-            resol_res = self.resolve_ticket_feedback(efp.ticket_id, feedback)
+            resol_res = self.resolve_ticket_feedback(efp.ticket_id, feedback, authority=authority)
             return TicketExecutionResult(
                 ticket_id=efp.ticket_id,
                 prediction=dispatch_res.prediction,

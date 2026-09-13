@@ -60,6 +60,7 @@ class EnterpriseService:
             self._require_scope(actor, snapshot.efp.category)
         return self.runtime.resolve_ticket_feedback(
             ticket_id, feedback, operation_id=operation_id,
+            authority=actor,
             actor_provenance={
                 "actor_id": actor.actor_id,
                 "role": actor.role,

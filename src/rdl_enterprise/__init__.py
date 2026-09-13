@@ -74,6 +74,7 @@ from .tool_routing import ToolCandidate, ToolRoutingResult, ToolRoutingStatus, r
 from .business_query import handle_business_query
 from .presentation import format_business_query_result
 from .conflict_inbox import StructuralConflict, ConflictInboxItem, ConflictInboxEvent, StructuralConflictInbox
+from .attention import ReviewRequest, HumanAttentionGate
 
 __all__ = [
     "MBNode",
@@ -151,4 +152,6 @@ __all__ = [
     "ConflictInboxItem",
     "ConflictInboxEvent",
     "StructuralConflictInbox",
+    "ReviewRequest",
+    "HumanAttentionGate",
 ]
