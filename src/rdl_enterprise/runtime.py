@@ -166,6 +166,9 @@ class EnterpriseRuntime:
                 self.h_state = persisted["h_state"]
                 self.cascade.mb_graph = self.mb_graph
                 self.cascade.import_cache(persisted.get("level0_cache", {}))
+                self._attention_observation_counts.update(
+                    persisted.get("attention_observation_counts", {})
+                )
 
         # 非同期案件スナップショット管理
         self.pending_snapshots: Dict[str, CaseSnapshot] = {}
@@ -579,6 +582,7 @@ class EnterpriseRuntime:
                 persistent=count >= 2,
                 safety_required=result.transition_to_m_delta or snapshot.is_canary,
             )
+            self._persist_runtime_state()
         return result
 
     def human_review_requests(self):
@@ -596,6 +600,7 @@ class EnterpriseRuntime:
                 "active_canary_deployment": self.canary_manager.active_deployment,
                 "canary_deployment_history": self.canary_manager.deployment_history,
                 "action_ledger_records": self.canary_manager.action_ledger.records,
+                "attention_observation_counts": self._attention_observation_counts,
             })
 
     def _finalize_case_metabolism(
@@ -799,6 +804,7 @@ class EnterpriseRuntime:
                 "active_canary_deployment": self.canary_manager.active_deployment,
                 "canary_deployment_history": self.canary_manager.deployment_history,
                 "action_ledger_records": self.canary_manager.action_ledger.records,
+                "attention_observation_counts": self._attention_observation_counts,
             }
             self.case_store.commit_transition(ticket_id, snapshot, state, {
                 "status": snapshot.status.value,

@@ -87,3 +87,19 @@ def test_attention_gate_uses_only_actionable_persistent_feedback_and_deduplicate
     )
     assert len(runtime.human_review_requests()) == 1
     assert runtime.human_review_requests()[0].case_id == "restart-series-1"
+
+
+def test_attention_series_count_survives_restart():
+    actor = AuthorityContext("manager-1", "manager", "workflow", "human", "mfa")
+    with tempfile.TemporaryDirectory() as directory:
+        path = str(Path(directory) / "attention.sqlite3")
+        series = {"interaction_series_id": "restart-series-2"}
+        first = EnterpriseRuntime(store_path=path)
+        first.dispatch_ticket(BusinessInput("attention-3", "operator", "workflow", "blocked", metadata=series), authority=actor)
+        first.resolve_ticket_feedback("attention-3", FeedbackResult(user_resolved=False), authority=actor)
+        assert first.human_review_requests() == ()
+
+        second = EnterpriseRuntime(store_path=path)
+        second.dispatch_ticket(BusinessInput("attention-4", "operator", "workflow", "blocked", metadata=series), authority=actor)
+        second.resolve_ticket_feedback("attention-4", FeedbackResult(user_resolved=False), authority=actor)
+        assert len(second.human_review_requests()) == 1
